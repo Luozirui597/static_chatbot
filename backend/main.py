@@ -2,12 +2,13 @@
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.chat_service import ChatService
-from backend.llm_client import FakeLLMClient
+from backend.exceptions import LLMError
+from backend.llm_client import create_llm_client
 from backend.schemas import ChatRequest, ChatResponse
 
 # ---------------------------------------------------------------------------
@@ -23,7 +24,7 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI(title="Static Chatbot")
 
-chat_service = ChatService(llm_client=FakeLLMClient())
+chat_service = ChatService(llm_client=create_llm_client())
 
 # ---------------------------------------------------------------------------
 # API routes
@@ -38,7 +39,13 @@ def health():
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Accept a user message and return a chat reply."""
-    reply = await chat_service.handle_message(request.message)
+    try:
+        reply = await chat_service.handle_message(request.message)
+    except LLMError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+        ) from exc
     return ChatResponse(reply=reply)
 
 
