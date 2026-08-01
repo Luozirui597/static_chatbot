@@ -1,0 +1,70 @@
+"""Tests for the chat endpoint.
+
+These tests use TestClient which does not touch the network.  The
+application is wired with FakeLLMClient so no external API calls are
+made.
+"""
+
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.main import app
+
+client = TestClient(app)
+
+
+# ---------------------------------------------------------------------------
+# Normal chat flow
+# ---------------------------------------------------------------------------
+
+def test_chat_normal_message():
+    """A normal message returns the expected fake reply."""
+    response = client.post("/api/chat", json={"message": "你好"})
+    assert response.status_code == 200
+    assert response.json() == {"reply": "测试回复：你好"}
+
+
+# ---------------------------------------------------------------------------
+# Input validation — empty / blank / too-long
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"message": ""},
+        {"message": "   "},
+        {"message": "x" * 4001},
+    ],
+)
+def test_chat_rejects_invalid(payload):
+    """Empty, whitespace-only and over-length messages are rejected."""
+    response = client.post("/api/chat", json=payload)
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Whitespace trimming
+# ---------------------------------------------------------------------------
+
+def test_chat_trims_whitespace():
+    """Leading / trailing whitespace is stripped before the LLM call."""
+    response = client.post("/api/chat", json={"message": "  你好  "})
+    assert response.status_code == 200
+    assert response.json() == {"reply": "测试回复：你好"}
+
+
+# ---------------------------------------------------------------------------
+# Static frontend
+# ---------------------------------------------------------------------------
+
+def test_get_root_returns_html():
+    """GET / serves the chat page."""
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+
+def test_get_static_app_js():
+    """GET /static/app.js serves the frontend JavaScript."""
+    response = client.get("/static/app.js")
+    assert response.status_code == 200

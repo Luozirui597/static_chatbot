@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Static Chatbot</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="chat-container">
+    <header class="chat-header">
+      <h1>Static Chatbot</h1>
+    </header>
+
+    <div class="chat-messages" id="messages">
+      <div class="message bot">
+        <div class="message-content">你好！我是测试聊天机器人，请问有什么可以帮你的？</div>
+      </div>
+    </div>
+
+    <div class="chat-status" id="status"></div>
+
+    <div class="chat-input-area">
+      <textarea
+        id="messageInput"
+        class="chat-input"
+        placeholder="输入消息……"
+        rows="1"
+        autofocus
+      ></textarea>
+      <button id="sendButton" class="send-button">发送</button>
+    </div>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
