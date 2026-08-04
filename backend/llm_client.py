@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol, TypedDict
 
 import httpx
 
 from backend import config
 from backend.exceptions import LLMError
-from backend.system_prompt import SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+
+class LLMMessage(TypedDict):
+    """A single message in a chat conversation."""
+
+    role: Literal["system", "user", "assistant"]
+    content: str
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +34,7 @@ class LLMClient(Protocol):
     be synchronous or asynchronous — callers should ``await`` it.
     """
 
-    async def generate(self, message: str) -> str: ...
+    async def generate(self, messages: list[LLMMessage]) -> str: ...
 
 
 # ---------------------------------------------------------------------------
@@ -35,12 +46,16 @@ class FakeLLMClient:
     """Returns a fixed test reply without touching the network.
 
     >>> client = FakeLLMClient()
-    >>> await client.generate("你好")
+    >>> await client.generate([{"role": "user", "content": "你好"}])
     '测试回复：你好'
     """
 
-    async def generate(self, message: str) -> str:
-        return f"测试回复：{message}"
+    async def generate(self, messages: list[LLMMessage]) -> str:
+        """Return a test reply based on the last user message."""
+        for msg in reversed(messages):
+            if msg["role"] == "user":
+                return f"测试回复：{msg['content']}"
+        return "测试回复："
 
 
 # ---------------------------------------------------------------------------
@@ -66,9 +81,6 @@ class OpenAICompatibleLLMClient:
         Optional custom ``httpx`` transport.  In production this is
         ``None`` (the default transport is used).  In tests an
         ``httpx.MockTransport`` can be injected.
-    system_prompt:
-        System-level instruction.  Defaults to the project-wide
-        ``SYSTEM_PROMPT``.
     """
 
     def __init__(
@@ -79,27 +91,22 @@ class OpenAICompatibleLLMClient:
         model: str,
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
-        system_prompt: str = SYSTEM_PROMPT,
     ) -> None:
         self._api_key = api_key.strip()
         self._base_url = base_url.strip().rstrip("/")
         self._model = model.strip()
         self._timeout = timeout
         self._transport = transport
-        self._system_prompt = system_prompt
 
-    async def generate(self, message: str) -> str:
-        """Send *message* to the upstream API and return the reply."""
+    async def generate(self, messages: list[LLMMessage]) -> str:
+        """Send *messages* to the upstream API and return the reply."""
         url = f"{self._base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
         }
         payload = {
             "model": self._model,
-            "messages": [
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": message},
-            ],
+            "messages": messages,
         }
 
         client_kwargs: dict = {"timeout": self._timeout}

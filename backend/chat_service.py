@@ -1,6 +1,7 @@
 """Chat service — orchestrates validation, LLM calls, and replies."""
 
-from backend.llm_client import LLMClient
+from backend.llm_client import LLMClient, LLMMessage
+from backend.system_prompt import SYSTEM_PROMPT
 
 
 class ChatService:
@@ -16,4 +17,8 @@ class ChatService:
 
     async def handle_message(self, message: str) -> str:
         """Return the assistant reply for *message*."""
-        return await self._llm.generate(message)
+        messages: list[LLMMessage] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": message},
+        ]
+        return await self._llm.generate(messages)

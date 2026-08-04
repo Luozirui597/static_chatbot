@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from backend.exceptions import LLMError
-from backend.llm_client import OpenAICompatibleLLMClient, SYSTEM_PROMPT
+from backend.llm_client import LLMMessage, OpenAICompatibleLLMClient
 
 # Fixed test parameters
 TEST_KEY = "test-key"
@@ -33,6 +33,10 @@ def _make_client(**kwargs) -> OpenAICompatibleLLMClient:
     return OpenAICompatibleLLMClient(**defaults)
 
 
+def _user_msg(content: str) -> LLMMessage:
+    return {"role": "user", "content": content}
+
+
 # ---------------------------------------------------------------------------
 # Normal response — also validates the outgoing request
 # ---------------------------------------------------------------------------
@@ -41,6 +45,11 @@ def _make_client(**kwargs) -> OpenAICompatibleLLMClient:
 @pytest.mark.anyio
 async def test_normal_response():
     """A valid 200 response returns the assistant's reply."""
+
+    input_messages: list[LLMMessage] = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "你好"},
+    ]
 
     async def handler(request: httpx.Request) -> httpx.Response:
         # --- request integrity checks ---
@@ -54,18 +63,17 @@ async def test_normal_response():
         assert "api_key" not in body
         assert "apiKey" not in body
         assert "apikey" not in body
-        msgs = body["messages"]
-        assert msgs[0]["role"] == "system"
-        assert msgs[0]["content"] == SYSTEM_PROMPT
-        assert msgs[1]["role"] == "user"
-        assert msgs[1]["content"] == "你好"
+
+        # Payload messages must exactly match what was passed — no injected
+        # system prompt.
+        assert body["messages"] == input_messages
 
         return httpx.Response(200, json={
             "choices": [{"message": {"content": "你好！"}}],
         })
 
     client = _make_client(transport=httpx.MockTransport(handler))
-    result = await client.generate("你好")
+    result = await client.generate(input_messages)
     assert result == "你好！"
 
 
@@ -84,7 +92,7 @@ async def test_timeout():
     client = _make_client(transport=httpx.MockTransport(handler))
 
     with pytest.raises(LLMError) as exc_info:
-        await client.generate("hi")
+        await client.generate([_user_msg("hi")])
     assert exc_info.value.status_code == 504
     assert exc_info.value.detail == "Upstream API timed out"
 
@@ -104,7 +112,7 @@ async def test_request_error():
     client = _make_client(transport=httpx.MockTransport(handler))
 
     with pytest.raises(LLMError) as exc_info:
-        await client.generate("hi")
+        await client.generate([_user_msg("hi")])
     assert exc_info.value.status_code == 502
     assert exc_info.value.detail == "Unable to reach upstream API"
 
@@ -128,7 +136,7 @@ async def test_http_error(http_status):
     client = _make_client(transport=httpx.MockTransport(handler))
 
     with pytest.raises(LLMError) as exc_info:
-        await client.generate("hi")
+        await client.generate([_user_msg("hi")])
     assert exc_info.value.status_code == 502
     assert exc_info.value.detail == f"Upstream API returned {http_status}"
 
@@ -186,6 +194,6 @@ async def test_invalid_response_body(body):
     client = _make_client(transport=httpx.MockTransport(handler))
 
     with pytest.raises(LLMError) as exc_info:
-        await client.generate("hi")
+        await client.generate([_user_msg("hi")])
     assert exc_info.value.status_code == 502
     assert exc_info.value.detail == "Invalid response from upstream API"
