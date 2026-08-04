@@ -28,7 +28,7 @@
 
   /** Show the "generating…" indicator. */
   function showLoading() {
-    statusEl.textContent = "正在生成……";
+    statusEl.textContent = "Generating...";
     statusEl.className = "chat-status";
   }
 
@@ -75,7 +75,7 @@
       });
 
       if (!response.ok) {
-        let detail = "服务器错误，请稍后重试。";
+        let detail = "Something went wrong. Please try again.";
         try {
           const body = await response.json();
           if (body.detail && Array.isArray(body.detail) && body.detail.length > 0) {
@@ -95,7 +95,7 @@
       clearStatus();
     } catch (_err) {
       // Network error (e.g. server unreachable)
-      showError("网络错误，请检查连接后重试。");
+      showError("Network error. Please check your connection and try again.");
     } finally {
       setLoading(false);
     }
