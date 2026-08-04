@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 
 from sqlalchemy import Engine, create_engine, event
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from backend import config
 
@@ -88,3 +89,21 @@ def create_tables(bind: Engine | None = None) -> None:
 
     target_engine = bind if bind is not None else engine
     Base.metadata.create_all(bind=target_engine)
+
+
+# ---------------------------------------------------------------------------
+# FastAPI dependency
+# ---------------------------------------------------------------------------
+
+
+def get_db() -> Generator[Session, None, None]:
+    """FastAPI dependency — yield a per-request database session.
+
+    The session is closed in ``finally`` so connections always return to
+    the pool even when the route raises an exception.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

@@ -1,15 +1,26 @@
 """FastAPI application entry point."""
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from backend.chat_service import ChatService
+from backend.database import create_tables, get_db
 from backend.exceptions import LLMError
 from backend.llm_client import create_llm_client
-from backend.schemas import ChatRequest, ChatResponse
+from backend.models import ChatSession, Message
+from backend.schemas import (
+    ChatRequest,
+    ChatResponse,
+    DeleteResponse,
+    MessageResponse,
+    SessionResponse,
+)
 
 # ---------------------------------------------------------------------------
 # Paths — resolved relative to this file so the app works regardless of CWD
@@ -22,7 +33,15 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 # Application & dependencies
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Static Chatbot")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Create database tables on startup."""
+    create_tables()
+    yield
+
+
+app = FastAPI(title="Static Chatbot", lifespan=lifespan)
 
 chat_service = ChatService(llm_client=create_llm_client())
 
@@ -47,6 +66,86 @@ async def chat(request: ChatRequest):
             detail=exc.detail,
         ) from exc
     return ChatResponse(reply=reply)
+
+
+# ---------------------------------------------------------------------------
+# Session routes
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/api/sessions",
+    response_model=SessionResponse,
+    status_code=201,
+)
+def create_session(db: Session = Depends(get_db)):
+    """Create a new chat session with the default title."""
+    session = ChatSession()
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+@app.get(
+    "/api/sessions",
+    response_model=list[SessionResponse],
+)
+def list_sessions(db: Session = Depends(get_db)):
+    """Return all sessions, newest first.
+
+    Orders by ``updated_at DESC, id DESC`` so the result is stable even
+    when multiple sessions share the same ``updated_at``.
+    """
+    stmt = select(ChatSession).order_by(
+        ChatSession.updated_at.desc(),
+        ChatSession.id.desc(),
+    )
+    return db.execute(stmt).scalars().all()
+
+
+@app.get(
+    "/api/sessions/{session_id}",
+    response_model=SessionResponse,
+)
+def get_session(session_id: int, db: Session = Depends(get_db)):
+    """Return a single session by id."""
+    session = db.get(ChatSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+@app.get(
+    "/api/sessions/{session_id}/messages",
+    response_model=list[MessageResponse],
+)
+def get_messages(session_id: int, db: Session = Depends(get_db)):
+    """Return all messages for a session, ordered by id ascending."""
+    session = db.get(ChatSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    stmt = (
+        select(Message)
+        .where(Message.session_id == session_id)
+        .order_by(Message.id.asc())
+    )
+    return db.execute(stmt).scalars().all()
+
+
+@app.delete(
+    "/api/sessions/{session_id}",
+    response_model=DeleteResponse,
+)
+def delete_session(session_id: int, db: Session = Depends(get_db)):
+    """Delete a session and all of its messages."""
+    session = db.get(ChatSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    db.delete(session)
+    db.commit()
+    return DeleteResponse(ok=True)
 
 
 # ---------------------------------------------------------------------------

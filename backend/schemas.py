@@ -1,6 +1,9 @@
 """Request and response models with input validation."""
 
-from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MAX_MESSAGE_LENGTH = 4000
 
@@ -33,3 +36,37 @@ class ChatResponse(BaseModel):
     """Chat reply returned to the client."""
 
     reply: str
+
+
+# ---------------------------------------------------------------------------
+# Session models
+# ---------------------------------------------------------------------------
+
+
+class SessionResponse(BaseModel):
+    """Public representation of a chat session."""
+
+    id: int
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MessageResponse(BaseModel):
+    """Public representation of a single message."""
+
+    id: int
+    session_id: int
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DeleteResponse(BaseModel):
+    """Confirmation that a resource was deleted."""
+
+    ok: bool
