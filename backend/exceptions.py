@@ -12,3 +12,7 @@ class LLMError(Exception):
         super().__init__(detail)
         self.detail = detail
         self.status_code = status_code
+
+
+class LLMInvalidResponseError(LLMError):
+    """Raised when the LLM returns an empty or blank response."""
