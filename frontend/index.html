@@ -7,29 +7,61 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div class="chat-container">
-    <header class="chat-header">
-      <h1>Static Chatbot</h1>
-    </header>
+  <div class="app-layout">
 
-    <div class="chat-messages" id="messages">
-      <div class="message bot">
-        <div class="message-content">Hello! I'm your AI assistant. How can I help you today?</div>
+    <!-- Mobile sidebar toggle -->
+    <button
+      class="sidebar-toggle"
+      id="sidebarToggle"
+      type="button"
+      aria-label="Toggle sidebar"
+      aria-expanded="false"
+    >&#9776;</button>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <h2 class="sidebar-title">Static Chatbot</h2>
+        <button
+          class="new-chat-button"
+          id="newChatButton"
+          type="button"
+        >+ New Chat</button>
       </div>
-    </div>
+      <div class="session-list" id="sessionList">
+        <!-- Sessions rendered by app.js -->
+      </div>
+    </aside>
 
-    <div class="chat-status" id="status"></div>
+    <!-- Chat area -->
+    <main class="chat-area" id="chatArea">
+      <div class="chat-session-header" id="sessionHeader">
+        <!-- Current session title rendered by app.js -->
+      </div>
 
-    <div class="chat-input-area">
-      <textarea
-        id="messageInput"
-        class="chat-input"
-        placeholder="Type a message..."
-        rows="1"
-        autofocus
-      ></textarea>
-      <button id="sendButton" class="send-button">Send</button>
-    </div>
+      <div class="chat-messages" id="messages">
+        <!-- Messages or welcome / empty state -->
+      </div>
+
+      <div class="chat-status" id="status"></div>
+
+      <div class="chat-input-area">
+        <textarea
+          id="messageInput"
+          class="chat-input"
+          placeholder="Type a message..."
+          rows="1"
+          maxlength="4000"
+          autofocus
+        ></textarea>
+        <button
+          id="sendButton"
+          class="send-button"
+          type="button"
+        >Send</button>
+      </div>
+    </main>
+
   </div>
 
   <script src="/static/app.js" defer></script>
