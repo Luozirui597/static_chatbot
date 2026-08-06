@@ -19,6 +19,7 @@ from backend.schemas import (
     ChatResponse,
     DeleteResponse,
     MessageResponse,
+    SendMessageResponse,
     SessionResponse,
 )
 
@@ -132,6 +133,42 @@ def get_messages(session_id: int, db: Session = Depends(get_db)):
         .order_by(Message.id.asc())
     )
     return db.execute(stmt).scalars().all()
+
+
+@app.post(
+    "/api/sessions/{session_id}/messages",
+    response_model=SendMessageResponse,
+    status_code=200,
+)
+async def send_message(
+    session_id: int,
+    request: ChatRequest,
+    db: Session = Depends(get_db),
+):
+    """Send a message within an existing chat session.
+
+    Returns both the saved user message and the assistant reply.
+    """
+    chat_session = db.get(ChatSession, session_id)
+    if chat_session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        user_msg, asst_msg = await chat_service.handle_session_message(
+            chat_session=chat_session,
+            content=request.message,
+            db=db,
+        )
+    except LLMError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+        ) from exc
+
+    return SendMessageResponse(
+        user_message=user_msg,
+        assistant_message=asst_msg,
+    )
 
 
 @app.delete(

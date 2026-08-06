@@ -66,6 +66,13 @@ class MessageResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SendMessageResponse(BaseModel):
+    """Response for POST /api/sessions/{session_id}/messages."""
+
+    user_message: MessageResponse
+    assistant_message: MessageResponse
+
+
 class DeleteResponse(BaseModel):
     """Confirmation that a resource was deleted."""
 
