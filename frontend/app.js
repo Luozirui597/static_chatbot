@@ -23,7 +23,9 @@
   let currentSessionId = null;  // int | null
   let isSending = false;        // prevent double-submit
   let isCreatingSession = false; // prevent double-create of New Chat
+  let isInitializing = true;    // block user actions during page init
   let sessionLoadRequestId = 0;  // race-condition guard for message loads
+  let sessionLastMessageId = {}; // sessionId -> int (last known message id)
 
   /* ---- Custom error ------------------------------------------------ */
 
@@ -113,10 +115,12 @@
 
   /* ---- Control state helpers --------------------------------------- */
 
-  /** Sync button disabled states from isSending + isCreatingSession. */
+  /** Sync button disabled states from isSending + isCreatingSession +
+   *  isInitializing. */
   function updateControlStates() {
-    const blockSend = isSending;
-    const blockCreate = isSending || isCreatingSession;
+    const blockAll = isInitializing;
+    const blockSend = blockAll || isSending;
+    const blockCreate = blockAll || isSending || isCreatingSession;
 
     sendBtn.disabled = blockSend;
     inputEl.disabled = blockSend;
@@ -124,6 +128,9 @@
 
     const deleteBtns = document.querySelectorAll(".delete-session-btn");
     deleteBtns.forEach(function (btn) { btn.disabled = blockSend; });
+
+    const selectBtns = document.querySelectorAll(".session-select-btn");
+    selectBtns.forEach(function (btn) { btn.disabled = blockAll; });
 
     if (!blockSend) {
       inputEl.focus();
@@ -199,6 +206,13 @@
       if (msg.role === "user" || msg.role === "assistant") {
         appendMessage(msg.role, msg.content);
       }
+    }
+    // Track the last known message id for this session so network-error
+    // recovery can use an ID boundary instead of text matching.
+    if (messages.length > 0) {
+      sessionLastMessageId[currentSessionId] = messages[messages.length - 1].id;
+    } else {
+      sessionLastMessageId[currentSessionId] = 0;
     }
   }
 
@@ -324,46 +338,50 @@
     for (const session of sessions) {
       const sid = session.id;
 
+      // Layout container — no interactive role
       const item = document.createElement("div");
       item.className = "session-item";
       if (sid === currentSessionId) {
         item.classList.add("active");
       }
 
-      // Label
-      const textDiv = document.createElement("div");
-      textDiv.className = "session-item-text";
+      // -- Select button (native <button> — keyboard/ARIA for free) -----
+      const selectBtn = document.createElement("button");
+      selectBtn.type = "button";
+      selectBtn.className = "session-select-btn";
+      if (sid === currentSessionId) {
+        selectBtn.classList.add("active");
+      }
 
-      const label = document.createElement("div");
+      const label = document.createElement("span");
       label.className = "session-item-label";
       label.textContent = "New Chat · #" + sid;
 
-      const time = document.createElement("div");
+      const time = document.createElement("span");
       time.className = "session-time";
       time.textContent = formatSessionTime(session.updated_at);
 
-      textDiv.appendChild(label);
-      textDiv.appendChild(time);
+      selectBtn.appendChild(label);
+      selectBtn.appendChild(time);
+      selectBtn.addEventListener("click", function () {
+        selectSession(sid);
+      });
 
-      // Delete button
+      // -- Delete button -------------------------------------------------
       const delBtn = document.createElement("button");
       delBtn.className = "delete-session-btn";
       delBtn.type = "button";
       delBtn.setAttribute("aria-label", "Delete session " + sid);
-      delBtn.textContent = "×";
-      if (isSending) {
+      delBtn.textContent = "×";  // ×
+      if (isSending || isInitializing) {
         delBtn.disabled = true;
       }
       delBtn.addEventListener("click", function (event) {
+        event.stopPropagation();
         handleDeleteSession(sid, event);
       });
 
-      // Click on item → select
-      item.addEventListener("click", function () {
-        selectSession(sid);
-      });
-
-      item.appendChild(textDiv);
+      item.appendChild(selectBtn);
       item.appendChild(delBtn);
       sessionListEl.appendChild(item);
     }
@@ -425,6 +443,7 @@
    */
   function removeSessionLocally(sessionId) {
     sessions = sessions.filter(function (s) { return s.id !== sessionId; });
+    delete sessionLastMessageId[sessionId];
 
     if (sessionId === currentSessionId) {
       sessionLoadRequestId++;
@@ -501,7 +520,7 @@
 
   /** Create a new session (called by "New Chat" button). */
   async function newChat() {
-    if (isCreatingSession || isSending) return;
+    if (isCreatingSession || isSending || isInitializing) return;
 
     isCreatingSession = true;
     updateControlStates();
@@ -513,6 +532,7 @@
 
       sessions.unshift(session);
       currentSessionId = session.id;
+      sessionLastMessageId[session.id] = 0;
       sessionLoadRequestId++;
       renderSessionList();
       updateSessionHeader();
@@ -534,7 +554,7 @@
   async function ensureSession() {
     if (currentSessionId !== null) return true;
 
-    if (isCreatingSession || isSending) return false;
+    if (isCreatingSession || isSending || isInitializing) return false;
 
     isCreatingSession = true;
     updateControlStates();
@@ -582,7 +602,7 @@
   /* ---- Send message ------------------------------------------------ */
 
   async function sendMessage(text) {
-    if (isSending) return;
+    if (isSending || isInitializing) return;
 
     // Auto-create session on first send
     if (currentSessionId === null) {
@@ -591,6 +611,7 @@
     }
 
     const sendingSessionId = currentSessionId;
+    const lastMessageIdBeforeSend = sessionLastMessageId[sendingSessionId] || 0;
 
     setSendingState(true);
     showStatus("Generating...", false);
@@ -608,10 +629,12 @@
         scrollMessagesToBottom();
       }
 
+      sessionLastMessageId[sendingSessionId] = data.assistant_message.id;
+
       // Refresh session list (sending session moves to top)
-      await refreshSessions({ preserveSelection: true });
+      await refreshSessions(true);
     } catch (err) {
-      handleSendFailure(err, sendingSessionId, text);
+      await handleSendFailure(err, sendingSessionId, text, lastMessageIdBeforeSend);
       return;
     } finally {
       setSendingState(false);
@@ -625,9 +648,20 @@
    *               Clear input, re-sync messages from DB.
    * 404 / 422  → user message was NOT saved.
    *               Keep input, show error.
-   * Network (0) → uncertain.  Re-fetch and compare.
+   * Network (0) → uncertain.  Re-fetch and use message-ID boundary
+   *               to determine whether the request reached the server.
+   *
+   * *lastMessageIdBeforeSend* is the highest known message id in the
+   * session right before the API call.  After a network error we only
+   * look at messages with id > that boundary — this handles the case
+   * where the user sends the same text twice consecutively.
    */
-  async function handleSendFailure(err, sendingSessionId, originalText) {
+  async function handleSendFailure(
+    err,
+    sendingSessionId,
+    originalText,
+    lastMessageIdBeforeSend,
+  ) {
     const errStatus = (err instanceof ApiError) ? err.status : 0;
     let isSaved = false;
 
@@ -635,23 +669,14 @@
     if (errStatus === 502 || errStatus === 504) {
       isSaved = true;
     } else if (errStatus === 0) {
-      // Network error — re-fetch and check
+      // Network error — re-fetch and check by ID boundary
       try {
         const msgs = await fetchMessages(sendingSessionId);
-        // Find last user message matching what we sent
-        let userIdx = -1;
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].role === "user" && msgs[i].content === originalText) {
-            userIdx = i;
-            break;
-          }
-        }
-        if (userIdx >= 0) {
-          // Check if an assistant reply exists after this user message
-          const hasAssistant = msgs.some(function (m, idx) {
-            return idx > userIdx && m.role === "assistant";
-          });
-          if (hasAssistant) {
+
+        var result = findSentMessages(msgs, lastMessageIdBeforeSend, originalText);
+
+        if (result.userIdx >= 0) {
+          if (result.hasAssistant) {
             // Request actually succeeded — full response was saved.
             // Render silently on the sending session.
             if (currentSessionId === sendingSessionId) {
@@ -661,11 +686,13 @@
             }
             inputEl.value = "";
             inputEl.style.height = "";
-            await refreshSessions({ preserveSelection: true });
+            sessionLastMessageId[sendingSessionId] = msgs[msgs.length - 1].id;
+            await refreshSessions(true);
             return;
           }
           // User message saved, no assistant
           isSaved = true;
+          sessionLastMessageId[sendingSessionId] = result.userMessageId;
         }
         // userIdx < 0 → isSaved stays false (uncertain)
       } catch (_) {
@@ -707,7 +734,7 @@
       } else {
         // 404, 422, or other non-saved errors
         if (errStatus === 404) {
-          await refreshSessions({ preserveSelection: true });
+          await refreshSessions(true);
         }
         showStatus(err.message || "Something went wrong.", true);
         // Keep input for retry
@@ -744,7 +771,7 @@
 
   // Send button
   sendBtn.addEventListener("click", function () {
-    if (isSending) return;
+    if (isSending || isInitializing) return;
     const text = inputEl.value.trim();
     if (!text) return;
     sendMessage(text);
@@ -758,10 +785,10 @@
     }
   });
 
-  // Auto-resize textarea
+  // Auto-resize textarea (clamped at CSS max-height)
   inputEl.addEventListener("input", function () {
     inputEl.style.height = "";
-    inputEl.style.height = inputEl.scrollHeight + "px";
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 150) + "px";
   });
 
   // New Chat button
@@ -784,41 +811,59 @@
     }
   });
 
-  /* ---- Init -------------------------------------------------------- */
-
-  async function init() {
-    // Mobile: start with sidebar collapsed
+  // Keep aria-expanded in sync when the window is resized
+  window.addEventListener("resize", function () {
     if (isMobile()) {
-      sidebarEl.classList.add("collapsed");
-      sidebarToggleEl.setAttribute("aria-expanded", "false");
+      var expanded = !sidebarEl.classList.contains("collapsed");
+      sidebarToggleEl.setAttribute("aria-expanded", String(expanded));
     } else {
       sidebarToggleEl.setAttribute("aria-expanded", "true");
     }
+  });
 
-    renderSessionList();
-    renderWelcome();
-    showStatus("Loading...", false);
+  /* ---- Init -------------------------------------------------------- */
+
+  async function init() {
+    isInitializing = true;
+    updateControlStates();
 
     try {
-      sessions = await fetchSessions();
-    } catch (err) {
-      showStatus(err.message, true);
+      // Mobile: start with sidebar collapsed
+      if (isMobile()) {
+        sidebarEl.classList.add("collapsed");
+        sidebarToggleEl.setAttribute("aria-expanded", "false");
+      } else {
+        sidebarToggleEl.setAttribute("aria-expanded", "true");
+      }
+
       renderSessionList();
-      return;
-    }
-
-    renderSessionList();
-
-    if (sessions.length > 0) {
-      currentSessionId = sessions[0].id;
-      updateSessionHeader();
-      await loadMessages(currentSessionId);
-    } else {
       renderWelcome();
-      clearStatus();
-    }
+      showStatus("Loading...", false);
 
-    inputEl.focus();
+      try {
+        sessions = await fetchSessions();
+      } catch (err) {
+        showStatus(err.message, true);
+        renderSessionList();
+        return;
+      }
+
+      renderSessionList();
+
+      if (sessions.length > 0) {
+        currentSessionId = sessions[0].id;
+        updateSessionHeader();
+        await loadMessages(currentSessionId);
+      } else {
+        renderWelcome();
+        clearStatus();
+      }
+
+      inputEl.focus();
+    } finally {
+      isInitializing = false;
+      updateControlStates();
+    }
   }
 
   init();

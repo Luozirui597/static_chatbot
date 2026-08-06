@@ -138,6 +138,24 @@ class TestHandleMessage:
         assert msgs[0] == {"role": "system", "content": SYSTEM_PROMPT}
         assert msgs[1] == {"role": "user", "content": "hello"}
 
+    @pytest.mark.anyio
+    async def test_empty_reply_raises(self):
+        """Empty LLM reply raises LLMInvalidResponseError."""
+        spy = SpyLLMClient(response="")
+        service = ChatService(spy)
+
+        with pytest.raises(LLMInvalidResponseError):
+            await service.handle_message("hello")
+
+    @pytest.mark.anyio
+    async def test_blank_reply_raises(self):
+        """Whitespace-only LLM reply raises LLMInvalidResponseError."""
+        spy = SpyLLMClient(response="   \n\t  ")
+        service = ChatService(spy)
+
+        with pytest.raises(LLMInvalidResponseError):
+            await service.handle_message("hello")
+
 
 # ============================================================================
 # Tests — handle_session_message (persistent)
@@ -154,7 +172,7 @@ class TestHandleSessionMessageBasic:
         service = ChatService(spy_llm)
 
         user_msg, asst_msg = await service.handle_session_message(
-            chat_session, "hello", db_session
+            chat_session.id, "hello", db_session
         )
 
         # Returned objects
@@ -184,7 +202,7 @@ class TestHandleSessionMessageBasic:
         service = ChatService(spy_llm)
 
         user_msg, asst_msg = await service.handle_session_message(
-            chat_session, "hi", db_session
+            chat_session.id, "hi", db_session
         )
 
         assert user_msg.role == "user"
@@ -196,7 +214,7 @@ class TestHandleSessionMessageBasic:
         chat_session = _create_session(db_session)
         service = ChatService(spy_llm)
 
-        await service.handle_session_message(chat_session, "hi", db_session)
+        await service.handle_session_message(chat_session.id, "hi", db_session)
 
         assert spy_llm.calls[0][0] == {
             "role": "system",
@@ -209,7 +227,7 @@ class TestHandleSessionMessageBasic:
         chat_session = _create_session(db_session)
         service = ChatService(spy_llm)
 
-        await service.handle_session_message(chat_session, "hi", db_session)
+        await service.handle_session_message(chat_session.id, "hi", db_session)
 
         system_rows = (
             db_session.execute(
@@ -226,7 +244,7 @@ class TestHandleSessionMessageBasic:
         chat_session = _create_session(db_session)
         service = ChatService(spy_llm)
 
-        await service.handle_session_message(chat_session, "hello", db_session)
+        await service.handle_session_message(chat_session.id, "hello", db_session)
 
         last = spy_llm.calls[0][-1]
         assert last == {"role": "user", "content": "hello"}
@@ -245,9 +263,9 @@ class TestMultiTurnHistory:
         service = ChatService(spy_llm)
 
         # Round 1
-        await service.handle_session_message(chat_session, "q1", db_session)
+        await service.handle_session_message(chat_session.id, "q1", db_session)
         # Round 2
-        await service.handle_session_message(chat_session, "q2", db_session)
+        await service.handle_session_message(chat_session.id, "q2", db_session)
 
         msgs = spy_llm.calls[1]
         roles = [m["role"] for m in msgs]
@@ -266,7 +284,7 @@ class TestMultiTurnHistory:
         )
         service = ChatService(spy_llm)
 
-        await service.handle_session_message(chat_session, "q4", db_session)
+        await service.handle_session_message(chat_session.id, "q4", db_session)
 
         # Non-system messages in order
         msgs = spy_llm.calls[0][1:]  # skip system
@@ -282,7 +300,7 @@ class TestMultiTurnHistory:
         _add_messages(db_session, chat_session.id, pairs)
         service = ChatService(spy_llm)
 
-        await service.handle_session_message(chat_session, "current", db_session)
+        await service.handle_session_message(chat_session.id, "current", db_session)
 
         non_system = spy_llm.calls[0][1:]  # skip system prompt
         # 20 history + 1 current user = 21 non-system messages
@@ -297,7 +315,7 @@ class TestMultiTurnHistory:
         _add_messages(db_session, chat_session.id, pairs)
         service = ChatService(spy_llm)
 
-        await service.handle_session_message(chat_session, "current", db_session)
+        await service.handle_session_message(chat_session.id, "current", db_session)
 
         non_system = spy_llm.calls[0][1:]
         # 20 history + 1 current = 21
@@ -314,7 +332,7 @@ class TestMultiTurnHistory:
         _add_messages(db_session, chat_session.id, pairs)
         service = ChatService(spy_llm)
 
-        await service.handle_session_message(chat_session, "current", db_session)
+        await service.handle_session_message(chat_session.id, "current", db_session)
 
         non_system = spy_llm.calls[0][1:]
         # First non-system message should be q15 (oldest 5 pairs = 10 msgs dropped)
@@ -329,7 +347,7 @@ class TestMultiTurnHistory:
         _add_messages(db_session, chat_session.id, pairs)
         service = ChatService(spy_llm)
 
-        await service.handle_session_message(chat_session, "current", db_session)
+        await service.handle_session_message(chat_session.id, "current", db_session)
 
         count = db_session.execute(
             select(func.count()).select_from(Message).where(
@@ -349,10 +367,10 @@ class TestMultiTurnHistory:
         # Add history in session A
         _add_messages(db_session, session_a.id, [("qa1", "aa1")])
         # One round in session A
-        await service.handle_session_message(session_a, "qa2", db_session)
+        await service.handle_session_message(session_a.id, "qa2", db_session)
 
         # First round in session B — should see NO history
-        await service.handle_session_message(session_b, "qb1", db_session)
+        await service.handle_session_message(session_b.id, "qb1", db_session)
 
         msgs = spy_llm.calls[1]  # session B's call
         roles = [m["role"] for m in msgs]
@@ -376,7 +394,7 @@ class TestLLMErrorHandling:
         service = ChatService(spy)
 
         with pytest.raises(LLMError):
-            await service.handle_session_message(chat_session, "hello", db_session)
+            await service.handle_session_message(chat_session.id, "hello", db_session)
 
         # Transaction must be closed after rollback — check BEFORE any new
         # query that would start a fresh transaction.
@@ -403,7 +421,7 @@ class TestLLMErrorHandling:
         service = ChatService(spy)
 
         with pytest.raises(LLMError):
-            await service.handle_session_message(chat_session, "hello", db_session)
+            await service.handle_session_message(chat_session.id, "hello", db_session)
 
         assistant_rows = (
             db_session.execute(
@@ -426,7 +444,7 @@ class TestLLMErrorHandling:
         service = ChatService(spy)
 
         with pytest.raises(LLMError):
-            await service.handle_session_message(chat_session, "hello", db_session)
+            await service.handle_session_message(chat_session.id, "hello", db_session)
 
         # Re-read from DB
         db_session.refresh(chat_session)
@@ -442,7 +460,7 @@ class TestLLMErrorHandling:
         service = ChatService(spy)
 
         with pytest.raises(LLMInvalidResponseError):
-            await service.handle_session_message(chat_session, "hello", db_session)
+            await service.handle_session_message(chat_session.id, "hello", db_session)
 
         assert db_session.in_transaction() is False
 
@@ -466,7 +484,7 @@ class TestLLMErrorHandling:
         service = ChatService(spy)
 
         with pytest.raises(LLMInvalidResponseError):
-            await service.handle_session_message(chat_session, "hello", db_session)
+            await service.handle_session_message(chat_session.id, "hello", db_session)
 
         assert db_session.in_transaction() is False
 
@@ -504,7 +522,7 @@ class TestTransactionFailure:
 
         with pytest.raises(RuntimeError, match="simulated DB failure"):
             await service.handle_session_message(
-                chat_session, "hello", db_session
+                chat_session.id, "hello", db_session
             )
 
         assert len(spy_llm.calls) == 0
@@ -531,7 +549,7 @@ class TestTransactionFailure:
 
         with pytest.raises(RuntimeError, match="simulated DB failure"):
             await service.handle_session_message(
-                chat_session, "hello", db_session
+                chat_session.id, "hello", db_session
             )
 
         assert db_session.in_transaction() is False

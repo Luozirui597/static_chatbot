@@ -6,7 +6,9 @@ from collections.abc import Generator
 from pathlib import Path
 
 from sqlalchemy import Engine, create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from backend import config
 
@@ -29,15 +31,41 @@ def _build_default_url() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _is_memory_database(database_url: str) -> bool:
+    """Return ``True`` when *database_url* targets an in-memory SQLite db.
+
+    Uses SQLAlchemy's URL parser so all recognised ``:memory:`` variants
+    are detected: ``sqlite:///:memory:``, ``sqlite://``,
+    ``sqlite+pysqlite:///:memory:``, etc.
+    """
+    parsed = make_url(database_url)
+    return parsed.get_backend_name() == "sqlite" and (
+        parsed.database == ":memory:" or parsed.database is None
+    )
+
+
 def create_database_engine(database_url: str) -> Engine:
     """Create a SQLAlchemy engine with SQLite foreign keys enabled.
 
     Every caller — production or test — must use this factory so the
     ``PRAGMA foreign_keys = ON`` listener is registered in one place.
+
+    In-memory databases use ``StaticPool`` so every connection sees the
+    same shared data.  ``check_same_thread=False`` is kept for **all**
+    SQLite URLs because FastAPI's sync routes and lifespan handlers may
+    run on different threads — without it, the same connection fails
+    with ``sqlite3.ProgrammingError``.
     """
+    connect_args: dict = {"check_same_thread": False}
+    kwargs: dict = {}
+
+    if _is_memory_database(database_url):
+        kwargs["poolclass"] = StaticPool
+
     engine = create_engine(
         database_url,
-        connect_args={"check_same_thread": False},
+        connect_args=connect_args,
+        **kwargs,
     )
 
     @event.listens_for(engine, "connect")

@@ -17,8 +17,9 @@ OpenAI-compatible chat-completions API.
 - Responsive layout with a collapsible sidebar on mobile
 - Loading, empty, and error states in the UI
 - Input validation (blank and over-length messages are rejected)
-- 105 automated tests covering APIs, models, business logic,
-  LLM client behaviour, session isolation, and error handling
+- 123 automated Python tests covering APIs, models, business logic,
+  LLM client behaviour, session isolation, concurrency, and error handling
+- 5 frontend unit tests for network-error recovery logic (Node `node:test`)
 
 ## Project structure
 
@@ -37,6 +38,7 @@ backend/
 frontend/
   index.html           Multi-session chat page
   style.css            Responsive styles
+  network-recovery.js  Pure helper for send-failure recovery
   app.js               Frontend logic (vanilla JS)
 tests/
   conftest.py          Forces LLM_MODE=fake for all tests
@@ -47,7 +49,8 @@ tests/
   test_models.py       ORM model constraints and relationships
   test_chat_service.py ChatService business logic & transactions
   test_sessions.py     Session CRUD API
-  test_session_chat.py Session message send API
+  test_session_chat.py Session message send API, concurrency, lock safety
+  test_network_recovery.test.js  Frontend send-failure recovery tests
 .env.example           Documented environment variables
 requirements.txt       Python dependencies
 ```
@@ -280,10 +283,14 @@ by the current UI.
 ## Testing
 
 ```bash
+# Python tests
 .venv/bin/python -m pytest -q
+
+# Frontend tests (requires Node.js)
+node --test tests/test_network_recovery.test.js
 ```
 
-Current suite: **105 tests** (all passing).
+Current suite: **123 Python tests**, **5 frontend tests** (all passing).
 
 - `conftest.py` forces `LLM_MODE=fake` and `DATABASE_URL=sqlite:///:memory:`
   before any test module is imported — no test ever touches a real
@@ -292,10 +299,16 @@ Current suite: **105 tests** (all passing).
   per test run.
 - The spy / mock LLM client records every `generate()` call and
   supports both configurable responses and injected errors.
+- Concurrency tests use ``asyncio.Event``-controlled spies to assert
+  structural invariants (``max_active``) instead of wall-clock
+  thresholds.  Coverage includes lock-cancellation safety and
+  delete-during-generation races.
+- Frontend tests exercise the network-error recovery logic
+  (`findSentMessages`) with ``node:test`` — no build system required.
 - Coverage spans health checks, legacy chat, LLM client behaviour,
   client factory routing, ORM model constraints, chat service
   business logic and transactions, session CRUD, session message
-  send, and session isolation.
+  send, session isolation, concurrency, and lock safety.
 
 ## Security and privacy
 
@@ -329,6 +342,34 @@ appropriate security controls.
 - Only tested with a single OpenAI-compatible provider (DeepSeek);
   other providers may require adjustments.
 - Not hardened for production deployment.
+
+### Per-session lock scope
+
+The per-session ``asyncio.Lock`` guarantees only **single-process**
+serialisation — at most one request executes per session at a time
+within a single uvicorn worker.  Multi-worker or multi-instance
+deployments require additional coordination such as a database-level
+lock (e.g. ``SELECT … FOR UPDATE``), an external queue, or a
+distributed lock manager.
+
+### Known lint / type-check items
+
+The codebase has **23 ruff items** and **3 mypy items** that are
+intentional or pre-existing:
+
+- Ruff ``B008``: ``Depends(get_db)`` in FastAPI route signatures is
+  the standard dependency-injection pattern — these are not defects.
+- Ruff ``DTZ001``: naive ``datetime`` objects used for SQLite
+  compatibility (SQLite stores datetimes as strings without timezone).
+- Ruff ``UP035`` / ``UP006`` / ``UP037``: legacy typing imports
+  retained for clarity alongside SQLAlchemy ``Mapped[]`` types.
+- Ruff ``I001``: import-block ordering (cosmetic).
+- Ruff ``RUF100``: unused ``noqa`` for a non-enabled rule (cosmetic).
+- Mypy 3 items: ``.reverse()`` on ``Sequence`` return type, and
+  ORM-model / Pydantic-schema type mismatches in route handlers.
+  Both are benign at runtime.
+
+These are tracked but not treated as release blockers.
 
 ## Future work
 

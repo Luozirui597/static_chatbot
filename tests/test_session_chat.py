@@ -4,16 +4,24 @@ Every test uses a temporary SQLite file and SpyLLMClient — no real
 network requests are ever made.
 """
 
+import asyncio
 import copy
+import time
 from datetime import datetime
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from backend.chat_service import ChatService
-from backend.database import create_database_engine, create_tables, get_db
+from backend.chat_service import ChatService, SessionLockRegistry
+from backend.database import (
+    _is_memory_database,
+    create_database_engine,
+    create_tables,
+    get_db,
+)
 from backend.exceptions import LLMError
 from backend.llm_client import LLMMessage
 from backend.main import app
@@ -50,6 +58,55 @@ class SpyLLMClient:
         if self.error is not None:
             raise self.error
         return self.response
+
+
+# ---------------------------------------------------------------------------
+# Controlled Spy (Event-based concurrency tests)
+# ---------------------------------------------------------------------------
+
+
+class ControlledSpy:
+    """Spy that blocks inside ``generate()`` until :meth:`unblock` is called.
+
+    Tracks ``active`` (currently in generate), ``max_active`` (peak
+    concurrency), and ``entered_count`` (total entries) so tests can
+    use structural assertions instead of wall-clock thresholds.
+    """
+
+    def __init__(self, response: str = "reply") -> None:
+        self._block = asyncio.Event()
+        self.active = 0
+        self.max_active = 0
+        self.entered_count = 0
+        self.calls: list[list[LLMMessage]] = []
+        self.response = response
+
+    async def generate(self, messages: list[LLMMessage]) -> str:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.entered_count += 1
+        self.calls.append(copy.deepcopy(messages))
+        await self._block.wait()
+        self.active -= 1
+        return self.response
+
+    def unblock(self) -> None:
+        """Release all currently blocked ``generate()`` calls."""
+        self._block.set()
+
+    def reset_block(self) -> None:
+        """Reset the block for the next round."""
+        self._block.clear()
+
+    async def wait_entered(self, target: int, timeout: float = 5.0) -> None:
+        """Spin until at least *target* calls have entered ``generate()``."""
+        deadline = time.monotonic() + timeout
+        while self.entered_count < target:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Expected {target} entered, got {self.entered_count}"
+                )
+            await asyncio.sleep(0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -105,11 +162,12 @@ def client(test_engine, test_session_factory, spy_llm):
     original_chat_service = main_module.chat_service
     main_module.chat_service = ChatService(spy_llm)
 
-    with TestClient(app) as c:
-        yield c
-
-    app.dependency_overrides.pop(get_db, None)
-    main_module.chat_service = original_chat_service
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        main_module.chat_service = original_chat_service
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +331,9 @@ class TestSendMessageSuccess:
         last = spy_llm.calls[0][-1]
         assert last == {"role": "user", "content": "hello"}
 
-    def test_system_prompt_not_in_database(self, client, spy_llm, test_session_factory):
+    def test_system_prompt_not_in_database(
+        self, client, spy_llm, test_session_factory
+    ):
         """No Message row has role='system'."""
         session_id = _create_session(client)
 
@@ -572,11 +632,11 @@ class TestSessionIsolation:
         db.close()
 
         assert len(msgs_a) == 2
-        user_a = [m for m in msgs_a if m.role == "user"][0]
+        user_a = next(m for m in msgs_a if m.role == "user")
         assert user_a.content == "msg A"
 
         assert len(msgs_b) == 2
-        user_b = [m for m in msgs_b if m.role == "user"][0]
+        user_b = next(m for m in msgs_b if m.role == "user")
         assert user_b.content == "msg B"
 
     def test_sessions_isolated_in_llm_context(self, client, spy_llm):
@@ -609,3 +669,541 @@ class TestRegression:
         resp = client.post("/api/chat", json={"message": "hello"})
         assert resp.status_code == 200
         assert resp.json() == {"reply": "test reply"}
+
+
+# ============================================================================
+# Concurrency — Event-based (no time thresholds)
+# ============================================================================
+
+
+class TestConcurrency:
+    """Concurrent sends to the same session are serialised; different
+    sessions remain parallel.  Uses ControlledSpy with explicit Events
+    so assertions are structural, not time-based."""
+
+    @pytest.mark.anyio
+    async def test_same_session_max_active_is_one(
+        self, test_engine, test_session_factory,
+    ):
+        """Three concurrent sends to the same session → max_active == 1.
+
+        The per-session lock serialises access so at most one task is
+        inside ``generate()`` at any moment.  The ControlledSpy blocks
+        all calls, so the first task enters and blocks while the other
+        two queue up on the lock.  When we release, they execute
+        one-by-one under the lock — *max_active* never exceeds 1.
+        """
+        import backend.main as main_module
+
+        spy = ControlledSpy()
+        chat_svc = ChatService(spy)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = chat_svc
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as ac:
+                create_resp = await ac.post("/api/sessions")
+                assert create_resp.status_code == 201
+                sid = create_resp.json()["id"]
+
+                async def send(text: str):
+                    resp = await ac.post(
+                        f"/api/sessions/{sid}/messages",
+                        json={"message": text},
+                    )
+                    return resp
+
+                # Launch all three concurrently
+                task1 = asyncio.create_task(send("msg-1"))
+                task2 = asyncio.create_task(send("msg-2"))
+                task3 = asyncio.create_task(send("msg-3"))
+
+                # The first task enters generate and blocks; the other
+                # two queue on the per-session lock (not yet in generate).
+                await spy.wait_entered(1)
+                # Give tasks 2 & 3 time to reach the lock
+                await asyncio.sleep(0.1)
+                assert spy.max_active == 1
+                assert spy.entered_count == 1
+
+                # Release all — they serialize under the session lock
+                spy.unblock()
+                results = await asyncio.gather(task1, task2, task3)
+
+                for r in results:
+                    assert r.status_code == 200, r.text
+
+                # max_active never exceeded 1 (session lock serialises)
+                assert spy.max_active == 1
+                assert spy.entered_count == 3
+
+                # Third call must see history from the first two
+                last_call = spy.calls[2]
+                contents = [m["content"] for m in last_call]
+                assert "msg-1" in contents
+                assert "msg-2" in contents
+
+                # Registry must be clean
+                assert len(chat_svc._lock_registry._entries) == 0
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+    @pytest.mark.anyio
+    async def test_different_sessions_max_active_is_two(
+        self, test_engine, test_session_factory,
+    ):
+        """Two sends to different sessions → max_active == 2."""
+        import backend.main as main_module
+
+        spy = ControlledSpy()
+        chat_svc = ChatService(spy)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = chat_svc
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as ac:
+                r1 = await ac.post("/api/sessions")
+                r2 = await ac.post("/api/sessions")
+                sid_a = r1.json()["id"]
+                sid_b = r2.json()["id"]
+
+                async def send(sid: int, text: str):
+                    resp = await ac.post(
+                        f"/api/sessions/{sid}/messages",
+                        json={"message": text},
+                    )
+                    return resp
+
+                # Launch both concurrently — different session locks
+                task_a = asyncio.create_task(send(sid_a, "msg-a"))
+                task_b = asyncio.create_task(send(sid_b, "msg-b"))
+
+                # Both should enter generate in parallel
+                await spy.wait_entered(2)
+                assert spy.max_active == 2
+                assert spy.entered_count == 2
+
+                # Release both
+                spy.unblock()
+                results = await asyncio.gather(task_a, task_b)
+
+                for r in results:
+                    assert r.status_code == 200, r.text
+
+                assert len(chat_svc._lock_registry._entries) == 0
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+
+# ============================================================================
+# Lock cancellation safety
+# ============================================================================
+
+
+class TestLockCancellation:
+    """Cancelling a task while it waits for a session lock must not
+    leak reference counts."""
+
+    @pytest.mark.anyio
+    async def test_waiting_task_cancelled_ref_count_returns_to_zero(
+        self, test_engine, test_session_factory,
+    ):
+        """Cancel a waiter — registry must be clean afterwards."""
+        import backend.main as main_module
+
+        spy = ControlledSpy()
+        chat_svc = ChatService(spy)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = chat_svc
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as ac:
+                create_resp = await ac.post("/api/sessions")
+                assert create_resp.status_code == 201
+                sid = create_resp.json()["id"]
+
+                async def send(text: str):
+                    resp = await ac.post(
+                        f"/api/sessions/{sid}/messages",
+                        json={"message": text},
+                    )
+                    return resp
+
+                # Task 1 — enters generate, blocks
+                task1 = asyncio.create_task(send("msg-1"))
+                await spy.wait_entered(1)
+
+                # Task 2 — waits for the per-session lock
+                task2 = asyncio.create_task(send("msg-2"))
+                await asyncio.sleep(0.1)  # let it hit lock.acquire()
+
+                # Cancel task 2 while it's waiting
+                task2.cancel()
+                try:
+                    await task2
+                except asyncio.CancelledError:
+                    pass
+
+                # Release task 1
+                spy.unblock()
+                await task1
+
+                # Registry must be clean — no leaked entry
+                assert len(chat_svc._lock_registry._entries) == 0
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+
+# ============================================================================
+# Delete during generation (no race)
+# ============================================================================
+
+
+class TestDeleteDuringGeneration:
+    """DELETE /api/sessions/{id} uses the same per-session lock, so a
+    delete cannot race with an in-progress generation."""
+
+    @pytest.mark.anyio
+    async def test_delete_waits_for_generation_then_deletes(
+        self, test_engine, test_session_factory,
+    ):
+        """Send holds lock first → delete waits → both succeed in order."""
+        import backend.main as main_module
+
+        spy = ControlledSpy()
+        chat_svc = ChatService(spy)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = chat_svc
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as ac:
+                create_resp = await ac.post("/api/sessions")
+                assert create_resp.status_code == 201
+                sid = create_resp.json()["id"]
+
+                async def send(text: str):
+                    return await ac.post(
+                        f"/api/sessions/{sid}/messages",
+                        json={"message": text},
+                    )
+
+                async def delete():
+                    return await ac.delete(f"/api/sessions/{sid}")
+
+                # Start send — enters generate, blocks
+                task_send = asyncio.create_task(send("hello"))
+                await spy.wait_entered(1)
+
+                # Start delete — blocked by per-session lock
+                task_del = asyncio.create_task(delete())
+
+                # Release the send
+                spy.unblock()
+                send_resp = await task_send
+                assert send_resp.status_code == 200
+
+                # Delete should now complete
+                del_resp = await task_del
+                assert del_resp.status_code == 200
+                assert del_resp.json() == {"ok": True}
+
+                # Session is gone
+                get_resp = await ac.get(f"/api/sessions/{sid}")
+                assert get_resp.status_code == 404
+
+                # No orphan messages — query the DB directly
+                db = test_session_factory()
+                orphan_msgs = db.execute(
+                    select(Message).where(Message.session_id == sid)
+                ).scalars().all()
+                db.close()
+                assert len(orphan_msgs) == 0
+
+                assert len(chat_svc._lock_registry._entries) == 0
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+    @pytest.mark.anyio
+    async def test_delete_holds_lock_first_send_gets_404(
+        self, test_engine, test_session_factory,
+    ):
+        """Delete holds lock first → send sees 404."""
+        import backend.main as main_module
+
+        spy = ControlledSpy()
+        chat_svc = ChatService(spy)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = chat_svc
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as ac:
+                create_resp = await ac.post("/api/sessions")
+                assert create_resp.status_code == 201
+                sid = create_resp.json()["id"]
+
+                async def send(text: str):
+                    return await ac.post(
+                        f"/api/sessions/{sid}/messages",
+                        json={"message": text},
+                    )
+
+                async def delete():
+                    return await ac.delete(f"/api/sessions/{sid}")
+
+                # Start delete first — uses the lock
+                task_del = asyncio.create_task(delete())
+                # The delete operation acquires the lock, checks session
+                # exists, deletes it, and commits.  Since delete is fast
+                # (no LLM call), it completes before we even start send.
+                del_resp = await task_del
+                assert del_resp.status_code == 200
+                assert del_resp.json() == {"ok": True}
+
+                # Send should get 404
+                send_resp = await send("hello")
+                assert send_resp.status_code == 404
+
+                assert len(chat_svc._lock_registry._entries) == 0
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+
+# ============================================================================
+# In-memory SQLite
+# ============================================================================
+
+
+class TestInMemorySQLite:
+    """Verify that :memory: databases work correctly."""
+
+    def test_is_memory_detects_sqlite_memory(self):
+        """_is_memory_database returns True for sqlite:///:memory:."""
+        assert _is_memory_database("sqlite:///:memory:") is True
+
+    def test_is_memory_detects_sqlite_empty(self):
+        """_is_memory_database returns True for sqlite:// (no path)."""
+        assert _is_memory_database("sqlite://") is True
+
+    def test_is_memory_detects_pysqlite_memory(self):
+        """_is_memory_database returns True for sqlite+pysqlite:///:memory:."""
+        assert _is_memory_database("sqlite+pysqlite:///:memory:") is True
+
+    def test_is_memory_rejects_file(self):
+        """_is_memory_database returns False for file URLs."""
+        assert _is_memory_database("sqlite:///foo.db") is False
+
+    def test_memory_engine_uses_static_pool(self):
+        """create_database_engine with :memory: uses StaticPool."""
+        from sqlalchemy.pool import StaticPool
+
+        eng = create_database_engine("sqlite:///:memory:")
+        pool = eng.pool
+        assert isinstance(pool, StaticPool)
+        eng.dispose()
+
+    def test_file_engine_does_not_use_static_pool(self):
+        """create_database_engine with a file URL uses default pool."""
+        from sqlalchemy.pool import StaticPool
+
+        eng = create_database_engine("sqlite:///test_file.db")
+        assert not isinstance(eng.pool, StaticPool)
+        eng.dispose()
+
+    def test_memory_sqlite_real_app_post_sessions(self):
+        """Real FastAPI app with in-memory SQLite can POST /api/sessions.
+
+        This test uses the actual ``app`` and the real ``get_db``
+        dependency (via dependency_overrides pointing to an in-memory
+        engine), not a mock.  It proves that ``StaticPool`` +
+        ``check_same_thread=False`` works across threads.
+        """
+        import backend.main as main_module
+
+        # Build an in-memory engine
+        mem_engine = create_database_engine("sqlite:///:memory:")
+        create_tables(bind=mem_engine)
+        MemSessionLocal = sessionmaker(
+            bind=mem_engine, autoflush=False, expire_on_commit=False
+        )
+
+        def override_get_db():
+            db = MemSessionLocal()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = ChatService(SpyLLMClient(response="test reply"))
+
+        try:
+            with TestClient(app) as client:
+                # POST /api/sessions
+                resp = client.post("/api/sessions")
+                assert resp.status_code == 201
+                data = resp.json()
+                assert "id" in data
+                sid = data["id"]
+
+                # POST /api/sessions/{id}/messages
+                resp2 = client.post(
+                    f"/api/sessions/{sid}/messages",
+                    json={"message": "hello memory"},
+                )
+                assert resp2.status_code == 200
+                body = resp2.json()
+                assert body["user_message"]["content"] == "hello memory"
+                assert body["assistant_message"]["content"] == "test reply"
+
+                # GET /api/sessions
+                resp3 = client.get("/api/sessions")
+                assert resp3.status_code == 200
+                sessions_list = resp3.json()
+                assert len(sessions_list) == 1
+                assert sessions_list[0]["id"] == sid
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+            mem_engine.dispose()
+
+
+# ============================================================================
+# Lock registry unit tests
+# ============================================================================
+
+
+class TestSessionLockRegistry:
+    """Direct unit tests for SessionLockRegistry."""
+
+    @pytest.mark.anyio
+    async def test_entry_cleaned_up_after_use(self):
+        """Registry has no entries after a normal acquire/release cycle."""
+        registry = SessionLockRegistry()
+
+        async with registry.session_lock(1):
+            assert len(registry._entries) == 1
+            assert registry._entries[1].ref_count == 1
+
+        assert len(registry._entries) == 0
+
+    @pytest.mark.anyio
+    async def test_ref_count_with_multiple_waiters(self):
+        """Three waiters → ref_count peaks at 3, then 0 after all done."""
+        registry = SessionLockRegistry()
+
+        async def worker():
+            async with registry.session_lock(1):
+                pass
+
+        # First worker grabs the lock
+        async with registry.session_lock(1):
+            assert registry._entries[1].ref_count == 1
+
+            # Two more workers queue up
+            task2 = asyncio.create_task(worker())
+            task3 = asyncio.create_task(worker())
+            await asyncio.sleep(0.1)
+
+            # Both are waiting — ref_count should be 3
+            assert registry._entries[1].ref_count == 3
+
+        # Lock released — waiters proceed
+        await asyncio.gather(task2, task3)
+        assert len(registry._entries) == 0
+
+    @pytest.mark.anyio
+    async def test_cancelled_waiter_decrements_ref_count(self):
+        """Cancelling a waiter still decrements ref_count."""
+        registry = SessionLockRegistry()
+
+        async def worker():
+            async with registry.session_lock(1):
+                pass
+
+        # Hold the lock
+        async with registry.session_lock(1):
+            assert registry._entries[1].ref_count == 1
+
+            # Start a waiter
+            task = asyncio.create_task(worker())
+            await asyncio.sleep(0.1)
+            assert registry._entries[1].ref_count == 2
+
+            # Cancel the waiter
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+            # ref_count should be back to 1 (just us)
+            assert registry._entries[1].ref_count == 1
+
+        # After we release, everything is clean
+        assert len(registry._entries) == 0

@@ -121,3 +121,26 @@ def test_chat_llm_error_504(monkeypatch):
     response = client.post("/api/chat", json={"message": "hi"})
     assert response.status_code == 504
     assert response.json() == {"detail": "Upstream API timed out"}
+
+
+def test_chat_blank_reply_502(monkeypatch):
+    """Blank LLM reply via legacy endpoint → HTTP 502."""
+    from backend.exceptions import LLMInvalidResponseError
+
+    import backend.main as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "chat_service",
+        _FakeRaisingService(
+            LLMInvalidResponseError(
+                "LLM returned an empty or blank response",
+                status_code=502,
+            )
+        ),
+    )
+
+    client = TestClient(main_module.app)
+    response = client.post("/api/chat", json={"message": "hi"})
+    assert response.status_code == 502
+    assert "detail" in response.json()

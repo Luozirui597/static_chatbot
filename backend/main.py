@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.chat_service import ChatService
+from backend.chat_service import ChatService, SessionNotFoundError
 from backend.database import create_tables, get_db
 from backend.exceptions import LLMError
 from backend.llm_client import create_llm_client
@@ -149,16 +149,16 @@ async def send_message(
 
     Returns both the saved user message and the assistant reply.
     """
-    chat_session = db.get(ChatSession, session_id)
-    if chat_session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-
     try:
         user_msg, asst_msg = await chat_service.handle_session_message(
-            chat_session=chat_session,
+            session_id=session_id,
             content=request.message,
             db=db,
         )
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=404, detail="Session not found"
+        ) from None
     except LLMError as exc:
         raise HTTPException(
             status_code=exc.status_code,
@@ -175,13 +175,18 @@ async def send_message(
     "/api/sessions/{session_id}",
     response_model=DeleteResponse,
 )
-def delete_session(session_id: int, db: Session = Depends(get_db)):
-    """Delete a session and all of its messages."""
-    session = db.get(ChatSession, session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    db.delete(session)
-    db.commit()
+async def delete_session(session_id: int, db: Session = Depends(get_db)):
+    """Delete a session and all of its messages.
+
+    Uses the same per-session lock as ``send_message`` so a delete
+    cannot race with an in-progress generation.
+    """
+    try:
+        await chat_service.delete_session(session_id, db)
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=404, detail="Session not found"
+        ) from None
     return DeleteResponse(ok=True)
 
 

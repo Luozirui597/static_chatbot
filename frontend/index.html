@@ -39,13 +39,23 @@
         <!-- Current session title rendered by app.js -->
       </div>
 
-      <div class="chat-messages" id="messages">
+      <div
+        class="chat-messages"
+        id="messages"
+        role="log"
+        aria-label="Chat messages"
+      >
         <!-- Messages or welcome / empty state -->
       </div>
 
-      <div class="chat-status" id="status"></div>
+      <div
+        class="chat-status"
+        id="status"
+        aria-live="polite"
+      ></div>
 
       <div class="chat-input-area">
+        <label for="messageInput" class="sr-only">Message</label>
         <textarea
           id="messageInput"
           class="chat-input"
@@ -64,6 +74,7 @@
 
   </div>
 
+  <script src="/static/network-recovery.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>
