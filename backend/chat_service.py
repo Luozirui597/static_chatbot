@@ -6,12 +6,13 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.exceptions import LLMInvalidResponseError
 from backend.llm_client import LLMClient, LLMMessage
 from backend.models import ChatSession, Message, utc_now
+from backend.session_titles import derive_auto_title
 from backend.system_prompt import SYSTEM_PROMPT
 
 # ---------------------------------------------------------------------------
@@ -200,7 +201,17 @@ class ChatService:
             if chat_session is None:
                 raise SessionNotFoundError(session_id)
 
-            # -- Phase 1: save user message --------------------------------
+            # -- Determine whether this is the first user message --------
+            existing_user_msg_count = db.execute(
+                select(func.count()).select_from(Message).where(
+                    Message.session_id == chat_session.id,
+                    Message.role == "user",
+                )
+            ).scalar()
+            is_first_user_message = (existing_user_msg_count == 0)
+
+            # -- Phase 1: save user message + optional auto-title --------
+            # Both are committed in a single transaction.
             user_message = Message(
                 session_id=chat_session.id,
                 role="user",
@@ -208,6 +219,9 @@ class ChatService:
             )
             db.add(user_message)
             chat_session.updated_at = utc_now()
+
+            if is_first_user_message and not chat_session.title_is_manual:
+                chat_session.title = derive_auto_title(content, max_chars=40)
 
             try:
                 db.commit()
@@ -300,3 +314,46 @@ class ChatService:
                 raise SessionNotFoundError(session_id)
             db.delete(chat_session)
             db.commit()
+
+    async def rename_session(
+        self, session_id: int, title: str, db: Session,
+    ) -> ChatSession:
+        """Rename a chat session.
+
+        Acquires the same per-session lock as
+        :meth:`handle_session_message` and :meth:`delete_session`, so a
+        rename cannot race with a send or delete.
+
+        The caller is responsible for normalising and validating
+        *title* before calling this method.  The stored title is used
+        as-is — no further transformation is applied.
+
+        Parameters
+        ----------
+        session_id:
+            The id of the target chat session.
+        title:
+            The new title (already normalised by the Pydantic schema).
+        db:
+            An active SQLAlchemy ``Session``.
+
+        Returns
+        -------
+        ChatSession
+            The updated session (``db.refresh()`` has been called).
+
+        Raises
+        ------
+        SessionNotFoundError
+            When *session_id* does not exist in the database.
+        """
+        async with self._lock_registry.session_lock(session_id):
+            chat_session = db.get(ChatSession, session_id)
+            if chat_session is None:
+                raise SessionNotFoundError(session_id)
+            chat_session.title = title
+            chat_session.title_is_manual = True
+            chat_session.updated_at = utc_now()
+            db.commit()
+            db.refresh(chat_session)
+            return chat_session

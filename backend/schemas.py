@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.session_titles import normalize_title_whitespace
+
 MAX_MESSAGE_LENGTH = 4000
 
 
@@ -71,6 +73,33 @@ class SendMessageResponse(BaseModel):
 
     user_message: MessageResponse
     assistant_message: MessageResponse
+
+
+class RenameSessionRequest(BaseModel):
+    """Request body for PATCH /api/sessions/{session_id}.
+
+    Whitespace is collapsed before validation: newlines, tabs, and
+    consecutive spaces become a single space, then leading / trailing
+    whitespace is stripped.  The normalised result must be non-empty
+    and at most 255 characters (the database column limit).
+
+    Manual titles are **not** truncated — exceeding 255 characters
+    after normalisation is a validation error (422).
+    """
+
+    title: str = Field(description="New session title")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _normalize_and_validate(cls, v: object) -> str:
+        if not isinstance(v, str):
+            raise ValueError("title must be a string")  # noqa: TRY004
+        normalised = normalize_title_whitespace(v)
+        if not normalised:
+            raise ValueError("title must not be blank")
+        if len(normalised) > 255:
+            raise ValueError("title must not exceed 255 characters")
+        return normalised
 
 
 class DeleteResponse(BaseModel):

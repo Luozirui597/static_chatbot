@@ -78,6 +78,64 @@ def create_database_engine(database_url: str) -> Engine:
 
 
 # ---------------------------------------------------------------------------
+# Schema migration
+# ---------------------------------------------------------------------------
+
+
+def run_migrations(bind: Engine) -> None:
+    """Apply pending schema migrations idempotently.
+
+    Uses SQLAlchemy's connection/transaction machinery — no raw
+    ``sqlite3`` calls.  Each migration runs inside a single
+    transaction; failure rolls back and the application fails to
+    start (no silent continuation).
+    """
+    from sqlalchemy import text as sa_text
+
+    with bind.begin() as conn:
+        # ── Migration: title_is_manual_v1 ──────────────────────────
+        row = conn.execute(
+            sa_text(
+                "SELECT version FROM schema_migrations "
+                "WHERE version = 'title_is_manual_v1'"
+            )
+        ).fetchone()
+
+        if row is None:
+            # Migration not yet recorded — apply it.
+            cols = [
+                r[1]
+                for r in conn.execute(
+                    sa_text("PRAGMA table_info('chat_sessions')")
+                ).fetchall()
+            ]
+            if "title_is_manual" not in cols:
+                conn.execute(
+                    sa_text(
+                        "ALTER TABLE chat_sessions "
+                        "ADD COLUMN title_is_manual INTEGER NOT NULL DEFAULT 0"
+                    )
+                )
+
+            # Idempotent backfill — safe to re-run.
+            conn.execute(
+                sa_text(
+                    "UPDATE chat_sessions "
+                    "SET title_is_manual = 1 "
+                    "WHERE title != 'New Chat' AND title_is_manual = 0"
+                )
+            )
+
+            # Record completion.
+            conn.execute(
+                sa_text(
+                    "INSERT INTO schema_migrations (version) "
+                    "VALUES ('title_is_manual_v1')"
+                )
+            )
+
+
+# ---------------------------------------------------------------------------
 # Module-level singletons
 # ---------------------------------------------------------------------------
 

@@ -13,12 +13,14 @@ OpenAI-compatible chat-completions API.
   (OpenAI-compatible `/chat/completions` API)
 - SQLite persistence — sessions and messages survive restarts
 - Multi-turn conversations with a configurable history window
-- Multiple isolated sessions — create, switch, and delete
+- Multiple isolated sessions — create, switch, rename, and delete
+- Auto-generated session titles from the first user message
 - Responsive layout with a collapsible sidebar on mobile
 - Loading, empty, and error states in the UI
 - Input validation (blank and over-length messages are rejected)
-- 123 automated Python tests covering APIs, models, business logic,
-  LLM client behaviour, session isolation, concurrency, and error handling
+- 182 automated Python tests covering APIs, models, business logic,
+  LLM client behaviour, session isolation, concurrency, auto-title
+  generation, session rename, schema migration, and error handling
 - 5 frontend unit tests for network-error recovery logic (Node `node:test`)
 
 ## Project structure
@@ -176,6 +178,7 @@ Interactive API documentation (Swagger UI) is available at:
 | `GET` | `/api/sessions/{id}` | Get a single session |
 | `GET` | `/api/sessions/{id}/messages` | Get messages for a session |
 | `POST` | `/api/sessions/{id}/messages` | Send a message within a session |
+| `PATCH` | `/api/sessions/{id}` | Rename a session |
 | `DELETE` | `/api/sessions/{id}` | Delete a session and its messages |
 
 The web interface is served at:
@@ -290,7 +293,7 @@ by the current UI.
 node --test tests/test_network_recovery.test.js
 ```
 
-Current suite: **123 Python tests**, **5 frontend tests** (all passing).
+Current suite: **182 Python tests**, **5 frontend tests** (all passing).
 
 - `conftest.py` forces `LLM_MODE=fake` and `DATABASE_URL=sqlite:///:memory:`
   before any test module is imported — no test ever touches a real
@@ -331,7 +334,8 @@ appropriate security controls.
 ## Current limitations
 
 - No authentication or multi-user support.
-- Session titles are fixed at `"New Chat"` — no renaming.
+- Session titles are auto-generated from the first user message and
+  can be manually renamed via the API and UI.
 - Messages cannot be edited or deleted individually.
 - No streaming (server-sent events) responses.
 - No Markdown or rich-text rendering in message bubbles.
@@ -354,8 +358,9 @@ distributed lock manager.
 
 ### Known lint / type-check items
 
-The codebase has **23 ruff items** and **3 mypy items** that are
-intentional or pre-existing:
+The codebase has **23 ruff items** (B008×7, I001×5, DTZ001×5, RUF100×2,
+UP037×2, UP035×1, UP006×1) and **3 mypy items** that are intentional or
+pre-existing:
 
 - Ruff ``B008``: ``Depends(get_db)`` in FastAPI route signatures is
   the standard dependency-injection pattern — these are not defects.

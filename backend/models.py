@@ -6,11 +6,14 @@ from datetime import UTC, datetime
 from typing import List
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Integer,
     String,
     Text,
+    func,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -58,6 +61,13 @@ class ChatSession(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    title_is_manual: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="0",
+        nullable=False,
     )
 
     messages: Mapped[List["Message"]] = relationship(
@@ -121,3 +131,21 @@ class Message(Base):
             f"<Message id={self.id} session_id={self.session_id}"
             f" role={self.role!r}>"
         )
+
+
+# ---------------------------------------------------------------------------
+# SchemaMigration — migration bookkeeping
+# ---------------------------------------------------------------------------
+
+
+class SchemaMigration(Base):
+    __tablename__ = "schema_migrations"
+
+    version: Mapped[str] = mapped_column(
+        String(255), primary_key=True
+    )
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )

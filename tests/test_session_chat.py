@@ -1207,3 +1207,370 @@ class TestSessionLockRegistry:
 
         # After we release, everything is clean
         assert len(registry._entries) == 0
+
+
+# ============================================================================
+# Auto-title behaviour
+# ============================================================================
+
+
+class TestAutoTitle:
+    """Auto-title generation from the first user message."""
+
+    def test_auto_title_persists_when_llm_fails(
+        self, test_engine, test_session_factory, spy_llm,
+    ):
+        """Even when the LLM raises, the auto-title is already saved."""
+        import backend.main as main_module
+
+        # Use a spy that raises after Phase 1
+        spy_llm.error = LLMError("upstream failure", status_code=502)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = ChatService(spy_llm)
+
+        try:
+            with TestClient(app) as client:
+                resp = client.post("/api/sessions")
+                sid = resp.json()["id"]
+
+                client.post(
+                    f"/api/sessions/{sid}/messages",
+                    json={"message": "My cool topic"},
+                )
+
+                session = client.get(f"/api/sessions/{sid}").json()
+                assert session["title"] == "My cool topic"
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+
+# ============================================================================
+# Rename concurrency safety
+# ============================================================================
+
+
+class TestRenameConcurrency:
+    """Rename uses the same per-session lock — no races with send/delete."""
+
+    @pytest.mark.anyio
+    async def test_rename_during_send_completes_after(
+        self, test_engine, test_session_factory,
+    ):
+        """Send holds lock first → rename waits → both succeed."""
+        import backend.main as main_module
+
+        spy = ControlledSpy()
+        chat_svc = ChatService(spy)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = chat_svc
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as ac:
+                create_resp = await ac.post("/api/sessions")
+                sid = create_resp.json()["id"]
+
+                # Start send — enters generate, blocks
+                task_send = asyncio.create_task(
+                    ac.post(
+                        f"/api/sessions/{sid}/messages",
+                        json={"message": "hello"},
+                    )
+                )
+                await spy.wait_entered(1)
+
+                # Start rename — blocked by lock
+                task_rename = asyncio.create_task(
+                    ac.patch(
+                        f"/api/sessions/{sid}",
+                        json={"title": "Renamed During Send"},
+                    )
+                )
+
+                # Release send
+                spy.unblock()
+                send_resp = await task_send
+                assert send_resp.status_code == 200
+
+                # Rename should now complete
+                rename_resp = await task_rename
+                assert rename_resp.status_code == 200
+                assert rename_resp.json()["title"] == "Renamed During Send"
+
+                # Verify title persisted
+                get_resp = await ac.get(f"/api/sessions/{sid}")
+                assert get_resp.json()["title"] == "Renamed During Send"
+
+                assert len(chat_svc._lock_registry._entries) == 0
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+    @pytest.mark.anyio
+    async def test_rename_blocks_auto_title_then_send(
+        self, test_engine, test_session_factory,
+    ):
+        """Rename first → send → auto-title does NOT overwrite."""
+        import backend.main as main_module
+
+        spy = ControlledSpy()
+        chat_svc = ChatService(spy)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = chat_svc
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as ac:
+                create_resp = await ac.post("/api/sessions")
+                sid = create_resp.json()["id"]
+
+                # Rename first (sets title_is_manual = True)
+                await ac.patch(
+                    f"/api/sessions/{sid}",
+                    json={"title": "My Manual Title"},
+                )
+
+                # Now send
+                task_send = asyncio.create_task(
+                    ac.post(
+                        f"/api/sessions/{sid}/messages",
+                        json={"message": "auto should not apply"},
+                    )
+                )
+                await spy.wait_entered(1)
+                spy.unblock()
+                send_resp = await task_send
+                assert send_resp.status_code == 200
+
+                get_resp = await ac.get(f"/api/sessions/{sid}")
+                assert get_resp.json()["title"] == "My Manual Title"
+
+                assert len(chat_svc._lock_registry._entries) == 0
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+    @pytest.mark.anyio
+    async def test_delete_first_then_rename_404(
+        self, test_engine, test_session_factory,
+    ):
+        """Delete holds lock first → rename gets 404."""
+        import backend.main as main_module
+
+        chat_svc = ChatService(SpyLLMClient())
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = chat_svc
+
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as ac:
+                create_resp = await ac.post("/api/sessions")
+                sid = create_resp.json()["id"]
+
+                del_resp = await ac.delete(f"/api/sessions/{sid}")
+                assert del_resp.status_code == 200
+
+                rename_resp = await ac.patch(
+                    f"/api/sessions/{sid}",
+                    json={"title": "After Delete"},
+                )
+                assert rename_resp.status_code == 404
+
+                assert len(chat_svc._lock_registry._entries) == 0
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+
+# ============================================================================
+# Phase 1 atomicity — user message + auto-title in one commit
+# ============================================================================
+
+
+class TestPhase1Atomicity:
+    """Auto-title and user message share the same Phase 1 commit."""
+
+    def test_llm_failure_both_user_msg_and_title_persist(
+        self, test_engine, test_session_factory, spy_llm,
+    ):
+        """LLM error → user msg + auto-title both persisted."""
+        import backend.main as main_module
+
+        spy_llm.error = LLMError("upstream failure", status_code=502)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = ChatService(spy_llm)
+
+        try:
+            with TestClient(app) as client:
+                resp = client.post("/api/sessions")
+                sid = resp.json()["id"]
+
+                client.post(
+                    f"/api/sessions/{sid}/messages",
+                    json={"message": "My cool topic"},
+                )
+
+                db = test_session_factory()
+                user_msgs = db.execute(
+                    select(Message).where(
+                        Message.session_id == sid,
+                        Message.role == "user",
+                    )
+                ).scalars().all()
+                assert len(user_msgs) == 1
+                assert user_msgs[0].content == "My cool topic"
+
+                session = db.get(ChatSession, sid)
+                assert session.title == "My cool topic"
+                db.close()
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc
+
+    def test_phase1_commit_failure_nothing_persisted(self, monkeypatch):
+        """Phase 1 commit fails → no user msg, no title change."""
+        import asyncio as aio
+
+        from backend.database import create_database_engine, create_tables
+
+        eng = create_database_engine("sqlite:///:memory:")
+        create_tables(bind=eng)
+        SessionLocal = sessionmaker(
+            bind=eng, autoflush=False, expire_on_commit=False
+        )
+        db = SessionLocal()
+
+        chat_session = ChatSession()
+        db.add(chat_session)
+        db.commit()
+        db.refresh(chat_session)
+        sid = chat_session.id  # save before session detaches
+
+        spy = SpyLLMClient(response="reply")
+
+        original_commit = db.commit
+        commit_count = 0
+
+        def _failing_commit():
+            nonlocal commit_count
+            commit_count += 1
+            if commit_count == 1:  # Phase 1
+                raise RuntimeError("simulated DB failure")
+            return original_commit()
+
+        monkeypatch.setattr(db, "commit", _failing_commit)
+
+        service = ChatService(spy)
+        with pytest.raises(RuntimeError, match="simulated DB failure"):
+            aio.run(
+                service.handle_session_message(
+                    sid, "should not persist", db,
+                )
+            )
+
+        db.close()
+        db2 = SessionLocal()
+        rows = db2.execute(
+            select(Message).where(Message.session_id == sid)
+        ).scalars().all()
+        assert len(rows) == 0
+        s = db2.get(ChatSession, sid)
+        assert s.title == "New Chat"
+        db2.close()
+        eng.dispose()
+
+    def test_auto_title_then_manual_rename_then_send(
+        self, test_engine, test_session_factory, spy_llm,
+    ):
+        """Auto-title → manual rename → send does not overwrite."""
+        import backend.main as main_module
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original_svc = main_module.chat_service
+        main_module.chat_service = ChatService(spy_llm)
+
+        try:
+            with TestClient(app) as client:
+                resp = client.post("/api/sessions")
+                sid = resp.json()["id"]
+
+                client.post(
+                    f"/api/sessions/{sid}/messages",
+                    json={"message": "Auto Title Text"},
+                )
+                s1 = client.get(f"/api/sessions/{sid}").json()
+                assert s1["title"] == "Auto Title Text"
+
+                client.patch(
+                    f"/api/sessions/{sid}",
+                    json={"title": "Manual Override"},
+                )
+
+                client.post(
+                    f"/api/sessions/{sid}/messages",
+                    json={"message": "Second message"},
+                )
+                s2 = client.get(f"/api/sessions/{sid}").json()
+                assert s2["title"] == "Manual Override"
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original_svc

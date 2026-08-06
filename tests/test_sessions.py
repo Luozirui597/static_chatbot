@@ -4,17 +4,24 @@ Every test uses a temporary SQLite file — the real ``data/chatbot.db``
 is never touched.
 """
 
+import sqlite3
 from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import text as sa_text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from backend.database import create_database_engine, create_tables, get_db
+from backend.database import (
+    create_database_engine,
+    create_tables,
+    get_db,
+    run_migrations,
+)
 from backend.main import app
 from backend.models import ChatSession, Message
-
+from backend.session_titles import derive_auto_title
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -283,7 +290,7 @@ class TestDeleteSession:
         # Verify directly against the database — no messages remain.
         db = test_session_factory()
         remaining = db.execute(
-            text("SELECT COUNT(*) FROM messages WHERE session_id = :sid"),
+            sa_text("SELECT COUNT(*) FROM messages WHERE session_id = :sid"),
             {"sid": session_id},
         ).scalar()
         db.close()
@@ -322,3 +329,736 @@ class TestSessionIsolation:
         assert len(msgs_b) == 1
         assert msgs_b[0]["content"] == "for B"
         assert msgs_b[0]["session_id"] == id_b
+
+
+# ============================================================================
+# PATCH /api/sessions/{session_id} — rename
+# ============================================================================
+
+
+class TestRenameSession:
+    """Renaming a session via PATCH."""
+
+    def test_rename_returns_updated_session(self, client):
+        """PATCH returns the session with the new title."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": "My Chat"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == sid
+        assert body["title"] == "My Chat"
+
+    def test_rename_persisted(self, client):
+        """After PATCH, GET returns the updated title."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        client.patch(f"/api/sessions/{sid}", json={"title": "Persisted"})
+
+        resp = client.get(f"/api/sessions/{sid}")
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "Persisted"
+
+    def test_rename_blank_title_rejected(self, client):
+        """Whitespace-only title → 422."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": "   "},
+        )
+        assert resp.status_code == 422
+
+    def test_rename_empty_title_rejected(self, client):
+        """Empty string title → 422."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": ""},
+        )
+        assert resp.status_code == 422
+
+    def test_rename_overlong_title_rejected(self, client):
+        """Title > 255 characters after normalisation → 422."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": "x" * 256},
+        )
+        assert resp.status_code == 422
+
+    def test_rename_not_found_404(self, client):
+        """PATCH on non-existent session → 404."""
+        resp = client.patch(
+            "/api/sessions/9999",
+            json={"title": "Nope"},
+        )
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "Session not found"}
+
+    def test_rename_normalises_whitespace(self, client):
+        """Title with newlines, tabs, and multiple spaces is normalised."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": "  hello\n\tworld   chat  "},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "hello world chat"
+
+    def test_rename_preserves_existing_messages(self, client, test_session_factory):
+        """Renaming does not affect messages."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        db = test_session_factory()
+        db.add(Message(session_id=sid, role="user", content="hello"))
+        db.commit()
+        db.close()
+
+        client.patch(f"/api/sessions/{sid}", json={"title": "Renamed"})
+
+        msgs = client.get(f"/api/sessions/{sid}/messages").json()
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == "hello"
+
+
+# ============================================================================
+# derive_auto_title — unit tests
+# ============================================================================
+
+
+class TestNormalizeTitle:
+    """Direct unit tests for the pure title-normalisation function."""
+
+    def test_short_text_unchanged(self):
+        """Short text without extra whitespace is returned as-is."""
+        assert derive_auto_title("Hello") == "Hello"
+
+    def test_collapses_newlines_and_tabs(self):
+        """Newlines and tabs become single spaces."""
+        result = derive_auto_title("Hello\nworld\tchat")
+        assert result == "Hello world chat"
+
+    def test_collapses_consecutive_spaces(self):
+        """Multiple consecutive spaces collapse to one."""
+        result = derive_auto_title("Hello   world")
+        assert result == "Hello world"
+
+    def test_strips_leading_trailing_whitespace(self):
+        """Leading and trailing whitespace is removed."""
+        result = derive_auto_title("   hello   ")
+        assert result == "hello"
+
+    def test_truncates_with_ellipsis(self):
+        """Text longer than 40 chars is truncated with …."""
+        long_text = "a" * 50
+        result = derive_auto_title(long_text, max_chars=40)
+        assert len(result) == 41  # 40 chars + ellipsis
+        assert result.endswith("…")
+
+    def test_exactly_40_chars_no_ellipsis(self):
+        """Text exactly 40 chars is not truncated."""
+        text = "a" * 40
+        result = derive_auto_title(text, max_chars=40)
+        assert result == text
+        assert "…" not in result
+
+    def test_clamped_to_255(self):
+        """Result is capped at 255 characters (DB column limit)."""
+        long_text = "a" * 300
+        result = derive_auto_title(long_text, max_chars=40)
+        assert len(result) <= 255
+
+
+# ============================================================================
+# Auto-title on first message
+# ============================================================================
+
+
+class TestAutoTitle:
+    """The first user message in a session automatically sets the title."""
+
+    def test_new_session_default_title(self, client):
+        """A freshly created session has title 'New Chat'."""
+        created = client.post("/api/sessions")
+        assert created.json()["title"] == "New Chat"
+
+    def test_first_message_generates_title(self, client):
+        """After the first user message, the title is auto-generated."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "Explain quantum computing"},
+        )
+
+        session = client.get(f"/api/sessions/{sid}").json()
+        assert session["title"] == "Explain quantum computing"
+
+    def test_first_message_normalises_whitespace_in_title(self, client):
+        """Whitespace in the first message is normalised for the title."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "  hello\n\tworld   "},
+        )
+
+        session = client.get(f"/api/sessions/{sid}").json()
+        assert session["title"] == "hello world"
+
+    def test_long_first_message_truncated_with_ellipsis(self, client):
+        """A long first message is truncated at 40 chars with …."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        long_msg = "A" * 60
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": long_msg},
+        )
+
+        session = client.get(f"/api/sessions/{sid}").json()
+        assert len(session["title"]) == 41  # 40 + …
+        assert session["title"].endswith("…")
+        assert session["title"][:40] == "A" * 40
+
+    def test_second_message_does_not_change_title(self, client):
+        """Only the first message triggers auto-title; second does not."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "First message"},
+        )
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "Second message"},
+        )
+
+        session = client.get(f"/api/sessions/{sid}").json()
+        assert session["title"] == "First message"
+
+    def test_manual_rename_not_overwritten_by_auto_title(self, client):
+        """After manual rename, sending a message does not overwrite."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        # Rename manually first (before any message)
+        client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": "Custom Title"},
+        )
+
+        # Send first message
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "First message"},
+        )
+
+        session = client.get(f"/api/sessions/{sid}").json()
+        assert session["title"] == "Custom Title"
+
+    def test_manual_rename_after_auto_title_persists(self, client):
+        """Manual rename after auto-title persists on re-fetch."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "Auto title"},
+        )
+
+        client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": "Manual Override"},
+        )
+
+        session = client.get(f"/api/sessions/{sid}").json()
+        assert session["title"] == "Manual Override"
+
+        # Subsequent message must not overwrite
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "Another message"},
+        )
+        session2 = client.get(f"/api/sessions/{sid}").json()
+        assert session2["title"] == "Manual Override"
+
+
+# ============================================================================
+# Manual rename to "New Chat" must not be overwritten
+# ============================================================================
+
+
+class TestRenameNewChat:
+    """Renaming to exactly 'New Chat' must still block auto-title."""
+
+    def test_manual_new_chat_not_overwritten(self, client):
+        """PATCH title='New Chat' → send → title stays 'New Chat'."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        client.patch(f"/api/sessions/{sid}", json={"title": "New Chat"})
+
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "Should not become title"},
+        )
+
+        session = client.get(f"/api/sessions/{sid}").json()
+        assert session["title"] == "New Chat"
+
+
+# ============================================================================
+# Title validation edge cases
+# ============================================================================
+
+
+class TestRenameValidation:
+    """Pydantic validation for PATCH /api/sessions/{id}."""
+
+    def test_normalised_exactly_255_chars_accepted(self, client):
+        """Title that normalises to exactly 255 chars → 200."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": "a" * 255},
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()["title"]) == 255
+
+    def test_normalised_256_chars_rejected(self, client):
+        """Title that normalises to 256 chars → 422 (no silent truncation)."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": "a" * 256},
+        )
+        assert resp.status_code == 422
+
+    def test_raw_long_but_normalised_short_accepted(self, client):
+        """'a' + 300 spaces normalises to 'a' → 200 OK."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": "a" + " " * 300},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "a"
+
+    def test_non_string_integer_rejected(self, client):
+        """Integer title → 422."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": 123},
+        )
+        assert resp.status_code == 422
+
+    def test_non_string_boolean_rejected(self, client):
+        """Boolean title → 422."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": True},
+        )
+        assert resp.status_code == 422
+
+    def test_non_string_null_rejected(self, client):
+        """Null title → 422."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": None},
+        )
+        assert resp.status_code == 422
+
+    def test_non_string_array_rejected(self, client):
+        """Array title → 422."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": []},
+        )
+        assert resp.status_code == 422
+
+    def test_non_string_object_rejected(self, client):
+        """Object title → 422."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        resp = client.patch(
+            f"/api/sessions/{sid}",
+            json={"title": {}},
+        )
+        assert resp.status_code == 422
+
+
+# ============================================================================
+# Schema migration tests
+# ============================================================================
+
+
+class TestMigration:
+    """Verify run_migrations behaves correctly."""
+
+    def test_fresh_database_runs_migration(self, tmp_path):
+        """New database: create_tables + run_migrations succeeds."""
+        eng = create_database_engine(f"sqlite:///{tmp_path}/fresh.db")
+        try:
+            create_tables(bind=eng)
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                row = conn.execute(
+                    sa_text(
+                        "SELECT version, applied_at FROM schema_migrations "
+                        "WHERE version = 'title_is_manual_v1'"
+                    )
+                ).fetchone()
+                assert row is not None
+                assert row[1] is not None  # applied_at must be set
+        finally:
+            eng.dispose()
+
+    def test_old_database_without_column_gets_migrated(self, tmp_path):
+        """Simulate old DB lacking title_is_manual column."""
+        db_path = tmp_path / "old.db"
+        # Manually create old-format tables via raw sqlite3
+        raw = sqlite3.connect(str(db_path))
+        raw.execute("PRAGMA foreign_keys = ON")
+        raw.execute(
+            "CREATE TABLE chat_sessions ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  title VARCHAR(255) NOT NULL DEFAULT 'New Chat',"
+            "  created_at DATETIME NOT NULL,"
+            "  updated_at DATETIME NOT NULL"
+            ")"
+        )
+        raw.execute(
+            "CREATE TABLE messages ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,"
+            "  role VARCHAR(20) NOT NULL,"
+            "  content TEXT NOT NULL,"
+            "  created_at DATETIME NOT NULL,"
+            "  CHECK (role IN ('user', 'assistant')),"
+            "  CHECK (length(trim(content, "
+            "    char(9) || char(10) || char(13) || char(32))) > 0)"
+            ")"
+        )
+        raw.execute(
+            "CREATE TABLE schema_migrations ("
+            "  version VARCHAR(255) PRIMARY KEY,"
+            "  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        # Insert old sessions
+        raw.execute(
+            "INSERT INTO chat_sessions (title, created_at, updated_at) "
+            "VALUES ('New Chat', '2026-01-01', '2026-01-01')"
+        )
+        raw.execute(
+            "INSERT INTO chat_sessions (title, created_at, updated_at) "
+            "VALUES ('Custom Title', '2026-01-02', '2026-01-02')"
+        )
+        raw.commit()
+        raw.close()
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                # Column exists
+                cols = [
+                    r[1] for r in conn.execute(
+                        sa_text("PRAGMA table_info('chat_sessions')")
+                    ).fetchall()
+                ]
+                assert "title_is_manual" in cols
+
+                # Row with 'New Chat' → title_is_manual = 0
+                row1 = conn.execute(
+                    sa_text(
+                        "SELECT title_is_manual FROM chat_sessions "
+                        "WHERE title = 'New Chat'"
+                    )
+                ).fetchone()
+                assert row1[0] == 0
+
+                # Row with 'Custom Title' → title_is_manual = 1
+                row2 = conn.execute(
+                    sa_text(
+                        "SELECT title_is_manual FROM chat_sessions "
+                        "WHERE title = 'Custom Title'"
+                    )
+                ).fetchone()
+                assert row2[0] == 1
+
+                # Migration record exists
+                row3 = conn.execute(
+                    sa_text(
+                        "SELECT version FROM schema_migrations "
+                        "WHERE version = 'title_is_manual_v1'"
+                    )
+                ).fetchone()
+                assert row3 is not None
+        finally:
+            eng.dispose()
+
+    def test_migration_idempotent_on_second_run(self, tmp_path):
+        """Running migration twice is safe — no errors, no duplicates."""
+        db_path = tmp_path / "idem.db"
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            create_tables(bind=eng)
+            run_migrations(eng)  # first
+            run_migrations(eng)  # second — must not raise
+
+            with eng.begin() as conn:
+                count = conn.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM schema_migrations "
+                        "WHERE version = 'title_is_manual_v1'"
+                    )
+                ).scalar()
+                assert count == 1
+        finally:
+            eng.dispose()
+
+    def test_migration_recovery_when_column_exists_but_record_missing(
+        self, tmp_path,
+    ):
+        """If ALTER TABLE succeeded but the migration record is missing,
+        the next run must backfill and write the record."""
+        db_path = tmp_path / "partial.db"
+        raw = sqlite3.connect(str(db_path))
+        raw.execute("PRAGMA foreign_keys = ON")
+        raw.execute(
+            "CREATE TABLE chat_sessions ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  title VARCHAR(255) NOT NULL DEFAULT 'New Chat',"
+            "  created_at DATETIME NOT NULL,"
+            "  updated_at DATETIME NOT NULL,"
+            "  title_is_manual INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        raw.execute(
+            "CREATE TABLE schema_migrations ("
+            "  version VARCHAR(255) PRIMARY KEY,"
+            "  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        raw.execute(
+            "INSERT INTO chat_sessions (title, created_at, updated_at) "
+            "VALUES ('Custom', '2026-01-01', '2026-01-01')"
+        )
+        raw.commit()
+        raw.close()
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)  # should backfill + write record
+
+            with eng.begin() as conn:
+                # title_is_manual should now be 1 for 'Custom'
+                row = conn.execute(
+                    sa_text(
+                        "SELECT title_is_manual FROM chat_sessions "
+                        "WHERE title = 'Custom'"
+                    )
+                ).fetchone()
+                assert row[0] == 1
+
+                # Record must exist
+                row2 = conn.execute(
+                    sa_text(
+                        "SELECT version FROM schema_migrations "
+                        "WHERE version = 'title_is_manual_v1'"
+                    )
+                ).fetchone()
+                assert row2 is not None
+        finally:
+            eng.dispose()
+
+    def test_new_session_default_title_is_manual_false(
+        self, client, test_session_factory,
+    ):
+        """New session after migration has title_is_manual = False."""
+        created = client.post("/api/sessions")
+        sid = created.json()["id"]
+
+        db = test_session_factory()
+        row = db.execute(
+            sa_text(
+                "SELECT title_is_manual FROM chat_sessions WHERE id = :sid"
+            ),
+            {"sid": sid},
+        ).fetchone()
+        db.close()
+        assert row is not None
+        assert row[0] == 0
+
+    def test_migration_skips_when_record_already_exists(self, tmp_path):
+        """If migration record exists, UPDATE is not re-executed."""
+        db_path = tmp_path / "skip.db"
+        raw = sqlite3.connect(str(db_path))
+        raw.execute("PRAGMA foreign_keys = ON")
+        raw.execute(
+            "CREATE TABLE chat_sessions ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  title VARCHAR(255) NOT NULL DEFAULT 'New Chat',"
+            "  created_at DATETIME NOT NULL,"
+            "  updated_at DATETIME NOT NULL,"
+            "  title_is_manual INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        raw.execute(
+            "CREATE TABLE schema_migrations ("
+            "  version VARCHAR(255) PRIMARY KEY,"
+            "  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        raw.execute(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('title_is_manual_v1')"
+        )
+        raw.execute(
+            "INSERT INTO chat_sessions "
+            "(title, created_at, updated_at, title_is_manual) "
+            "VALUES ('Custom', '2026-01-01', '2026-01-01', 0)"
+        )
+        raw.commit()
+        raw.close()
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                flag = conn.execute(
+                    sa_text(
+                        "SELECT title_is_manual FROM chat_sessions "
+                        "WHERE title = 'Custom'"
+                    )
+                ).fetchone()[0]
+                assert flag == 0
+        finally:
+            eng.dispose()
+
+    def test_backfill_failure_no_record_then_retry_succeeds(
+        self, tmp_path,
+    ):
+        """UPDATE fails → no record → retry succeeds after fix."""
+        db_path = tmp_path / "fail.db"
+        raw = sqlite3.connect(str(db_path))
+        raw.execute("PRAGMA foreign_keys = ON")
+        raw.execute(
+            "CREATE TABLE chat_sessions ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  title VARCHAR(255) NOT NULL DEFAULT 'New Chat',"
+            "  created_at DATETIME NOT NULL,"
+            "  updated_at DATETIME NOT NULL,"
+            "  title_is_manual INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        raw.execute(
+            "CREATE TABLE schema_migrations ("
+            "  version VARCHAR(255) PRIMARY KEY,"
+            "  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        raw.execute(
+            "INSERT INTO chat_sessions "
+            "(title, created_at, updated_at, title_is_manual) "
+            "VALUES ('Custom', '2026-01-01', '2026-01-01', 0)"
+        )
+        raw.execute(
+            "CREATE TRIGGER fail_backfill "
+            "BEFORE UPDATE OF title_is_manual ON chat_sessions "
+            "BEGIN "
+            "  SELECT RAISE(FAIL, 'simulated failure'); "
+            "END"
+        )
+        raw.commit()
+        raw.close()
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            with pytest.raises(IntegrityError, match="simulated failure"):
+                run_migrations(eng)
+
+            with eng.begin() as conn:
+                rec_count = conn.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM schema_migrations "
+                        "WHERE version = 'title_is_manual_v1'"
+                    )
+                ).scalar()
+                assert rec_count == 0
+
+                flag = conn.execute(
+                    sa_text(
+                        "SELECT title_is_manual FROM chat_sessions "
+                        "WHERE title = 'Custom'"
+                    )
+                ).fetchone()[0]
+                assert flag == 0
+
+            raw2 = sqlite3.connect(str(db_path))
+            raw2.execute("DROP TRIGGER IF EXISTS fail_backfill")
+            raw2.commit()
+            raw2.close()
+
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                flag = conn.execute(
+                    sa_text(
+                        "SELECT title_is_manual FROM chat_sessions "
+                        "WHERE title = 'Custom'"
+                    )
+                ).fetchone()[0]
+                assert flag == 1
+
+                rec_count = conn.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM schema_migrations "
+                        "WHERE version = 'title_is_manual_v1'"
+                    )
+                ).scalar()
+                assert rec_count == 1
+        finally:
+            eng.dispose()

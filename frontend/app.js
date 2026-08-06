@@ -23,6 +23,9 @@
   let currentSessionId = null;  // int | null
   let isSending = false;        // prevent double-submit
   let isCreatingSession = false; // prevent double-create of New Chat
+  let isRenaming = false;       // editing mode active
+  let renamingSessionId = null; // which session is being edited
+  let isRenameSaving = false;   // saving in progress (prevent double-submit)
   let isInitializing = true;    // block user actions during page init
   let sessionLoadRequestId = 0;  // race-condition guard for message loads
   let sessionLastMessageId = {}; // sessionId -> int (last known message id)
@@ -113,12 +116,24 @@
     await apiRequest("/api/sessions/" + sessionId, { method: "DELETE" });
   }
 
+  async function renameSessionRequest(sessionId, title) {
+    const resp = await apiRequest(
+      "/api/sessions/" + sessionId,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title }),
+      },
+    );
+    return resp.json();
+  }
+
   /* ---- Control state helpers --------------------------------------- */
 
   /** Sync button disabled states from isSending + isCreatingSession +
-   *  isInitializing. */
+   *  isRenaming + isRenameSaving + isInitializing. */
   function updateControlStates() {
-    const blockAll = isInitializing;
+    const blockAll = isInitializing || isRenaming || isRenameSaving;
     const blockSend = blockAll || isSending;
     const blockCreate = blockAll || isSending || isCreatingSession;
 
@@ -127,10 +142,25 @@
     newChatBtn.disabled = blockCreate;
 
     const deleteBtns = document.querySelectorAll(".delete-session-btn");
-    deleteBtns.forEach(function (btn) { btn.disabled = blockSend; });
+    deleteBtns.forEach(function (btn) { btn.disabled = blockAll; });
+
+    const renameBtns = document.querySelectorAll(".rename-session-btn");
+    renameBtns.forEach(function (btn) { btn.disabled = blockAll; });
 
     const selectBtns = document.querySelectorAll(".session-select-btn");
     selectBtns.forEach(function (btn) { btn.disabled = blockAll; });
+
+    // Rename input / Save / Cancel are only controlled by isRenameSaving:
+    // - Editing (isRenaming=true, isRenameSaving=false): enabled
+    // - Saving  (isRenaming=true, isRenameSaving=true):  disabled
+    if (isRenaming) {
+      const input = document.querySelector(".session-rename-input");
+      const saveBtn = document.querySelector(".session-rename-save-btn");
+      const cancelBtn = document.querySelector(".session-rename-cancel-btn");
+      if (input) input.disabled = isRenameSaving;
+      if (saveBtn) saveBtn.disabled = isRenameSaving;
+      if (cancelBtn) cancelBtn.disabled = isRenameSaving;
+    }
 
     if (!blockSend) {
       inputEl.focus();
@@ -257,11 +287,11 @@
     }
     for (let i = 0; i < sessions.length; i++) {
       if (sessions[i].id === currentSessionId) {
-        sessionHeaderEl.textContent = "New Chat · #" + sessions[i].id;
+        sessionHeaderEl.textContent = sessions[i].title;
         return;
       }
     }
-    sessionHeaderEl.textContent = "New Chat · #" + currentSessionId;
+    sessionHeaderEl.textContent = "New Chat";
   }
 
   /* ---- Time formatting --------------------------------------------- */
@@ -345,44 +375,105 @@
         item.classList.add("active");
       }
 
-      // -- Select button (native <button> — keyboard/ARIA for free) -----
-      const selectBtn = document.createElement("button");
-      selectBtn.type = "button";
-      selectBtn.className = "session-select-btn";
-      if (sid === currentSessionId) {
-        selectBtn.classList.add("active");
+      // -- Inline-edit mode for this session -----------------------------
+      if (isRenaming && renamingSessionId === sid) {
+        item.classList.add("editing");
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "session-rename-input";
+        input.value = session.title;
+        input.setAttribute("aria-label", "Rename session");
+
+        const saveBtn = document.createElement("button");
+        saveBtn.type = "button";
+        saveBtn.className = "session-rename-save-btn";
+        saveBtn.textContent = "Save";
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.type = "button";
+        cancelBtn.className = "session-rename-cancel-btn";
+        cancelBtn.textContent = "Cancel";
+
+        input.addEventListener("keydown", function (event) {
+          if (event.key === "Enter" && !event.isComposing) {
+            event.preventDefault();
+            saveRename(sid, input);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            cancelRename();
+          }
+        });
+
+        saveBtn.addEventListener("click", function () {
+          saveRename(sid, input);
+        });
+        cancelBtn.addEventListener("click", function () {
+          cancelRename();
+        });
+
+        item.appendChild(input);
+        item.appendChild(saveBtn);
+        item.appendChild(cancelBtn);
+
+        // Auto-focus the input on next render frame
+        setTimeout(function () { input.focus(); input.select(); }, 0);
+      } else {
+        // -- Select button (native <button> — keyboard/ARIA for free) -----
+        const selectBtn = document.createElement("button");
+        selectBtn.type = "button";
+        selectBtn.className = "session-select-btn";
+        if (sid === currentSessionId) {
+          selectBtn.classList.add("active");
+        }
+
+        const label = document.createElement("span");
+        label.className = "session-item-label";
+        label.textContent = session.title;
+
+        const time = document.createElement("span");
+        time.className = "session-time";
+        time.textContent = formatSessionTime(session.updated_at);
+
+        selectBtn.appendChild(label);
+        selectBtn.appendChild(time);
+        selectBtn.addEventListener("click", function () {
+          selectSession(sid);
+        });
+
+        // -- Rename button -----------------------------------------------
+        const renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.className = "rename-session-btn";
+        renameBtn.setAttribute("aria-label", "Rename session " + sid);
+        renameBtn.textContent = "✎";  // U+270E
+        if (isSending || isRenaming || isInitializing) {
+          renameBtn.disabled = true;
+        }
+        renameBtn.addEventListener("click", function (event) {
+          event.stopPropagation();
+          startRename(sid);
+        });
+
+        // -- Delete button -----------------------------------------------
+        const delBtn = document.createElement("button");
+        delBtn.className = "delete-session-btn";
+        delBtn.type = "button";
+        delBtn.setAttribute("aria-label", "Delete session " + sid);
+        delBtn.textContent = "×";
+        if (isSending || isRenaming || isInitializing) {
+          delBtn.disabled = true;
+        }
+        delBtn.addEventListener("click", function (event) {
+          event.stopPropagation();
+          handleDeleteSession(sid, event);
+        });
+
+        item.appendChild(selectBtn);
+        item.appendChild(renameBtn);
+        item.appendChild(delBtn);
       }
 
-      const label = document.createElement("span");
-      label.className = "session-item-label";
-      label.textContent = "New Chat · #" + sid;
-
-      const time = document.createElement("span");
-      time.className = "session-time";
-      time.textContent = formatSessionTime(session.updated_at);
-
-      selectBtn.appendChild(label);
-      selectBtn.appendChild(time);
-      selectBtn.addEventListener("click", function () {
-        selectSession(sid);
-      });
-
-      // -- Delete button -------------------------------------------------
-      const delBtn = document.createElement("button");
-      delBtn.className = "delete-session-btn";
-      delBtn.type = "button";
-      delBtn.setAttribute("aria-label", "Delete session " + sid);
-      delBtn.textContent = "×";  // ×
-      if (isSending || isInitializing) {
-        delBtn.disabled = true;
-      }
-      delBtn.addEventListener("click", function (event) {
-        event.stopPropagation();
-        handleDeleteSession(sid, event);
-      });
-
-      item.appendChild(selectBtn);
-      item.appendChild(delBtn);
       sessionListEl.appendChild(item);
     }
   }
@@ -597,6 +688,71 @@
     }
 
     removeSessionLocally(sessionId);
+  }
+
+  /* ---- Rename session ---------------------------------------------- */
+
+  function startRename(sessionId) {
+    if (isSending || isRenaming || isInitializing) return;
+
+    isRenaming = true;
+    renamingSessionId = sessionId;
+    updateControlStates();
+    renderSessionList();
+  }
+
+  async function saveRename(sessionId, renameInputEl) {
+    if (isRenameSaving) return;  // prevent double-submit
+
+    var rawTitle = renameInputEl.value;
+    if (!rawTitle.trim()) {
+      showStatus("Title must not be blank.", true);
+      renameInputEl.focus();
+      return;
+    }
+
+    isRenameSaving = true;
+    updateControlStates();  // disable input, Save, Cancel
+
+    try {
+      var updated = await renameSessionRequest(sessionId, rawTitle);
+      // Use server-normalised title from the full SessionResponse
+      for (var i = 0; i < sessions.length; i++) {
+        if (sessions[i].id === sessionId) {
+          sessions[i] = updated;
+          break;
+        }
+      }
+      // Move renamed session to top (updated_at has changed)
+      sessions = [updated].concat(
+        sessions.filter(function (s) { return s.id !== sessionId; })
+      );
+      clearStatus();
+      isRenaming = false;
+      renamingSessionId = null;
+      isRenameSaving = false;
+      updateControlStates();
+      renderSessionList();
+      updateSessionHeader();
+      inputEl.focus();  // explicitly focus chat message input
+    } catch (err) {
+      // sessions was never modified — no rollback needed
+      isRenameSaving = false;
+      updateControlStates();  // re-enable input, Save, Cancel
+      showStatus(err.message, true);
+      // Stay in Editing state — do NOT call renderSessionList()
+      renameInputEl.focus();
+    }
+  }
+
+  function cancelRename() {
+    // No optimistic update was made, no restore needed
+    isRenaming = false;
+    renamingSessionId = null;
+    isRenameSaving = false;
+    updateControlStates();
+    renderSessionList();
+    inputEl.focus();  // explicitly focus chat message input
   }
 
   /* ---- Send message ------------------------------------------------ */

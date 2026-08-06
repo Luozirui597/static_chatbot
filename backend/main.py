@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.chat_service import ChatService, SessionNotFoundError
-from backend.database import create_tables, get_db
+from backend.database import create_tables, engine, get_db, run_migrations
 from backend.exceptions import LLMError
 from backend.llm_client import create_llm_client
 from backend.models import ChatSession, Message
@@ -19,6 +19,7 @@ from backend.schemas import (
     ChatResponse,
     DeleteResponse,
     MessageResponse,
+    RenameSessionRequest,
     SendMessageResponse,
     SessionResponse,
 )
@@ -37,8 +38,9 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Create database tables on startup."""
+    """Create database tables and run migrations on startup."""
     create_tables()
+    run_migrations(engine)
     yield
 
 
@@ -188,6 +190,32 @@ async def delete_session(session_id: int, db: Session = Depends(get_db)):
             status_code=404, detail="Session not found"
         ) from None
     return DeleteResponse(ok=True)
+
+
+@app.patch(
+    "/api/sessions/{session_id}",
+    response_model=SessionResponse,
+)
+async def rename_session(
+    session_id: int,
+    request: RenameSessionRequest,
+    db: Session = Depends(get_db),
+):
+    """Rename a chat session.
+
+    Uses the same per-session lock as ``send_message`` and
+    ``delete_session`` so a rename cannot race with a send or delete.
+    The title is normalised by Pydantic before reaching the service
+    layer.
+    """
+    try:
+        return await chat_service.rename_session(
+            session_id, request.title, db,
+        )
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=404, detail="Session not found"
+        ) from None
 
 
 # ---------------------------------------------------------------------------

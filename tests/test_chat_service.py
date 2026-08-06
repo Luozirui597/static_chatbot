@@ -541,6 +541,8 @@ class TestTransactionFailure:
         def _selective_failing_commit():
             nonlocal call_count
             call_count += 1
+            # Phase 1 (user + optional auto-title) commit (=1)
+            # succeeds; Phase 2 (assistant) commit (=2) fails.
             if call_count == 2:
                 raise RuntimeError("simulated DB failure on second commit")
             return original_commit()

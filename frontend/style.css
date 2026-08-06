@@ -188,6 +188,115 @@ body {
   display: block;
 }
 
+/* ---- Rename button --------------------------------------------------- */
+
+.rename-session-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s;
+  line-height: 1;
+  padding: 0;
+}
+
+.session-item:hover .rename-session-btn {
+  opacity: 0.6;
+}
+
+.session-item .rename-session-btn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.session-item.active .rename-session-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.rename-session-btn:disabled {
+  opacity: 0 !important;
+  cursor: not-allowed;
+}
+
+.rename-session-btn:focus-visible {
+  opacity: 1;
+  outline: 2px solid #007aff;
+  outline-offset: 1px;
+}
+
+.session-item.active .rename-session-btn:focus-visible {
+  outline-color: #ffffff;
+}
+
+/* ---- Inline rename --------------------------------------------------- */
+
+.session-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  margin: 6px 0 6px 12px;
+  border: 1px solid #007aff;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-family: inherit;
+  line-height: 1.4;
+  outline: none;
+  background: #ffffff;
+  color: #1a1a1a;
+}
+
+.session-item.active .session-rename-input {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.session-rename-save-btn,
+.session-rename-cancel-btn {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  margin-right: 4px;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.session-rename-save-btn {
+  background: #007aff;
+  color: #ffffff;
+}
+
+.session-rename-save-btn:hover {
+  background: #0066d6;
+}
+
+.session-item.active .session-rename-save-btn {
+  background: #ffffff;
+  color: #007aff;
+}
+
+.session-rename-cancel-btn {
+  background: transparent;
+  color: inherit;
+}
+
+.session-rename-cancel-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.session-item.active .session-rename-cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
 /* ---- Delete button --------------------------------------------------- */
 
 .delete-session-btn {
@@ -462,7 +571,8 @@ body {
     padding: 0 12px 4px;
   }
 
-  .delete-session-btn {
+  .delete-session-btn,
+  .rename-session-btn {
     opacity: 0.5;
   }
 }
@@ -472,7 +582,8 @@ body {
 /* ------------------------------------------------------------------ */
 
 @media (hover: none), (pointer: coarse) {
-  .delete-session-btn {
+  .delete-session-btn,
+  .rename-session-btn {
     opacity: 0.5;
   }
 }
