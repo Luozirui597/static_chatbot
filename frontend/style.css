@@ -420,10 +420,13 @@ body {
 
 .message.user {
   align-self: flex-end;
+  flex-direction: row;
 }
 
 .message.assistant {
   align-self: flex-start;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .message-content {
@@ -445,6 +448,52 @@ body {
   background: #e9e9eb;
   color: #1a1a1a;
   border-bottom-left-radius: 4px;
+}
+
+/* ---- Message actions (copy button) ---------------------------------- */
+
+.message-actions {
+  display: flex;
+  gap: 4px;
+  padding: 2px 2px 4px 2px;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 5px;
+  background: rgba(118, 118, 128, 0.10);
+  color: #636366;
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+  line-height: 1.5;
+}
+
+.copy-btn:hover {
+  background: rgba(118, 118, 128, 0.22);
+}
+
+.copy-btn:focus-visible {
+  outline: 2px solid #007aff;
+  outline-offset: 1px;
+}
+
+.copy-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.copy-btn[data-state="copied"] {
+  color: #34c759;
+}
+
+.copy-btn[data-state="failed"] {
+  color: #ff3b30;
 }
 
 /* ---- Welcome / empty states ---------------------------------------- */

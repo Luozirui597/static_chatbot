@@ -211,14 +211,78 @@
   function appendMessage(role, content) {
     removeEmptyState();
 
-    const wrapper = document.createElement("div");
+    var wrapper = document.createElement("div");
     wrapper.className = "message " + role;
 
-    const contentDiv = document.createElement("div");
+    var contentDiv = document.createElement("div");
     contentDiv.className = "message-content";
     contentDiv.textContent = content;
 
     wrapper.appendChild(contentDiv);
+
+    // Assistant messages get a copy button
+    if (role === "assistant") {
+      var actionsWrapper = document.createElement("div");
+      actionsWrapper.className = "message-actions";
+
+      var copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "copy-btn";
+      copyBtn.setAttribute("aria-label", "Copy response");
+      copyBtn.textContent = "Copy";
+      copyBtn.dataset.state = "idle";
+
+      var liveRegion = document.createElement("span");
+      liveRegion.className = "sr-only";
+      liveRegion.setAttribute("aria-live", "polite");
+      liveRegion.setAttribute("aria-atomic", "true");
+
+      var ctrl = createCopyController(
+        function (t) {
+          return copyToClipboard(t, navigator.clipboard, document);
+        },
+        function (fn, ms) { return setTimeout(fn, ms); },
+        function (id) { clearTimeout(id); },
+        function (newState) {
+          if (!copyBtn.isConnected) return;
+
+          copyBtn.dataset.state = newState;
+
+          switch (newState) {
+            case "copying":
+              copyBtn.textContent = "Copying…";
+              copyBtn.disabled = true;
+              liveRegion.textContent = "Copying response to clipboard.";
+              break;
+            case "copied":
+              copyBtn.textContent = "Copied";
+              copyBtn.disabled = false;
+              liveRegion.textContent = "Response copied to clipboard.";
+              break;
+            case "failed":
+              copyBtn.textContent = "Failed";
+              copyBtn.disabled = false;
+              liveRegion.textContent = "Failed to copy response. Press to retry.";
+              break;
+            default:
+              copyBtn.textContent = "Copy";
+              copyBtn.disabled = false;
+              liveRegion.textContent = "";
+              break;
+          }
+        },
+        function () { return copyBtn.isConnected; }
+      );
+
+      copyBtn.addEventListener("click", function () {
+        ctrl.handleClick(content);
+      });
+
+      actionsWrapper.appendChild(copyBtn);
+      wrapper.appendChild(actionsWrapper);
+      wrapper.appendChild(liveRegion);
+    }
+
     messagesEl.appendChild(wrapper);
     scrollMessagesToBottom();
   }

@@ -21,7 +21,8 @@ OpenAI-compatible chat-completions API.
 - 182 automated Python tests covering APIs, models, business logic,
   LLM client behaviour, session isolation, concurrency, auto-title
   generation, session rename, schema migration, and error handling
-- 5 frontend unit tests for network-error recovery logic (Node `node:test`)
+- 42 frontend unit tests for clipboard logic, copy button state machine,
+  and network-error recovery (Node `node:test`)
 
 ## Project structure
 
@@ -41,6 +42,8 @@ frontend/
   index.html           Multi-session chat page
   style.css            Responsive styles
   network-recovery.js  Pure helper for send-failure recovery
+  clipboard.js         Clipboard API + execCommand fallback
+  copy-controller.js   Per-button copy state machine
   app.js               Frontend logic (vanilla JS)
 tests/
   conftest.py          Forces LLM_MODE=fake for all tests
@@ -290,10 +293,10 @@ by the current UI.
 .venv/bin/python -m pytest -q
 
 # Frontend tests (requires Node.js)
-node --test tests/test_network_recovery.test.js
+node --test tests/test_clipboard.test.js tests/test_network_recovery.test.js
 ```
 
-Current suite: **182 Python tests**, **5 frontend tests** (all passing).
+Current suite: **182 Python tests**, **42 frontend tests** (all passing).
 
 - `conftest.py` forces `LLM_MODE=fake` and `DATABASE_URL=sqlite:///:memory:`
   before any test module is imported — no test ever touches a real
