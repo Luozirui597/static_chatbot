@@ -226,7 +226,10 @@ async def rename_session(
 @app.get("/", include_in_schema=False)
 def index():
     """Serve the chat page."""
-    return FileResponse(FRONTEND_DIR / "index.html")
+    return FileResponse(
+        FRONTEND_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 app.mount(

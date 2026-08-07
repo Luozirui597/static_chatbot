@@ -62,6 +62,7 @@ def test_get_root_returns_html():
     response = client.get("/")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_get_static_app_js():

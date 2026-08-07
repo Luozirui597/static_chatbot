@@ -446,6 +446,7 @@
         renameBtn.type = "button";
         renameBtn.className = "rename-session-btn";
         renameBtn.setAttribute("aria-label", "Rename session " + sid);
+        renameBtn.title = "Rename";
         renameBtn.textContent = "✎";  // U+270E
         if (isSending || isRenaming || isInitializing) {
           renameBtn.disabled = true;
@@ -460,6 +461,7 @@
         delBtn.className = "delete-session-btn";
         delBtn.type = "button";
         delBtn.setAttribute("aria-label", "Delete session " + sid);
+        delBtn.title = "Delete";
         delBtn.textContent = "×";
         if (isSending || isRenaming || isInitializing) {
           delBtn.disabled = true;

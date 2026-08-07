@@ -36,9 +36,9 @@ body {
 
 .app-layout {
   display: flex;
+  width: 100%;
   height: 100vh;
-  max-width: 1200px;
-  margin: 0 auto;
+  max-width: none;
   background: #ffffff;
 }
 
@@ -125,7 +125,18 @@ body {
   display: flex;
   align-items: center;
   padding: 0;
-  gap: 0;
+  gap: 4px;
+  min-height: 52px;
+  transition: background 0.1s, color 0.1s;
+}
+
+.session-item:hover:not(.active) {
+  background: #f0f0f2;
+}
+
+.session-item.active {
+  background: #007aff;
+  color: #ffffff;
 }
 
 /* ---- Select button (replaces old .session-item-text) ----------------- */
@@ -134,7 +145,7 @@ body {
   flex: 1;
   min-width: 0;
   display: block;
-  padding: 10px 0 10px 16px;
+  padding: 10px 4px 10px 16px;
   border: none;
   background: transparent;
   color: inherit;
@@ -146,12 +157,12 @@ body {
 }
 
 .session-select-btn:hover {
-  background: #e9e9eb;
+  background: transparent;
 }
 
 .session-item.active .session-select-btn,
 .session-select-btn.active {
-  background: #007aff;
+  background: transparent;
   color: #ffffff;
 }
 
@@ -192,35 +203,39 @@ body {
 
 .rename-session-btn {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
   border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
+  border-radius: 6px;
+  background: rgba(118, 118, 128, 0.12);
+  color: #636366;
   font-size: 0.875rem;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.1s, background 0.1s;
+  opacity: 1;
+  transition: background 0.1s, color 0.1s, opacity 0.1s;
   line-height: 1;
   padding: 0;
 }
 
-.session-item:hover .rename-session-btn {
-  opacity: 0.6;
+.session-item .rename-session-btn:hover {
+  background: rgba(118, 118, 128, 0.24);
+  color: #1a1a1a;
 }
 
-.session-item .rename-session-btn:hover {
-  opacity: 1;
-  background: rgba(0, 0, 0, 0.1);
+.session-item.active .rename-session-btn {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
 }
 
 .session-item.active .rename-session-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .rename-session-btn:disabled {
-  opacity: 0 !important;
+  opacity: 0.35 !important;
   cursor: not-allowed;
 }
 
@@ -301,35 +316,40 @@ body {
 
 .delete-session-btn {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
   margin-right: 8px;
   border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
+  border-radius: 6px;
+  background: rgba(118, 118, 128, 0.12);
+  color: #636366;
   font-size: 1rem;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.1s, background 0.1s;
+  opacity: 1;
+  transition: background 0.1s, color 0.1s, opacity 0.1s;
   line-height: 1;
-}
-
-.session-item:hover .delete-session-btn {
-  opacity: 0.6;
+  padding: 0;
 }
 
 .session-item .delete-session-btn:hover {
-  opacity: 1;
-  background: rgba(0, 0, 0, 0.1);
+  background: rgba(118, 118, 128, 0.24);
+  color: #1a1a1a;
+}
+
+.session-item.active .delete-session-btn {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
 }
 
 .session-item.active .delete-session-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .delete-session-btn:disabled {
-  opacity: 0 !important;
+  opacity: 0.35 !important;
   cursor: not-allowed;
 }
 
@@ -573,17 +593,19 @@ body {
 
   .delete-session-btn,
   .rename-session-btn {
-    opacity: 0.5;
+    width: 32px;
+    height: 32px;
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* Touch / mobile — always-visible delete buttons                     */
+/* Touch / mobile — comfortable always-visible action targets         */
 /* ------------------------------------------------------------------ */
 
 @media (hover: none), (pointer: coarse) {
   .delete-session-btn,
   .rename-session-btn {
-    opacity: 0.5;
+    width: 32px;
+    height: 32px;
   }
 }
