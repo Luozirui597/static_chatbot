@@ -15,6 +15,7 @@ os.environ["LLM_MODE"] = "fake"
 os.environ["LLM_API_KEY"] = ""
 os.environ["LLM_API_BASE_URL"] = ""
 os.environ["LLM_MODEL"] = ""
+os.environ["LLM_REASONING_EFFORT"] = ""
 
 # Prevent module-level engine creation in backend.database from
 # touching the real data/chatbot.db during test collection.

@@ -1,7 +1,7 @@
 """Tests for create_llm_client factory function.
 
-All tests pass explicit parameters — they never read ``backend.config``
-or the local environment.
+Tests use explicit parameters or monkeypatch ``backend.config``; they
+never read the developer's local environment.
 """
 
 import pytest
@@ -102,3 +102,79 @@ def test_real_mode_all_missing_never_falls_back_to_fake():
             base_url="",
             model="",
         )
+
+
+# ---------------------------------------------------------------------------
+# reasoning_effort
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_effort_defaults_to_config(monkeypatch):
+    """None reads the monkeypatched global config value."""
+    monkeypatch.setattr("backend.config.LLM_REASONING_EFFORT", "high")
+    client = create_llm_client(
+        mode="real",
+        api_key="sk-test",
+        base_url="https://api.example.com/v1",
+        model="gpt-4",
+        reasoning_effort=None,
+    )
+    assert client._reasoning_effort == "high"
+
+
+def test_reasoning_effort_explicit_overrides_config(monkeypatch):
+    """Explicit 'none' overrides global 'high'."""
+    monkeypatch.setattr("backend.config.LLM_REASONING_EFFORT", "high")
+    client = create_llm_client(
+        mode="real",
+        api_key="sk-test",
+        base_url="https://api.example.com/v1",
+        model="gpt-4",
+        reasoning_effort="none",
+    )
+    assert client._reasoning_effort == "none"
+
+
+def test_reasoning_effort_explicit_empty_overrides_config(monkeypatch):
+    """Explicit '' overrides global 'high' (does not fall back)."""
+    monkeypatch.setattr("backend.config.LLM_REASONING_EFFORT", "high")
+    client = create_llm_client(
+        mode="real",
+        api_key="sk-test",
+        base_url="https://api.example.com/v1",
+        model="gpt-4",
+        reasoning_effort="",
+    )
+    assert client._reasoning_effort == ""
+
+
+def test_reasoning_effort_explicit_normalized(monkeypatch):
+    """Explicit ' NONE ' is normalized to 'none' by the client."""
+    monkeypatch.setattr("backend.config.LLM_REASONING_EFFORT", "high")
+    client = create_llm_client(
+        mode="real",
+        api_key="sk-test",
+        base_url="https://api.example.com/v1",
+        model="gpt-4",
+        reasoning_effort=" NONE ",
+    )
+    assert client._reasoning_effort == "none"
+
+
+def test_reasoning_effort_invalid_real_raises():
+    """Invalid reasoning_effort raises ValueError in real mode."""
+    with pytest.raises(ValueError, match="LLM_REASONING_EFFORT"):
+        create_llm_client(
+            mode="real",
+            api_key="sk-test",
+            base_url="https://api.example.com/v1",
+            model="gpt-4",
+            reasoning_effort="bad",
+        )
+
+
+def test_reasoning_effort_invalid_config_fake_ignored(monkeypatch):
+    """Fake mode ignores an invalid global reasoning_effort config."""
+    monkeypatch.setattr("backend.config.LLM_REASONING_EFFORT", "bad")
+    client = create_llm_client(mode="fake")
+    assert isinstance(client, FakeLLMClient)

@@ -18,7 +18,7 @@ OpenAI-compatible chat-completions API.
 - Responsive layout with a collapsible sidebar on mobile
 - Loading, empty, and error states in the UI
 - Input validation (blank and over-length messages are rejected)
-- 182 automated Python tests covering APIs, models, business logic,
+- 193 automated Python tests covering APIs, models, business logic,
   LLM client behaviour, session isolation, concurrency, auto-title
   generation, session rename, schema migration, and error handling
 - 42 frontend unit tests for clipboard logic, copy button state machine,
@@ -145,7 +145,34 @@ LLM_MODEL=<your-model-name>
 | `LLM_API_KEY` | — | API key (required when `LLM_MODE=real`) |
 | `LLM_API_BASE_URL` | — | API base URL, e.g. `https://api.openai.com/v1` |
 | `LLM_MODEL` | — | Model name sent in the request body |
+| `LLM_REASONING_EFFORT` | — | `none` / `low` / `medium` / `high`. Leave empty for model default. For local models set to `none` to suppress hidden reasoning chains. |
 | `DATABASE_URL` | `sqlite:///data/chatbot.db` | SQLite connection string; the `data/` directory is created automatically on first run |
+
+### Local LLM configuration (example)
+
+When running against a local Ollama instance (e.g. `qwen3.5:4b`):
+
+```env
+LLM_MODE=real
+LLM_API_KEY=ollama
+LLM_API_BASE_URL=http://127.0.0.1:11435/v1
+LLM_MODEL=qwen3.5:4b
+LLM_REASONING_EFFORT=none
+```
+
+Start the backend with temporary environment variables:
+
+```bash
+LLM_MODE=real \
+LLM_API_KEY=ollama \
+LLM_API_BASE_URL=http://127.0.0.1:11435/v1 \
+LLM_MODEL=qwen3.5:4b \
+LLM_REASONING_EFFORT=none \
+.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+`load_dotenv(override=False)` ensures terminal environment variables
+take precedence over the existing `.env` file without overwriting it.
 
 ## Data persistence
 
@@ -334,8 +361,11 @@ Press `Ctrl+C` in the terminal where `start-local-ollama.sh` is running.
 
 - This workflow uses only the project-local CLI.  It does not use or
   modify the existing `/usr/local/bin/ollama` symlink.
-- No models have been downloaded yet.  Model selection and download will
-  be handled in a later step.
+- The local model `qwen3.5:4b` (4.7B params, Q4_K_M, ~3.4 GB) is
+  installed under `local_llm/models/` (excluded from Git).
+- Digest: `2a654d98e6fba55d452b7043684e9b57a947e393bbffa62485a7aac05ee4eefd`
+- `LLM_REASONING_EFFORT=none` prevents this local model from producing
+  unneeded extended hidden reasoning for ordinary chatbot replies.
 - The environment variable `OLLAMA_NO_CLOUD=1` disables Ollama cloud
   features.  Verify the log contains `Ollama cloud disabled: true`.
 - The `/api/version` success only confirms the service is running; it
@@ -353,7 +383,7 @@ Press `Ctrl+C` in the terminal where `start-local-ollama.sh` is running.
 node --test tests/test_clipboard.test.js tests/test_network_recovery.test.js
 ```
 
-Current suite: **182 Python tests**, **42 frontend tests** (all passing).
+Current suite: **193 Python tests**, **42 frontend tests** (all passing).
 
 - `conftest.py` forces `LLM_MODE=fake` and `DATABASE_URL=sqlite:///:memory:`
   before any test module is imported — no test ever touches a real

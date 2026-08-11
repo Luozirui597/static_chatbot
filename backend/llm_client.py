@@ -81,6 +81,12 @@ class OpenAICompatibleLLMClient:
         Optional custom ``httpx`` transport.  In production this is
         ``None`` (the default transport is used).  In tests an
         ``httpx.MockTransport`` can be injected.
+    reasoning_effort:
+        Optional reasoning-effort hint sent as ``reasoning_effort`` in
+        the request payload.  An empty string (the default) omits the
+        field entirely.  Accepted values after stripping and lowercasing
+        are ``none``, ``low``, ``medium``, ``high``.  Any other non-empty
+        value raises ``ValueError`` at construction time.
     """
 
     def __init__(
@@ -91,12 +97,24 @@ class OpenAICompatibleLLMClient:
         model: str,
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        reasoning_effort: str = "",
     ) -> None:
         self._api_key = api_key.strip()
         self._base_url = base_url.strip().rstrip("/")
         self._model = model.strip()
         self._timeout = timeout
         self._transport = transport
+
+        self._reasoning_effort = reasoning_effort.strip()
+        if self._reasoning_effort:
+            allowed = {"none", "low", "medium", "high"}
+            if self._reasoning_effort.lower() not in allowed:
+                raise ValueError(
+                    f"LLM_REASONING_EFFORT must be one of "
+                    f"{sorted(allowed)} or empty, "
+                    f"got '{reasoning_effort}'"
+                )
+            self._reasoning_effort = self._reasoning_effort.lower()
 
     async def generate(self, messages: list[LLMMessage]) -> str:
         """Send *messages* to the upstream API and return the reply."""
@@ -108,6 +126,8 @@ class OpenAICompatibleLLMClient:
             "model": self._model,
             "messages": messages,
         }
+        if self._reasoning_effort:
+            payload["reasoning_effort"] = self._reasoning_effort
 
         client_kwargs: dict = {"timeout": self._timeout}
         if self._transport is not None:
@@ -177,6 +197,7 @@ def create_llm_client(
     api_key: str | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> LLMClient:
     """Return the correct LLM client based on *mode*.
 
@@ -190,6 +211,10 @@ def create_llm_client(
     resolved_api_key = config.LLM_API_KEY if api_key is None else api_key
     resolved_base_url = config.LLM_API_BASE_URL if base_url is None else base_url
     resolved_model = config.LLM_MODEL if model is None else model
+    resolved_reasoning_effort = (
+        config.LLM_REASONING_EFFORT if reasoning_effort is None
+        else reasoning_effort
+    )
 
     # ---- normalize ------------------------------------------------------
     resolved_mode = resolved_mode.strip().lower()
@@ -214,6 +239,7 @@ def create_llm_client(
             api_key=resolved_api_key,
             base_url=resolved_base_url,
             model=resolved_model,
+            reasoning_effort=resolved_reasoning_effort,
         )
 
     raise ValueError(

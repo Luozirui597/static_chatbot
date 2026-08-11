@@ -10,5 +10,6 @@ LLM_MODE = os.getenv("LLM_MODE", "fake")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_API_BASE_URL = os.getenv("LLM_API_BASE_URL", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
+LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
