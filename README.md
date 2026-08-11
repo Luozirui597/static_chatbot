@@ -286,6 +286,63 @@ by the current UI.
   re-synchronises message history after such errors to reflect the
   saved state.
 
+## Local Ollama service
+
+A project-local Ollama (v0.32.6) is installed under `local_llm/Ollama.app/`.
+This workflow uses the project-local Ollama runtime and does not
+use, install, or modify system-wide Ollama files or symlinks.  The `local_llm/` directory
+is excluded by `.gitignore` — the Ollama app, models and runtime data are not
+part of the Git repository.  These instructions describe the current research
+machine; a fresh checkout requires its own Ollama runtime preparation.
+
+### Start the service
+
+```bash
+bash scripts/start-local-ollama.sh
+```
+
+The service runs in the foreground, listening **only** on
+`127.0.0.1:11435`.  All runtime state stays under `local_llm/`.
+
+Expected log output (first few lines):
+
+```text
+Ollama cloud disabled: true
+Listening on 127.0.0.1:11435 (version 0.32.6)
+```
+
+### Verify the service
+
+In another terminal:
+
+```bash
+curl http://127.0.0.1:11435/api/version
+```
+
+A successful response confirms the service is running, **not** that any
+model is installed:
+
+```json
+{"version": "0.32.6"}
+```
+
+### Stop the service
+
+Press `Ctrl+C` in the terminal where `start-local-ollama.sh` is running.
+
+### Notes
+
+- This workflow uses only the project-local CLI.  It does not use or
+  modify the existing `/usr/local/bin/ollama` symlink.
+- No models have been downloaded yet.  Model selection and download will
+  be handled in a later step.
+- The environment variable `OLLAMA_NO_CLOUD=1` disables Ollama cloud
+  features.  Verify the log contains `Ollama cloud disabled: true`.
+- The `/api/version` success only confirms the service is running; it
+  does not mean any model is installed.
+- Step 2D verification logs and reports are preserved in
+  `local_llm/logs/`.
+
 ## Testing
 
 ```bash
