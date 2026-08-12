@@ -91,8 +91,13 @@ def spy_llm():
 
 
 def _create_session(db_session_ref) -> ChatSession:
-    """Insert and return a new ChatSession."""
-    s = ChatSession()
+    """Insert and return a new ChatSession.
+
+    Sets ``llm_model_snapshot`` to ``"injected-test-model"`` so the
+    session is compatible with the registry created by
+    ``ChatService(spy)`` / ``LLMProfileRegistry.from_single_client()``.
+    """
+    s = ChatSession(llm_model_snapshot="injected-test-model")
     db_session_ref.add(s)
     db_session_ref.commit()
     db_session_ref.refresh(s)

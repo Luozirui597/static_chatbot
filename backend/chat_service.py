@@ -9,8 +9,17 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from backend.exceptions import LLMInvalidResponseError
+from backend.exceptions import (
+    LLMInvalidResponseError,
+    SessionProfileConflictError,
+    SessionProfileUnavailableError,
+    UnknownLLMProfileError,
+)
 from backend.llm_client import LLMClient, LLMMessage
+from backend.llm_profiles import (
+    LLMProfileRegistry,
+    SessionProfileStatus,
+)
 from backend.models import ChatSession, Message, utc_now
 from backend.session_titles import derive_auto_title
 from backend.system_prompt import SYSTEM_PROMPT
@@ -130,18 +139,82 @@ class ChatService:
     """Receives a validated user message, calls the LLM client, and
     returns the reply.
 
-    The LLM client is injected so it can be swapped without touching
-    the service or route code.
+    Construct with **either** a single ``llm_client`` (for stateless
+    usage or tests) **or** a ``profiles`` registry (for session-aware
+    production usage).  Passing both or neither is an error.
     """
 
-    def __init__(self, llm_client: LLMClient) -> None:
-        self._llm = llm_client
+    def __init__(
+        self,
+        llm_client: LLMClient | None = None,
+        *,
+        profiles: LLMProfileRegistry | None = None,
+    ) -> None:
+        if llm_client is not None and profiles is not None:
+            raise ValueError(
+                "Pass either llm_client or profiles, not both"
+            )
+        if llm_client is None and profiles is None:
+            raise ValueError(
+                "Either llm_client or profiles must be provided"
+            )
+
+        if llm_client is not None:
+            self._profiles = LLMProfileRegistry.from_single_client(llm_client)
+        else:
+            # profiles is not None (guaranteed by the checks above)
+            assert profiles is not None  # mypy narrowing
+            self._profiles = profiles
+
         self._lock_registry = SessionLockRegistry()
+
+    # -- helpers ------------------------------------------------------------
+
+    def build_session_response(self, session: ChatSession) -> dict:
+        """Return a dict with all public session fields plus profile info.
+
+        Used by every route that returns session data — no ORM attribute
+        monkey-patching and no access to ``_profiles`` from outside.
+        """
+        profile = self._profiles.get(session.llm_profile_id)
+        resolution = self._profiles.resolve(
+            session.llm_profile_id, session.llm_model_snapshot,
+        )
+        return {
+            "id": session.id,
+            "title": session.title,
+            "created_at": session.created_at,
+            "updated_at": session.updated_at,
+            "llm_profile_id": session.llm_profile_id,
+            "llm_profile_label": (
+                profile.label if profile else session.llm_profile_id
+            ),
+            "llm_profile_status": resolution.status,
+            "llm_model_snapshot": session.llm_model_snapshot,
+        }
+
+    def list_profiles_public(self) -> list[dict]:
+        """Return public-safe profile summaries for every profile.
+
+        Never exposes API keys, base URLs, reasoning effort, or clients.
+        """
+        return [
+            {
+                "id": p.id,
+                "label": p.label,
+                "kind": p.kind,
+                "model": p.model,
+                "is_default": p.is_default,
+            }
+            for p in self._profiles.list_all()
+        ]
 
     # -- stateless ---------------------------------------------------------
 
     async def handle_message(self, message: str) -> str:
         """Return the assistant reply for *message*.
+
+        Uses the registry's default profile client.
 
         Raises :exc:`LLMInvalidResponseError` when the LLM returns an
         empty or whitespace-only reply (matching the validation in the
@@ -151,7 +224,8 @@ class ChatService:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": message},
         ]
-        reply = await self._llm.generate(messages)
+        client = self._profiles.default.client
+        reply = await client.generate(messages)
 
         if not reply or not reply.strip():
             raise LLMInvalidResponseError(
@@ -161,6 +235,74 @@ class ChatService:
         return reply
 
     # -- persistent --------------------------------------------------------
+
+    def create_session(
+        self, profile_id: str, db: Session,
+    ) -> ChatSession:
+        """Create a new chat session with a validated profile.
+
+        Looks up *profile_id* in the registry, writes the id and the
+        current model as a snapshot, and returns the persisted ORM object.
+
+        Raises :exc:`UnknownLLMProfileError` when *profile_id* is not
+        in the registry.
+        """
+        profile = self._profiles.get(profile_id)
+        if profile is None:
+            raise UnknownLLMProfileError(profile_id)
+
+        session = ChatSession(
+            llm_profile_id=profile.id,
+            llm_model_snapshot=profile.model,
+        )
+        db.add(session)
+        try:
+            db.commit()
+            db.refresh(session)
+        except Exception:
+            db.rollback()
+            raise
+        return session
+
+    def resolve_session_profile(
+        self, chat_session: ChatSession,
+    ) -> LLMClient:
+        """Resolve the session's profile compatibility and return a ready client.
+
+        This method receives a persisted ``ChatSession`` ORM object (not a
+        profile id string).  It checks the stored ``llm_profile_id`` and
+        ``llm_model_snapshot`` against the registry.
+
+        Returns the profile's client when the status is *ready*.
+
+        Raises
+        ------
+        SessionProfileUnavailableError
+            The session's profile no longer exists in the registry.
+        SessionProfileConflictError
+            The profile's model has changed (``model_changed``) or the
+            session predates model tracking (``legacy_unknown``).
+        """
+        resolution = self._profiles.resolve(
+            chat_session.llm_profile_id,
+            chat_session.llm_model_snapshot,
+        )
+
+        if resolution.status == SessionProfileStatus.PROFILE_UNAVAILABLE:
+            raise SessionProfileUnavailableError(chat_session.llm_profile_id)
+
+        if resolution.status in (
+            SessionProfileStatus.MODEL_CHANGED,
+            SessionProfileStatus.LEGACY_UNKNOWN,
+        ):
+            raise SessionProfileConflictError(
+                status=resolution.status.value,
+                snapshot=chat_session.llm_model_snapshot,
+            )
+
+        # status is READY — profile is guaranteed non-None
+        assert resolution.profile is not None
+        return resolution.profile.client
 
     async def handle_session_message(
         self,
@@ -172,6 +314,15 @@ class ChatService:
 
         Acquires a per-session lock and queries the ``ChatSession``
         inside it, so a concurrent delete cannot race with the lookup.
+
+        **Compatibility check** runs before any data is saved:
+
+        * ``profile_unavailable`` → raises, user message NOT saved.
+        * ``model_changed`` → raises, user message NOT saved.
+        * ``legacy_unknown`` → raises, user message NOT saved.
+
+        Only ``ready`` sessions proceed to save the user message and
+        call the LLM.
 
         Parameters
         ----------
@@ -193,6 +344,10 @@ class ChatService:
         ------
         SessionNotFoundError
             When *session_id* does not exist in the database.
+        SessionProfileUnavailableError
+            When the session's profile is no longer in the registry.
+        SessionProfileConflictError
+            When the model has changed or the session predates tracking.
         LLMInvalidResponseError
             When the LLM replies with an empty or whitespace-only string.
         """
@@ -200,6 +355,10 @@ class ChatService:
             chat_session = db.get(ChatSession, session_id)
             if chat_session is None:
                 raise SessionNotFoundError(session_id)
+
+            # -- Resolve profile compatibility ---------------------------
+            # Raises before any data is saved if not ready.
+            llm_client = self.resolve_session_profile(chat_session)
 
             # -- Determine whether this is the first user message --------
             existing_user_msg_count = db.execute(
@@ -259,8 +418,8 @@ class ChatService:
                     "content": user_message.content,
                 })
 
-                # Call LLM
-                reply = await self._llm.generate(llm_messages)
+                # Call LLM via the resolved profile's client
+                reply = await llm_client.generate(llm_messages)
 
                 # Validate reply — empty or blank is an error
                 if not reply or not reply.strip():

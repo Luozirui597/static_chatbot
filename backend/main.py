@@ -9,15 +9,24 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend import config
 from backend.chat_service import ChatService, SessionNotFoundError
 from backend.database import create_tables, engine, get_db, run_migrations
-from backend.exceptions import LLMError
+from backend.exceptions import (
+    LLMError,
+    SessionProfileConflictError,
+    SessionProfileUnavailableError,
+    UnknownLLMProfileError,
+)
 from backend.llm_client import create_llm_client
+from backend.llm_profiles import LLMProfile, LLMProfileRegistry
 from backend.models import ChatSession, Message
 from backend.schemas import (
     ChatRequest,
     ChatResponse,
+    CreateSessionRequest,
     DeleteResponse,
+    LLMProfilePublic,
     MessageResponse,
     RenameSessionRequest,
     SendMessageResponse,
@@ -30,6 +39,87 @@ from backend.schemas import (
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
+
+# ---------------------------------------------------------------------------
+# Profile registry factory
+# ---------------------------------------------------------------------------
+
+
+def _build_production_registry() -> LLMProfileRegistry:
+    """Build the production profile registry from environment config.
+
+    Always includes a ``"default"`` profile.  When ``LOCAL_LLM_ENABLED``
+    is true, also includes a ``"local"`` profile backed by Ollama.
+
+    The default profile reflects ``LLM_MODE``:
+
+    * ``fake`` → kind ``"fake"``, model ``"fake"``, FakeLLMClient.
+    * ``real`` → kind ``"api"``, model from ``LLM_MODEL``,
+      label from ``LLM_PROFILE_LABEL`` or ``"API Model"``.
+    """
+    profiles: list[LLMProfile] = []
+
+    # -- Default profile --------------------------------------------------
+    if config.LLM_MODE.strip().lower() == "fake":
+        default_client = create_llm_client()
+        default_label = config.LLM_PROFILE_LABEL.strip() or "Fake Model"
+        profiles.append(LLMProfile(
+            id="default",
+            label=default_label,
+            kind="fake",
+            model="fake",
+            client=default_client,
+            is_default=True,
+        ))
+    else:
+        # real / API mode
+        default_client = create_llm_client()
+        default_label = config.LLM_PROFILE_LABEL.strip() or "API Model"
+        default_model = config.LLM_MODEL.strip()
+        if not default_model:
+            raise ValueError("LLM_MODEL is required when LLM_MODE is not 'fake'")
+        profiles.append(LLMProfile(
+            id="default",
+            label=default_label,
+            kind="api",
+            model=default_model,
+            client=default_client,
+            is_default=True,
+        ))
+
+    # -- Optional local profile -------------------------------------------
+    if config.LOCAL_LLM_ENABLED:
+        local_model = config.LOCAL_LLM_MODEL.strip()
+        if not local_model:
+            raise ValueError(
+                "LOCAL_LLM_MODEL is required when LOCAL_LLM_ENABLED=true"
+            )
+        local_api_key = config.LOCAL_LLM_API_KEY.strip() or "ollama"
+        local_base_url = (
+            config.LOCAL_LLM_API_BASE_URL.strip()
+            or "http://127.0.0.1:11435/v1"
+        )
+        local_label = config.LOCAL_LLM_PROFILE_LABEL.strip() or "Local Model"
+        local_reasoning = config.LOCAL_LLM_REASONING_EFFORT.strip()
+
+        local_client = create_llm_client(
+            mode="real",
+            api_key=local_api_key,
+            base_url=local_base_url,
+            model=local_model,
+            reasoning_effort=local_reasoning,
+        )
+        profiles.append(LLMProfile(
+            id="local",
+            label=local_label,
+            kind="local",
+            model=local_model,
+            client=local_client,
+            is_default=False,
+        ))
+
+    return LLMProfileRegistry(profiles)
+
 
 # ---------------------------------------------------------------------------
 # Application & dependencies
@@ -46,7 +136,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Static Chatbot", lifespan=lifespan)
 
-chat_service = ChatService(llm_client=create_llm_client())
+chat_service = ChatService(profiles=_build_production_registry())
 
 # ---------------------------------------------------------------------------
 # API routes
@@ -72,6 +162,20 @@ async def chat(request: ChatRequest):
 
 
 # ---------------------------------------------------------------------------
+# Profile routes
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/api/llm/profiles",
+    response_model=list[LLMProfilePublic],
+)
+def list_profiles():
+    """Return every available LLM profile (public fields only)."""
+    return chat_service.list_profiles_public()
+
+
+# ---------------------------------------------------------------------------
 # Session routes
 # ---------------------------------------------------------------------------
 
@@ -81,13 +185,26 @@ async def chat(request: ChatRequest):
     response_model=SessionResponse,
     status_code=201,
 )
-def create_session(db: Session = Depends(get_db)):
-    """Create a new chat session with the default title."""
-    session = ChatSession()
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-    return session
+def create_session(
+    request: CreateSessionRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Create a new chat session.
+
+    When no body, ``{}``, or JSON ``null`` is sent the default profile
+    is used.
+    """
+    profile_id = request.llm_profile_id if request is not None else "default"
+
+    try:
+        session = chat_service.create_session(profile_id, db)
+    except UnknownLLMProfileError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    return chat_service.build_session_response(session)
 
 
 @app.get(
@@ -104,7 +221,8 @@ def list_sessions(db: Session = Depends(get_db)):
         ChatSession.updated_at.desc(),
         ChatSession.id.desc(),
     )
-    return db.execute(stmt).scalars().all()
+    sessions = db.execute(stmt).scalars().all()
+    return [chat_service.build_session_response(s) for s in sessions]
 
 
 @app.get(
@@ -116,7 +234,7 @@ def get_session(session_id: int, db: Session = Depends(get_db)):
     session = db.get(ChatSession, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return session
+    return chat_service.build_session_response(session)
 
 
 @app.get(
@@ -161,6 +279,16 @@ async def send_message(
         raise HTTPException(
             status_code=404, detail="Session not found"
         ) from None
+    except SessionProfileUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+    except SessionProfileConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
     except LLMError as exc:
         raise HTTPException(
             status_code=exc.status_code,
@@ -209,13 +337,14 @@ async def rename_session(
     layer.
     """
     try:
-        return await chat_service.rename_session(
+        session = await chat_service.rename_session(
             session_id, request.title, db,
         )
     except SessionNotFoundError:
         raise HTTPException(
             status_code=404, detail="Session not found"
         ) from None
+    return chat_service.build_session_response(session)
 
 
 # ---------------------------------------------------------------------------

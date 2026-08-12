@@ -1492,7 +1492,9 @@ class TestPhase1Atomicity:
         )
         db = SessionLocal()
 
-        chat_session = ChatSession()
+        chat_session = ChatSession(
+            llm_model_snapshot="injected-test-model",
+        )
         db.add(chat_session)
         db.commit()
         db.refresh(chat_session)

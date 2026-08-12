@@ -134,6 +134,72 @@ def run_migrations(bind: Engine) -> None:
                 )
             )
 
+        # ── Migration: llm_profile_v1 ───────────────────────────────
+        row = conn.execute(
+            sa_text(
+                "SELECT version FROM schema_migrations "
+                "WHERE version = 'llm_profile_v1'"
+            )
+        ).fetchone()
+
+        if row is None:
+            cols = [
+                r[1]
+                for r in conn.execute(
+                    sa_text("PRAGMA table_info('chat_sessions')")
+                ).fetchall()
+            ]
+
+            if "llm_profile_id" not in cols:
+                conn.execute(
+                    sa_text(
+                        "ALTER TABLE chat_sessions "
+                        "ADD COLUMN llm_profile_id VARCHAR(50) "
+                        "NOT NULL DEFAULT 'default'"
+                    )
+                )
+
+            if "llm_model_snapshot" not in cols:
+                conn.execute(
+                    sa_text(
+                        "ALTER TABLE chat_sessions "
+                        "ADD COLUMN llm_model_snapshot VARCHAR(255)"
+                    )
+                )
+
+            # Backfill rows whose llm_profile_id is NULL, empty, or
+            # whitespace-only.  SQLite's default TRIM only strips
+            # spaces, so an explicit whitespace set is used: TAB(9),
+            # LF(10), VT(11), FF(12), CR(13), SPACE(32).
+            #
+            # Rows with a non-blank profile id are left untouched —
+            # even ids unknown to the current registry, so they
+            # resolve to profile_unavailable.  llm_model_snapshot is
+            # intentionally not touched: existing rows keep NULL so
+            # they resolve to legacy_unknown.
+            conn.execute(
+                sa_text(
+                    "UPDATE chat_sessions "
+                    "SET llm_profile_id = 'default' "
+                    "WHERE llm_profile_id IS NULL "
+                    "   OR length("
+                    "       trim("
+                    "           llm_profile_id,"
+                    "           char(9) || char(10) || char(11) ||"
+                    "           char(12) || char(13) || char(32)"
+                    "       )"
+                    "   ) = 0"
+                )
+            )
+
+            # Record completion.
+            conn.execute(
+                sa_text(
+                    "INSERT INTO schema_migrations (version) "
+                    "VALUES ('llm_profile_v1')"
+                )
+            )
+
 
 # ---------------------------------------------------------------------------
 # Module-level singletons

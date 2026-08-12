@@ -70,6 +70,19 @@ class ChatSession(Base):
         nullable=False,
     )
 
+    llm_profile_id: Mapped[str] = mapped_column(
+        String(50),
+        default="default",
+        server_default="default",
+        nullable=False,
+    )
+
+    llm_model_snapshot: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        default=None,
+    )
+
     messages: Mapped[List["Message"]] = relationship(
         "Message",
         back_populates="session",
