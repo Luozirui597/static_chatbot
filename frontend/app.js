@@ -1674,6 +1674,11 @@
       var expanded = !sidebarEl.classList.contains("collapsed");
       sidebarToggleEl.setAttribute("aria-expanded", String(expanded));
     } else {
+      // Keep the latent mobile state collapsed while the desktop CSS
+      // displays the sidebar normally.  If the viewport later crosses
+      // back into mobile, the drawer is already off-screen instead of
+      // jumping over the chat area at the breakpoint.
+      sidebarEl.classList.add("collapsed");
       sidebarToggleEl.setAttribute("aria-expanded", "true");
     }
   });
@@ -1684,9 +1689,12 @@
     isInitializing = true;
     updateControlStates();
 
-    // Mobile: start with sidebar collapsed
+    // Keep the latent drawer state collapsed on every viewport.  The
+    // class only has a visual effect inside the mobile media query, so
+    // the desktop sidebar remains visible while future desktop-to-mobile
+    // transitions start in the correct closed state.
+    sidebarEl.classList.add("collapsed");
     if (isMobile()) {
-      sidebarEl.classList.add("collapsed");
       sidebarToggleEl.setAttribute("aria-expanded", "false");
     } else {
       sidebarToggleEl.setAttribute("aria-expanded", "true");

@@ -52,11 +52,15 @@ body {
   top: 0;
   left: 0;
   z-index: 100;
-  width: 44px;
-  height: 44px;
+  width: 52px;
+  height: 48px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
   border: none;
   background: #fafafa;
   font-size: 1.25rem;
+  line-height: 1;
   cursor: pointer;
   color: #1a1a1a;
   border-bottom: 1px solid #e5e5e5;
@@ -85,6 +89,7 @@ body {
   font-size: 1rem;
   font-weight: 600;
   margin-bottom: 12px;
+  transition: padding-left 0.2s ease;
 }
 
 .new-chat-button {
@@ -725,7 +730,15 @@ body {
   }
 
   .sidebar-toggle {
-    display: block;
+    display: flex;
+  }
+
+  .sidebar-title {
+    /* The fixed menu button reaches 52px from the viewport edge.
+       Indent only the naturally 16px-inset title by another 44px so
+       it starts at 60px, leaving an 8px gap without narrowing the New
+       Chat button or model selector. */
+    padding-left: 44px;
   }
 
   .sidebar {
@@ -738,11 +751,20 @@ body {
     z-index: 99;
     border-right: 1px solid #e5e5e5;
     box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
-    transition: transform 0.2s;
+    transform: translateX(0);
+    visibility: visible;
+    transition:
+      transform 0.2s ease,
+      visibility 0s linear 0s;
   }
 
   .sidebar.collapsed {
-    display: none;
+    transform: translateX(-100%);
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      transform 0.2s ease,
+      visibility 0s linear 0.2s;
   }
 
   .chat-session-header {
