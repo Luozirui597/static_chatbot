@@ -15,14 +15,21 @@ OpenAI-compatible chat-completions API.
 - Multi-turn conversations with a configurable history window
 - Multiple isolated sessions — create, switch, rename, and delete
 - Auto-generated session titles from the first user message
+- Selectable LLM model for new chats (API / local / fake profiles)
+  — the model is fixed when a session is created; existing sessions
+  cannot be switched to another model, and there is no automatic
+  fallback between models
+- Non-ready legacy sessions (model removed, model configuration
+  changed, or created before model tracking) remain readable but are
+  read-only
 - Responsive layout with a collapsible sidebar on mobile
 - Loading, empty, and error states in the UI
 - Input validation (blank and over-length messages are rejected)
-- 193 automated Python tests covering APIs, models, business logic,
+- 297 automated Python tests covering APIs, models, business logic,
   LLM client behaviour, session isolation, concurrency, auto-title
   generation, session rename, schema migration, and error handling
-- 42 frontend unit tests for clipboard logic, copy button state machine,
-  and network-error recovery (Node `node:test`)
+- Frontend unit tests for clipboard logic, copy button state machine,
+  network-error recovery, and model-selection logic (Node `node:test`)
 
 ## Project structure
 
@@ -44,6 +51,7 @@ frontend/
   network-recovery.js  Pure helper for send-failure recovery
   clipboard.js         Clipboard API + execCommand fallback
   copy-controller.js   Per-button copy state machine
+  model-selection.js   Pure helpers for the model selector
   app.js               Frontend logic (vanilla JS)
 tests/
   conftest.py          Forces LLM_MODE=fake for all tests
@@ -56,6 +64,7 @@ tests/
   test_sessions.py     Session CRUD API
   test_session_chat.py Session message send API, concurrency, lock safety
   test_network_recovery.test.js  Frontend send-failure recovery tests
+  test_model_selection.test.js   Frontend model-selection helper tests
 .env.example           Documented environment variables
 requirements.txt       Python dependencies
 ```
@@ -298,6 +307,17 @@ by the current UI.
 - The sidebar lists all sessions, newest first (ordered by
   `updated_at` descending on the server).
 - **+ New Chat** creates a session immediately and selects it.
+- A **Model for new chats** selector next to the button chooses which
+  LLM profile the *next* new session uses.  Switching the selector
+  never changes the current session — to use another model, choose it
+  and start a new chat.  There is no automatic fallback between
+  models.
+- The chat header shows the current session's actual model label
+  (with an API / Local / Fake badge when known).
+- Sessions whose model is no longer available, whose model
+  configuration changed, or that were created before model tracking
+  are readable but read-only — renaming, deleting, copying and
+  creating new chats still work.
 - Click a session in the sidebar to switch to it.
 - Click the **×** button to delete a session (confirmation required).
 - Messages are rendered with `textContent` — no HTML injection.
@@ -305,7 +325,8 @@ by the current UI.
   status bar.
 - **Enter** sends the message; **Shift+Enter** inserts a newline.
 - On page reload the most recently updated session is opened
-  automatically.
+  automatically and the model selector returns to the server-declared
+  default profile.
 - The sidebar collapses on narrow screens (≤ 767 px); tap the toggle
   button (☰) to open or close it.
 - If an upstream API error occurs, the user message may still be
@@ -380,10 +401,13 @@ Press `Ctrl+C` in the terminal where `start-local-ollama.sh` is running.
 .venv/bin/python -m pytest -q
 
 # Frontend tests (requires Node.js)
-node --test tests/test_clipboard.test.js tests/test_network_recovery.test.js
+node --test \
+  tests/test_clipboard.test.js \
+  tests/test_network_recovery.test.js \
+  tests/test_model_selection.test.js
 ```
 
-Current suite: **193 Python tests**, **42 frontend tests** (all passing).
+Current suite: **297 Python tests**, **142 frontend tests** (all passing).
 
 - `conftest.py` forces `LLM_MODE=fake` and `DATABASE_URL=sqlite:///:memory:`
   before any test module is imported — no test ever touches a real

@@ -10,8 +10,16 @@
   const sidebarEl = document.getElementById("sidebar");
   const sidebarToggleEl = document.getElementById("sidebarToggle");
   const sessionListEl = document.getElementById("sessionList");
+  const sessionListStatusEl = document.getElementById("sessionListStatus");
   const newChatBtn = document.getElementById("newChatButton");
+  const profileSelectEl = document.getElementById("profileSelect");
+  const profileSelectorStatusEl =
+    document.getElementById("profileSelectorStatus");
   const sessionHeaderEl = document.getElementById("sessionHeader");
+  const sessionTitleEl = document.getElementById("sessionTitle");
+  const sessionModelBadgeEl = document.getElementById("sessionModelBadge");
+  const sessionCompatibilityNoticeEl =
+    document.getElementById("sessionCompatibilityNotice");
   const messagesEl = document.getElementById("messages");
   const statusEl = document.getElementById("status");
   const inputEl = document.getElementById("messageInput");
@@ -19,7 +27,7 @@
 
   /* ---- State ------------------------------------------------------- */
 
-  let sessions = [];            // [{id, title, created_at, updated_at}, ...]
+  let sessions = [];            // [{id, title, ..., llm_profile_*}, ...]
   let currentSessionId = null;  // int | null
   let isSending = false;        // prevent double-submit
   let isCreatingSession = false; // prevent double-create of New Chat
@@ -29,6 +37,55 @@
   let isInitializing = true;    // block user actions during page init
   let sessionLoadRequestId = 0;  // race-condition guard for message loads
   let sessionLastMessageId = {}; // sessionId -> int (last known message id)
+
+  // Model selector state
+  let profiles = [];               // raw profile list from the server
+  let selectedProfileId = null;    // string | null
+  let profilesLoadState = "loading"; // "loading" | "ready" | "error"
+  let profilesLoadError = null;    // persistent — #profileSelectorStatus
+
+  // Session list state
+  let sessionsLoadState = "loading"; // "loading" | "ready" | "error"
+  let sessionsEverLoaded = false;    // ever loaded the full list
+  let sessionsLoadError = null;      // persistent — #sessionListStatus
+
+  // Temporary per-session send blocks set after 409/503 responses.
+  // sessionId -> "conflict" | "profile_unavailable"
+  let sessionSendBlocks = {};
+
+  /* ---- Derived helpers --------------------------------------------- */
+
+  /** The registry analysis of the current profile list. */
+  function registry() {
+    return analyzeProfileRegistry(profiles);
+  }
+
+  /** The SessionResponse for currentSessionId, or null. */
+  function currentSession() {
+    if (currentSessionId === null) return null;
+    for (let i = 0; i < sessions.length; i++) {
+      if (sessions[i].id === currentSessionId) return sessions[i];
+    }
+    return null;
+  }
+
+  /** Whether creating new sessions is currently possible. */
+  function registryUsable() {
+    return profilesLoadState === "ready" && registry().status === "valid";
+  }
+
+  /** Whether the current session (or none) can accept a message. */
+  function currentSessionWritable() {
+    return isSessionWritable(
+      currentSession(),
+      sessionSendBlocks[currentSessionId] || null,
+    );
+  }
+
+  /** kind of a profile — only from a structurally valid registry. */
+  function lookupProfileKind(profileId) {
+    return profileKindFromRegistry(registry(), profileId);
+  }
 
   /* ---- Custom error ------------------------------------------------ */
 
@@ -88,8 +145,22 @@
     return resp.json();
   }
 
-  async function createSessionRequest() {
-    const resp = await apiRequest("/api/sessions", { method: "POST" });
+  async function fetchSession(sessionId) {
+    const resp = await apiRequest("/api/sessions/" + sessionId);
+    return resp.json();
+  }
+
+  async function fetchProfiles() {
+    const resp = await apiRequest("/api/llm/profiles");
+    return resp.json();
+  }
+
+  async function createSessionRequest(profileId) {
+    const resp = await apiRequest("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildCreateSessionPayload(profileId)),
+    });
     return resp.json();
   }
 
@@ -128,27 +199,215 @@
     return resp.json();
   }
 
+  /* ---- Rendering: profile selector ---------------------------------- */
+
+  /**
+   * Rebuild the selector options and its persistent status text.
+   *
+   * Called ONLY when profile content or the resolved selection changes
+   * (initial load, 422 reload).  Never called from routine control
+   * synchronisation — rebuilding options would churn the DOM and drop
+   * the select's focus.
+   */
+  function renderProfileSelectorContent() {
+    const hadFocus = document.activeElement === profileSelectEl;
+    const reg = registry();
+
+    profileSelectEl.replaceChildren();
+
+    if (reg.status === "valid") {
+      for (const p of reg.profiles) {
+        const option = document.createElement("option");
+        option.value = p.id;
+        option.textContent = p.label;
+        profileSelectEl.appendChild(option);
+      }
+      if (selectedProfileId !== null) {
+        profileSelectEl.value = selectedProfileId;
+      }
+    } else {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No models available";
+      profileSelectEl.appendChild(option);
+      profileSelectEl.value = "";
+    }
+
+    profileSelectorStatusEl.textContent = profileRegistryStatusText(
+      reg.status,
+      profilesLoadError,
+    );
+
+    // Minimal, explainable focus restoration: only when the select
+    // held focus before the rebuild and is still usable.
+    if (hadFocus && !profileSelectEl.disabled) {
+      profileSelectEl.focus();
+    }
+  }
+
+  /* ---- Rendering: session list -------------------------------------- */
+
+  /**
+   * Render the session list and its persistent status area.
+   *
+   * Handles list content, the empty-list message, initial load errors
+   * and stale-list warnings in one place so the list is never hidden
+   * or faked when an error exists.
+   */
+  function renderSessionListOrError() {
+    if (
+      sessionsLoadState === "error" &&
+      sessions.length === 0 &&
+      !sessionsEverLoaded
+    ) {
+      // Initial load failed — show an error, never "No conversations
+      // yet.".
+      sessionListEl.replaceChildren();
+      const errDiv = document.createElement("div");
+      errDiv.className = "sidebar-empty";
+      errDiv.textContent = "Couldn't load conversations.";
+      sessionListEl.appendChild(errDiv);
+
+      sessionListStatusEl.textContent =
+        sessionsLoadError || "Couldn't load conversations.";
+      sessionListStatusEl.classList.remove("warning");
+      sessionListStatusEl.hidden = false;
+      return;
+    }
+
+    renderSessionList();
+
+    if (sessionsLoadState === "error") {
+      // Keep the cached/known list visible with a warning.
+      if (sessionsEverLoaded) {
+        sessionListStatusEl.textContent =
+          "Conversation list may be out of date.";
+      } else {
+        sessionListStatusEl.textContent =
+          "Some conversations may not have loaded.";
+      }
+      sessionListStatusEl.classList.add("warning");
+      sessionListStatusEl.hidden = false;
+    } else {
+      sessionListStatusEl.textContent = "";
+      sessionListStatusEl.classList.remove("warning");
+      sessionListStatusEl.hidden = true;
+    }
+  }
+
+  /* ---- Rendering: current session meta ------------------------------ */
+
+  /**
+   * Title, model badge, and compatibility notice for the current
+   * session.  Everything comes from the SessionResponse itself; the
+   * kind chip only when the current registry is valid.
+   */
+  function renderCurrentSessionMeta() {
+    const session = currentSession();
+
+    if (session === null) {
+      sessionTitleEl.textContent = "";
+      sessionModelBadgeEl.replaceChildren();
+      sessionModelBadgeEl.hidden = true;
+      sessionCompatibilityNoticeEl.textContent = "";
+      sessionCompatibilityNoticeEl.hidden = true;
+      return;
+    }
+
+    // -- title ----------------------------------------------------------
+    sessionTitleEl.textContent = session.title;
+
+    // -- badge: kind chip (valid registry only) + session's own label ---
+    sessionModelBadgeEl.replaceChildren();
+    const kindText = profileKindBadgeText(
+      lookupProfileKind(session.llm_profile_id),
+    );
+    if (kindText !== null) {
+      const kindSpan = document.createElement("span");
+      kindSpan.className = "badge-kind";
+      kindSpan.textContent = kindText;
+      sessionModelBadgeEl.appendChild(kindSpan);
+    }
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "badge-label";
+    labelSpan.textContent = session.llm_profile_label || "";
+    sessionModelBadgeEl.appendChild(labelSpan);
+    sessionModelBadgeEl.hidden = false;
+
+    // -- compatibility notice: temporary block first, then server status
+    const block = sessionSendBlocks[session.id] || null;
+    const blockText = temporaryBlockExplanation(block);
+    const noticeText =
+      blockText !== null
+        ? blockText
+        : readOnlyExplanation(session.llm_profile_status);
+
+    if (noticeText) {
+      sessionCompatibilityNoticeEl.textContent = noticeText;
+      sessionCompatibilityNoticeEl.hidden = false;
+    } else {
+      sessionCompatibilityNoticeEl.textContent = "";
+      sessionCompatibilityNoticeEl.hidden = true;
+    }
+  }
+
   /* ---- Control state helpers --------------------------------------- */
 
-  /** Sync button disabled states from isSending + isCreatingSession +
-   *  isRenaming + isRenameSaving + isInitializing. */
+  /**
+   * Sync disabled states and placeholders only.  Never touches focus
+   * and never rebuilds selector options.
+   *
+   * Tiered blocks:
+   * - blockSessionSelection — session switching disabled
+   * - blockSessionActions  — rename/delete disabled
+   * - blockCreate          — New Chat disabled
+   * - blockProfileSelect   — selector disabled
+   * - blockSend            — input/Send disabled
+   *
+   * Session switching stays available while a send is in progress
+   * (sendingSessionId guards stale renders); everything else is
+   * locked during send/create.
+   */
   function updateControlStates() {
-    const blockAll = isInitializing || isRenaming || isRenameSaving;
-    const blockSend = blockAll || isSending;
-    const blockCreate = blockAll || isSending || isCreatingSession;
+    const blockBase = isInitializing || isRenaming || isRenameSaving;
+    const blockSessionSelection = blockBase || isCreatingSession;
+    const blockSessionActions = blockBase || isCreatingSession || isSending;
+    const usable = registryUsable();
+    const writable = currentSessionWritable();
+
+    const blockCreate = blockSessionActions || !usable;
+    const blockProfileSelect =
+      blockSessionActions || !usable || profiles.length <= 1;
+    const blockSend =
+      blockBase || isCreatingSession || isSending || !writable ||
+      (currentSessionId === null && !usable);
 
     sendBtn.disabled = blockSend;
     inputEl.disabled = blockSend;
     newChatBtn.disabled = blockCreate;
+    profileSelectEl.disabled = blockProfileSelect;
+
+    if (blockSend && currentSessionId !== null && !writable) {
+      inputEl.placeholder =
+        "This conversation is read-only. Start a new chat to continue.";
+    } else {
+      inputEl.placeholder = "Type a message...";
+    }
 
     const deleteBtns = document.querySelectorAll(".delete-session-btn");
-    deleteBtns.forEach(function (btn) { btn.disabled = blockAll; });
+    deleteBtns.forEach(function (btn) {
+      btn.disabled = blockSessionActions;
+    });
 
     const renameBtns = document.querySelectorAll(".rename-session-btn");
-    renameBtns.forEach(function (btn) { btn.disabled = blockAll; });
+    renameBtns.forEach(function (btn) {
+      btn.disabled = blockSessionActions;
+    });
 
     const selectBtns = document.querySelectorAll(".session-select-btn");
-    selectBtns.forEach(function (btn) { btn.disabled = blockAll; });
+    selectBtns.forEach(function (btn) {
+      btn.disabled = blockSessionSelection;
+    });
 
     // Rename input / Save / Cancel are only controlled by isRenameSaving:
     // - Editing (isRenaming=true, isRenameSaving=false): enabled
@@ -161,10 +420,15 @@
       if (saveBtn) saveBtn.disabled = isRenameSaving;
       if (cancelBtn) cancelBtn.disabled = isRenameSaving;
     }
+  }
 
-    if (!blockSend) {
-      inputEl.focus();
-    }
+  /**
+   * Synchronise the current-session UI.  Only renders meta and
+   * controls — never rebuilds selector options.
+   */
+  function syncCurrentSessionUI() {
+    renderCurrentSessionMeta();
+    updateControlStates();
   }
 
   function setSendingState(on) {
@@ -342,22 +606,6 @@
     messagesEl.appendChild(div);
   }
 
-  /* ---- Session header ---------------------------------------------- */
-
-  function updateSessionHeader() {
-    if (currentSessionId === null) {
-      sessionHeaderEl.textContent = "";
-      return;
-    }
-    for (let i = 0; i < sessions.length; i++) {
-      if (sessions[i].id === currentSessionId) {
-        sessionHeaderEl.textContent = sessions[i].title;
-        return;
-      }
-    }
-    sessionHeaderEl.textContent = "New Chat";
-  }
-
   /* ---- Time formatting --------------------------------------------- */
 
   /**
@@ -487,6 +735,7 @@
         const selectBtn = document.createElement("button");
         selectBtn.type = "button";
         selectBtn.className = "session-select-btn";
+        selectBtn.dataset.sessionId = String(sid);
         if (sid === currentSessionId) {
           selectBtn.classList.add("active");
         }
@@ -512,9 +761,6 @@
         renameBtn.setAttribute("aria-label", "Rename session " + sid);
         renameBtn.title = "Rename";
         renameBtn.textContent = "✎";  // U+270E
-        if (isSending || isRenaming || isInitializing) {
-          renameBtn.disabled = true;
-        }
         renameBtn.addEventListener("click", function (event) {
           event.stopPropagation();
           startRename(sid);
@@ -527,9 +773,6 @@
         delBtn.setAttribute("aria-label", "Delete session " + sid);
         delBtn.title = "Delete";
         delBtn.textContent = "×";
-        if (isSending || isRenaming || isInitializing) {
-          delBtn.disabled = true;
-        }
         delBtn.addEventListener("click", function (event) {
           event.stopPropagation();
           handleDeleteSession(sid, event);
@@ -546,52 +789,129 @@
 
   /* ---- Session operations ------------------------------------------ */
 
+  /**
+   * Refresh the full session list.
+   *
+   * Returns true on success, false on failure.  On failure the
+   * existing sessions array, current selection and rendered messages
+   * are kept; a persistent stale warning is shown.  On success the
+   * server list is authoritative: temporary send blocks for sessions
+   * it contains are cleared (their real llm_profile_status now
+   * governs writability) and blocks for sessions no longer present
+   * are dropped.
+   */
   async function refreshSessions(preserveSelection) {
     if (preserveSelection === undefined) preserveSelection = true;
 
+    let data;
     try {
-      const data = await fetchSessions();
-      sessions = data;
+      data = await fetchSessions();
     } catch (err) {
+      sessionsLoadState = "error";
+      sessionsLoadError = err.message;
+      renderSessionListOrError();
       showStatus(err.message, true);
-      return;
+      return false;
     }
 
-    renderSessionList();
-    updateSessionHeader();
+    // Validate BEFORE touching any local state: a malformed response
+    // must never replace the cached list, the current selection, or
+    // any temporary send block.
+    if (!isValidSessionList(data)) {
+      sessionsLoadState = "error";
+      sessionsLoadError = "The server returned an invalid response.";
+      renderSessionListOrError();
+      showStatus(sessionsLoadError, true);
+      return false;
+    }
 
-    if (sessions.length === 0) {
-      currentSessionId = null;
+    sessions = data;
+    sessionsLoadState = "ready";
+    sessionsEverLoaded = true;
+    sessionsLoadError = null;
+
+    // Server list is authoritative for temporary blocks.
+    const presentIds = {};
+    for (const s of sessions) {
+      presentIds[s.id] = true;
+      delete sessionSendBlocks[s.id];
+    }
+    for (const sid of Object.keys(sessionSendBlocks)) {
+      if (!presentIds[sid]) delete sessionSendBlocks[sid];
+    }
+
+    // Decide the final selection BEFORE rendering the list so the
+    // highlight, title, badge and message area all point at the same
+    // session.
+    const next = resolveNextSelectionId(
+      sessions,
+      currentSessionId,
+      preserveSelection,
+    );
+    const selectionChanged = next.changed;
+    currentSessionId = next.selectionId;
+
+    // Only the null-selection case bumps the request guard manually:
+    // it must invalidate an in-flight load without starting a new one.
+    // A real switch delegates the bump to loadMessages().
+    if (next.selectionId === null) {
       sessionLoadRequestId++;
+    }
+
+    renderSessionListOrError();
+    syncCurrentSessionUI();
+
+    if (next.selectionId === null) {
       renderWelcome();
-      updateSessionHeader();
-      return;
+      return true;
     }
 
-    // If preserving selection and the current session still exists
-    if (preserveSelection && currentSessionId !== null) {
-      let found = false;
-      for (let i = 0; i < sessions.length; i++) {
-        if (sessions[i].id === currentSessionId) {
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        // Current session was deleted by someone else
-        currentSessionId = sessions[0].id;
-        sessionLoadRequestId++;
-        updateSessionHeader();
-        loadMessages(currentSessionId);
-      }
+    if (selectionChanged) {
+      loadMessages(next.selectionId);
     }
 
-    // If no selection, auto-select first
-    if (currentSessionId === null && sessions.length > 0) {
-      currentSessionId = sessions[0].id;
-      updateSessionHeader();
-      loadMessages(currentSessionId);
+    return true;
+  }
+
+  /**
+   * Precisely refresh one session after a 409/503 response.
+   *
+   * Clears the temporary block only when the GET succeeded, the
+   * response is an object with the expected id, and it was written
+   * back into the local sessions array.  On 404 the session is
+   * removed locally.  Any other failure keeps the block, the draft
+   * and the read-only notice.  Never touches sessionsLoadState.
+   */
+  async function refreshOneSessionCompatibility(sessionId) {
+    let fresh;
+    try {
+      fresh = await fetchSession(sessionId);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        removeSessionLocally(sessionId);
+        return false;
+      }
+      return false;
     }
+
+    if (!isValidSessionResponse(fresh) || fresh.id !== sessionId) {
+      // Invalid or mismatched response — keep the block and the
+      // cached session, never overwrite anything.
+      return false;
+    }
+
+    const idx = sessions.findIndex(function (s) {
+      return s.id === sessionId;
+    });
+    if (idx >= 0) {
+      sessions[idx] = fresh;
+    } else {
+      sessions.unshift(fresh);
+    }
+    delete sessionSendBlocks[sessionId];
+    renderSessionListOrError();
+    syncCurrentSessionUI();
+    return true;
   }
 
   /**
@@ -601,6 +921,7 @@
   function removeSessionLocally(sessionId) {
     sessions = sessions.filter(function (s) { return s.id !== sessionId; });
     delete sessionLastMessageId[sessionId];
+    delete sessionSendBlocks[sessionId];
 
     if (sessionId === currentSessionId) {
       sessionLoadRequestId++;
@@ -609,16 +930,16 @@
 
       if (sessions.length > 0) {
         currentSessionId = sessions[0].id;
-        updateSessionHeader();
+        syncCurrentSessionUI();
         loadMessages(currentSessionId);
       } else {
         currentSessionId = null;
-        updateSessionHeader();
+        syncCurrentSessionUI();
         renderWelcome();
       }
     }
 
-    renderSessionList();
+    renderSessionListOrError();
   }
 
   async function loadMessages(sessionId) {
@@ -652,6 +973,14 @@
     if (requestId !== sessionLoadRequestId) return;
     if (currentSessionId !== sessionId) return;
 
+    // A malformed list must never reach renderMessages or touch
+    // sessionLastMessageId.
+    if (!isValidMessageList(data, sessionId)) {
+      renderEmptyChat();
+      showStatus("The server returned an invalid response.", true);
+      return;
+    }
+
     if (data.length === 0) {
       renderEmptyChat();
     } else {
@@ -664,46 +993,161 @@
    * Switch to a different session.  Allowed during send — the
    * sendingSessionId guard in sendMessage prevents the old response
    * from rendering into the new session.
+   *
+   * Focus rule: on desktop the focus stays on the clicked session
+   * button.  On mobile (sidebar closes) focus moves to the input when
+   * the session is writable, or to the compatibility notice when it
+   * is read-only.
    */
   function selectSession(sessionId) {
     if (sessionId === currentSessionId) return;
 
     currentSessionId = sessionId;
-    renderSessionList();
-    updateSessionHeader();
+    renderSessionListOrError();
+    syncCurrentSessionUI();
     loadMessages(sessionId);
-    closeSidebarOnMobile();
+
+    if (isMobile()) {
+      closeSidebarOnMobile();
+      const session = currentSession();
+      const writable = isSessionWritable(
+        session,
+        sessionSendBlocks[sessionId] || null,
+      );
+      if (session !== null && writable) {
+        inputEl.focus();
+      } else if (session !== null) {
+        sessionCompatibilityNoticeEl.focus();
+      }
+    } else {
+      // The list was rebuilt above — restore focus to the freshly
+      // created button for this session (user-initiated switches
+      // only; programmatic flows never call selectSession).
+      const btn = findSessionButton(
+        sessionListEl.querySelectorAll(".session-select-btn"),
+        sessionId,
+      );
+      if (btn !== null && !btn.disabled) {
+        btn.focus();
+      }
+    }
+  }
+
+  /** Handle a failed create-session request. */
+  async function handleCreateSessionFailure(err) {
+    if (err instanceof ApiError && err.status === 422) {
+      // The profile no longer exists — no fallback, no local session.
+      showStatus(err.message, true);
+      await reloadProfiles();
+      return;
+    }
+    showStatus(err.message, true);
+  }
+
+  /**
+   * Reload the profile list (after a 422, or retry).  Blocks creation
+   * while loading; on failure keeps the persistent selector error and
+   * disables creation.
+   */
+  async function reloadProfiles() {
+    profilesLoadState = "loading";
+    profilesLoadError = null;
+    updateControlStates();
+
+    try {
+      const data = await fetchProfiles();
+      profiles = data;
+      profilesLoadState = "ready";
+      profilesLoadError = null;
+    } catch (err) {
+      profiles = [];
+      profilesLoadState = "error";
+      profilesLoadError = err.message;
+    }
+
+    selectedProfileId = resolveSelectedProfileId(
+      registry(),
+      selectedProfileId,
+    );
+    renderProfileSelectorContent();
+    syncCurrentSessionUI();
   }
 
   /** Create a new session (called by "New Chat" button). */
   async function newChat() {
     if (isCreatingSession || isSending || isInitializing) return;
 
+    // Capture the profile id at request start so async changes cannot
+    // make the UI and the request disagree.
+    const profileId = selectedProfileId;
+    if (profileId === null) {
+      showStatus("No model available. New chats are disabled.", true);
+      return;
+    }
+
+    let created = false;
+    let createdReadOnly = false;
+
     isCreatingSession = true;
     updateControlStates();
 
     try {
       showStatus("Creating session...", false);
-      const session = await createSessionRequest();
+      const session = await createSessionRequest(profileId);
+
+      // Validate BEFORE modifying local state — an invalid response
+      // must never create a local ghost session.
+      if (!isValidSessionResponse(session)) {
+        showStatus("The server returned an invalid response.", true);
+        return;
+      }
+      for (let i = 0; i < sessions.length; i++) {
+        if (sessions[i].id === session.id) {
+          showStatus("The server returned an invalid response.", true);
+          return;
+        }
+      }
+
       clearStatus();
 
+      // The server SessionResponse is the source of truth for model
+      // fields — never the selector's current guess.
       sessions.unshift(session);
       currentSessionId = session.id;
       sessionLastMessageId[session.id] = 0;
       sessionLoadRequestId++;
-      renderSessionList();
-      updateSessionHeader();
+      renderSessionListOrError();
+      syncCurrentSessionUI();
       renderEmptyChat();
       clearStatus();
       inputEl.value = "";
       inputEl.style.height = "";
-      inputEl.focus();
+      created = true;
+      createdReadOnly = session.llm_profile_status !== "ready";
       closeSidebarOnMobile();
     } catch (err) {
-      showStatus(err.message, true);
+      await handleCreateSessionFailure(err);
     } finally {
       isCreatingSession = false;
       updateControlStates();
+      // Focus only after the controls are re-enabled, and only on
+      // focusable, visible elements.
+      if (created) {
+        if (!inputEl.disabled) {
+          inputEl.focus();
+        } else if (createdReadOnly) {
+          if (isMobile() && !sessionCompatibilityNoticeEl.hidden) {
+            // Mobile: the sidebar is closed, so focus moves to the
+            // visible compatibility notice.
+            sessionCompatibilityNoticeEl.focus();
+          } else if (!newChatBtn.disabled) {
+            // Desktop: explicitly return focus to the re-enabled
+            // New Chat button (never rely on natural focus, since it
+            // was disabled during the async request).
+            newChatBtn.focus();
+          }
+        }
+      }
     }
   }
 
@@ -713,20 +1157,41 @@
 
     if (isCreatingSession || isSending || isInitializing) return false;
 
+    const profileId = selectedProfileId;
+    if (profileId === null) {
+      showStatus("No model available. New chats are disabled.", true);
+      return false;
+    }
+
     isCreatingSession = true;
     updateControlStates();
 
     try {
       showStatus("Creating session...", false);
-      const session = await createSessionRequest();
+      const session = await createSessionRequest(profileId);
+
+      // Validate BEFORE modifying local state.
+      if (!isValidSessionResponse(session)) {
+        showStatus("The server returned an invalid response.", true);
+        return false;
+      }
+      for (let i = 0; i < sessions.length; i++) {
+        if (sessions[i].id === session.id) {
+          showStatus("The server returned an invalid response.", true);
+          return false;
+        }
+      }
+
       sessions.unshift(session);
       currentSessionId = session.id;
-      renderSessionList();
-      updateSessionHeader();
+      sessionLastMessageId[session.id] = 0;
+      sessionLoadRequestId++;
+      renderSessionListOrError();
+      syncCurrentSessionUI();
       clearStatus();
       return true;
     } catch (err) {
-      showStatus(err.message, true);
+      await handleCreateSessionFailure(err);
       return false;
     } finally {
       isCreatingSession = false;
@@ -764,7 +1229,7 @@
     isRenaming = true;
     renamingSessionId = sessionId;
     updateControlStates();
-    renderSessionList();
+    renderSessionListOrError();
   }
 
   async function saveRename(sessionId, renameInputEl) {
@@ -782,6 +1247,19 @@
 
     try {
       var updated = await renameSessionRequest(sessionId, rawTitle);
+
+      // Validate BEFORE overwriting anything: a malformed response or
+      // an id mismatch must not replace a local session, exit editing
+      // or drop the draft.
+      if (!isValidSessionResponse(updated) || updated.id !== sessionId) {
+        isRenameSaving = false;
+        updateControlStates();  // re-enable editing controls
+        showStatus("The server returned an invalid response.", true);
+        // Stay in Editing state — rename input is still connected.
+        renameInputEl.focus();
+        return;
+      }
+
       // Use server-normalised title from the full SessionResponse
       for (var i = 0; i < sessions.length; i++) {
         if (sessions[i].id === sessionId) {
@@ -798,15 +1276,15 @@
       renamingSessionId = null;
       isRenameSaving = false;
       updateControlStates();
-      renderSessionList();
-      updateSessionHeader();
+      renderSessionListOrError();
+      syncCurrentSessionUI();
       inputEl.focus();  // explicitly focus chat message input
     } catch (err) {
       // sessions was never modified — no rollback needed
       isRenameSaving = false;
       updateControlStates();  // re-enable input, Save, Cancel
       showStatus(err.message, true);
-      // Stay in Editing state — do NOT call renderSessionList()
+      // Stay in Editing state — do NOT call renderSessionListOrError()
       renameInputEl.focus();
     }
   }
@@ -817,19 +1295,24 @@
     renamingSessionId = null;
     isRenameSaving = false;
     updateControlStates();
-    renderSessionList();
+    renderSessionListOrError();
     inputEl.focus();  // explicitly focus chat message input
   }
 
   /* ---- Send message ------------------------------------------------ */
 
   async function sendMessage(text) {
-    if (isSending || isInitializing) return;
+    if (isSending || isInitializing || isCreatingSession) return;
 
     // Auto-create session on first send
     if (currentSessionId === null) {
+      if (!registryUsable()) return;  // defensive — UI already blocked
       const ok = await ensureSession();
       if (!ok) return;  // create failed or already in progress
+    } else {
+      // Defensive writability check — the UI is already disabled for
+      // read-only sessions.
+      if (!currentSessionWritable()) return;
     }
 
     const sendingSessionId = currentSessionId;
@@ -840,6 +1323,18 @@
 
     try {
       const data = await sendSessionMessageRequest(sendingSessionId, text);
+
+      // Validate BEFORE touching any UI or state.  A malformed 2xx
+      // body means the message may already be saved on the server —
+      // route it through the same uncertain-send inspection as a
+      // network error, never through the plain success path.
+      if (!isValidSendMessageResponse(data, sendingSessionId)) {
+        await handleUncertainSendOutcome(
+          sendingSessionId, text, lastMessageIdBeforeSend,
+        );
+        return;
+      }
+
       // --- Success --------------------------------------------------
       clearStatus();
       inputEl.value = "";
@@ -853,7 +1348,8 @@
 
       sessionLastMessageId[sendingSessionId] = data.assistant_message.id;
 
-      // Refresh session list (sending session moves to top)
+      // Refresh session list (sending session moves to top).  On
+      // failure the rendered messages stay and a stale warning shows.
       await refreshSessions(true);
     } catch (err) {
       await handleSendFailure(err, sendingSessionId, text, lastMessageIdBeforeSend);
@@ -864,14 +1360,145 @@
   }
 
   /**
+   * Re-fetch the messages for a session and analyse what actually
+   * happened to an uncertain send.
+   *
+   * Pure analysis: no DOM, no status text, no input clearing, no
+   * sessionLastMessageId writes, no refreshSessions call.
+   *
+   * @returns {{status: string}} One of:
+   *   {status: "succeeded", messages, lastMessageId}
+   *   {status: "user_saved", messages, userMessageId}
+   *   {status: "unknown"}
+   */
+  async function inspectUncertainSend(
+    sendingSessionId,
+    originalText,
+    lastMessageIdBeforeSend,
+  ) {
+    let msgs;
+    try {
+      msgs = await fetchMessages(sendingSessionId);
+    } catch (_) {
+      return { status: "unknown" };
+    }
+
+    // A malformed list must never reach findSentMessages — fail closed.
+    if (!isValidMessageList(msgs, sendingSessionId)) {
+      return { status: "unknown" };
+    }
+
+    const result = findSentMessages(
+      msgs, lastMessageIdBeforeSend, originalText,
+    );
+    if (result.userIdx < 0) {
+      return { status: "unknown" };
+    }
+
+    if (result.hasAssistant) {
+      // The list is validated and strictly increasing, so the last
+      // element carries the highest known message id.
+      return {
+        status: "succeeded",
+        messages: msgs,
+        lastMessageId: msgs[msgs.length - 1].id,
+      };
+    }
+
+    return {
+      status: "user_saved",
+      messages: msgs,
+      userMessageId: result.userMessageId,
+    };
+  }
+
+  /**
+   * Apply the outcome of an uncertain send to the UI.  Shared by
+   * network errors (status 0) and malformed 2xx send responses — one
+   * recovery implementation, no duplicated logic.
+   *
+   * - succeeded  → render history on the sending session, clear the
+   *                (now saved) draft, update the last id, refresh.
+   * - user_saved → clear the saved draft, update the user id, show
+   *                the saved-but-unanswered state.
+   * - unknown    → keep the draft and show an uncertain warning;
+   *                never assume success or failure.
+   *
+   * Rendering still guards on ``currentSessionId === sendingSessionId``
+   * because switching sessions is allowed during a send.
+   */
+  async function handleUncertainSendOutcome(
+    sendingSessionId,
+    originalText,
+    lastMessageIdBeforeSend,
+  ) {
+    const outcome = await inspectUncertainSend(
+      sendingSessionId, originalText, lastMessageIdBeforeSend,
+    );
+
+    if (outcome.status === "succeeded") {
+      if (currentSessionId === sendingSessionId) {
+        renderMessages(outcome.messages);
+        scrollMessagesToBottom();
+        clearStatus();
+      }
+      inputEl.value = "";
+      inputEl.style.height = "";
+      if (outcome.lastMessageId > 0) {
+        sessionLastMessageId[sendingSessionId] = outcome.lastMessageId;
+      }
+      await refreshSessions(true);
+      return;
+    }
+
+    if (outcome.status === "user_saved") {
+      sessionLastMessageId[sendingSessionId] = outcome.userMessageId;
+      inputEl.value = "";
+      inputEl.style.height = "";
+      if (currentSessionId === sendingSessionId) {
+        showStatus(
+          "Your message was saved, but the assistant could not respond.",
+          true,
+        );
+        // outcome.messages was already validated by
+        // inspectUncertainSend — no second network request.
+        if (outcome.messages.length === 0) {
+          renderEmptyChat();
+        } else {
+          renderMessages(outcome.messages);
+        }
+      } else {
+        showStatus(
+          "Message saved in session #" + sendingSessionId +
+          ", but the assistant could not respond.",
+          true,
+        );
+      }
+      return;
+    }
+
+    // unknown — keep the draft; never append, never update the last
+    // id, never claim the request failed.
+    showStatus(
+      "Request status is uncertain. Review the conversation before resending.",
+      true,
+    );
+  }
+
+  /**
    * Handle a failed send — strategy depends on the error type.
    *
+   * 409 / 503 → model compatibility conflict.  Handled as an early
+   *              branch: a temporary block is set immediately, the
+   *              session becomes read-only, the draft is kept, and
+   *              only that session is refreshed precisely.  Never
+   *              routed through network-recovery logic.
    * 502 / 504  → user message was saved (Phase 1 committed).
    *               Clear input, re-sync messages from DB.
    * 404 / 422  → user message was NOT saved.
    *               Keep input, show error.
-   * Network (0) → uncertain.  Re-fetch and use message-ID boundary
-   *               to determine whether the request reached the server.
+   * Network (0) → uncertain.  Inspect the message log and decide by
+   *               the message-ID boundary.
    *
    * *lastMessageIdBeforeSend* is the highest known message id in the
    * session right before the API call.  After a network error we only
@@ -885,41 +1512,39 @@
     lastMessageIdBeforeSend,
   ) {
     const errStatus = (err instanceof ApiError) ? err.status : 0;
+
+    // --- 409/503: model compatibility — early branch --------------------
+    if (errStatus === 409 || errStatus === 503) {
+      // Never guess the exact 409 status from the English detail; use
+      // a generic conflict block.  503 maps to profile_unavailable.
+      sessionSendBlocks[sendingSessionId] =
+        errStatus === 503 ? "profile_unavailable" : "conflict";
+
+      // Immediately make the session read-only — do not wait for the
+      // refresh to succeed.
+      syncCurrentSessionUI();
+      showStatus(err.message, true);
+      // Draft stays in the textarea.
+
+      // Precisely refresh only the affected session.  If the user has
+      // switched to another session, the block is still recorded for
+      // sendingSessionId and the notice is not rendered elsewhere.
+      await refreshOneSessionCompatibility(sendingSessionId);
+      return;
+    }
+
     let isSaved = false;
 
     // --- Determine save status ----------------------------------------
     if (errStatus === 502 || errStatus === 504) {
       isSaved = true;
     } else if (errStatus === 0) {
-      // Network error — re-fetch and check by ID boundary
-      try {
-        const msgs = await fetchMessages(sendingSessionId);
-
-        var result = findSentMessages(msgs, lastMessageIdBeforeSend, originalText);
-
-        if (result.userIdx >= 0) {
-          if (result.hasAssistant) {
-            // Request actually succeeded — full response was saved.
-            // Render silently on the sending session.
-            if (currentSessionId === sendingSessionId) {
-              renderMessages(msgs);
-              scrollMessagesToBottom();
-              clearStatus();
-            }
-            inputEl.value = "";
-            inputEl.style.height = "";
-            sessionLastMessageId[sendingSessionId] = msgs[msgs.length - 1].id;
-            await refreshSessions(true);
-            return;
-          }
-          // User message saved, no assistant
-          isSaved = true;
-          sessionLastMessageId[sendingSessionId] = result.userMessageId;
-        }
-        // userIdx < 0 → isSaved stays false (uncertain)
-      } catch (_) {
-        /* stay with isSaved = false */
-      }
+      // Network error — inspect the log by ID boundary.  The shared
+      // recovery handles succeeded / user-saved / unknown.
+      await handleUncertainSendOutcome(
+        sendingSessionId, originalText, lastMessageIdBeforeSend,
+      );
+      return;
     }
     // 404, 422, other HTTP → isSaved stays false
 
@@ -933,26 +1558,30 @@
         inputEl.value = "";
         inputEl.style.height = "";
 
-        // Reload history to show the saved user message
+        // Reload history to show the saved user message.  Only a
+        // validated list may reach renderMessages; an invalid body
+        // must not replace the current message area and must not be
+        // mistaken for a plain send failure.
         try {
           const history = await fetchMessages(sendingSessionId);
           if (currentSessionId === sendingSessionId) {
-            if (history.length === 0) {
-              renderEmptyChat();
+            if (isValidMessageList(history, sendingSessionId)) {
+              if (history.length === 0) {
+                renderEmptyChat();
+              } else {
+                renderMessages(history);
+              }
             } else {
-              renderMessages(history);
+              showStatus(
+                "Your message was saved, but the conversation history " +
+                "could not be refreshed.",
+                true,
+              );
             }
           }
         } catch (_) {
           /* best-effort sync */
         }
-      } else if (errStatus === 0) {
-        // Network error, uncertain
-        showStatus(
-          "Request status is uncertain. Review the conversation before resending.",
-          true,
-        );
-        // Keep input — user can decide
       } else {
         // 404, 422, or other non-saved errors
         if (errStatus === 404) {
@@ -993,7 +1622,7 @@
 
   // Send button
   sendBtn.addEventListener("click", function () {
-    if (isSending || isInitializing) return;
+    if (isSending || isInitializing || isCreatingSession) return;
     const text = inputEl.value.trim();
     if (!text) return;
     sendMessage(text);
@@ -1016,6 +1645,12 @@
   // New Chat button
   newChatBtn.addEventListener("click", function () {
     newChat();
+  });
+
+  // Model selector: only records the choice for the NEXT new chat.
+  // No option rebuild, no focus move, no current-session change.
+  profileSelectEl.addEventListener("change", function () {
+    selectedProfileId = profileSelectEl.value;
   });
 
   // Mobile sidebar toggle
@@ -1049,42 +1684,94 @@
     isInitializing = true;
     updateControlStates();
 
-    try {
-      // Mobile: start with sidebar collapsed
-      if (isMobile()) {
-        sidebarEl.classList.add("collapsed");
-        sidebarToggleEl.setAttribute("aria-expanded", "false");
+    // Mobile: start with sidebar collapsed
+    if (isMobile()) {
+      sidebarEl.classList.add("collapsed");
+      sidebarToggleEl.setAttribute("aria-expanded", "false");
+    } else {
+      sidebarToggleEl.setAttribute("aria-expanded", "true");
+    }
+
+    renderSessionListOrError();
+    renderWelcome();
+    showStatus("Loading...", false);
+
+    // Load profiles and sessions in parallel — results are handled
+    // independently so one failure never blocks the other.
+    const [profilesResult, sessionsResult] = await Promise.allSettled([
+      fetchProfiles(),
+      fetchSessions(),
+    ]);
+
+    if (profilesResult.status === "fulfilled") {
+      profiles = profilesResult.value;
+      profilesLoadState = "ready";
+      profilesLoadError = null;
+    } else {
+      profiles = [];
+      profilesLoadState = "error";
+      profilesLoadError =
+        profilesResult.reason && profilesResult.reason.message
+          ? profilesResult.reason.message
+          : "Failed to load models.";
+    }
+    selectedProfileId = resolveSelectedProfileId(
+      registry(),
+      selectedProfileId,
+    );
+    renderProfileSelectorContent();
+
+    if (sessionsResult.status === "fulfilled") {
+      if (isValidSessionList(sessionsResult.value)) {
+        sessions = sessionsResult.value;
+        sessionsLoadState = "ready";
+        sessionsEverLoaded = true;
+        sessionsLoadError = null;
       } else {
-        sidebarToggleEl.setAttribute("aria-expanded", "true");
+        sessions = [];
+        sessionsLoadState = "error";
+        sessionsLoadError = "The server returned an invalid response.";
       }
+    } else {
+      sessions = [];
+      sessionsLoadState = "error";
+      sessionsLoadError =
+        sessionsResult.reason && sessionsResult.reason.message
+          ? sessionsResult.reason.message
+          : "Failed to load conversations.";
+    }
 
-      renderSessionList();
-      renderWelcome();
-      showStatus("Loading...", false);
+    // Decide the initial selection BEFORE rendering the list so the
+    // first highlight, title, badge and message area are consistent.
+    if (sessionsLoadState === "ready" && sessions.length > 0) {
+      currentSessionId = sessions[0].id;
+    }
 
-      try {
-        sessions = await fetchSessions();
-      } catch (err) {
-        showStatus(err.message, true);
-        renderSessionList();
-        return;
-      }
+    renderSessionListOrError();
 
-      renderSessionList();
-
+    if (sessionsLoadState === "ready") {
       if (sessions.length > 0) {
-        currentSessionId = sessions[0].id;
-        updateSessionHeader();
+        syncCurrentSessionUI();
         await loadMessages(currentSessionId);
       } else {
         renderWelcome();
         clearStatus();
       }
+    } else {
+      renderWelcome();
+      if (sessionsLoadError) showStatus(sessionsLoadError, true);
+    }
 
+    isInitializing = false;
+    updateControlStates();
+
+    // Focus rule: only when the page has no explicit user focus and
+    // typing is actually possible.
+    const canType = currentSessionId === null
+      ? registryUsable()
+      : currentSessionWritable();
+    if (document.activeElement === document.body && canType) {
       inputEl.focus();
-    } finally {
-      isInitializing = false;
-      updateControlStates();
     }
   }
 

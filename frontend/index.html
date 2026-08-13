@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Static Chatbot</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260807-copy-btn">
+  <link rel="stylesheet" href="/static/style.css?v=20260813-model-profile-selector">
 </head>
 <body>
   <div class="app-layout">
@@ -27,17 +27,45 @@
           id="newChatButton"
           type="button"
         >+ New Chat</button>
+
+        <div class="profile-selector">
+          <label for="profileSelect">Model for new chats</label>
+          <select id="profileSelect"></select>
+          <div
+            class="profile-selector-status"
+            id="profileSelectorStatus"
+            aria-live="polite"
+          ></div>
+        </div>
       </div>
+
       <div class="session-list" id="sessionList">
         <!-- Sessions rendered by app.js -->
       </div>
+      <div
+        class="session-list-status"
+        id="sessionListStatus"
+        role="status"
+        aria-live="polite"
+        hidden
+      ></div>
     </aside>
 
     <!-- Chat area -->
     <main class="chat-area" id="chatArea">
       <div class="chat-session-header" id="sessionHeader">
-        <!-- Current session title rendered by app.js -->
+        <span class="session-title" id="sessionTitle"></span>
+        <span class="session-model-badge" id="sessionModelBadge" hidden></span>
       </div>
+
+      <div
+        class="session-compatibility-notice"
+        id="sessionCompatibilityNotice"
+        role="status"
+        aria-live="polite"
+        tabindex="-1"
+        hidden
+      ></div>
 
       <div
         class="chat-messages"
@@ -74,9 +102,10 @@
 
   </div>
 
-  <script src="/static/network-recovery.js" defer></script>
-  <script src="/static/clipboard.js?v=20260807-copy-btn" defer></script>
-  <script src="/static/copy-controller.js?v=20260807-copy-btn" defer></script>
-  <script src="/static/app.js?v=20260807-copy-btn" defer></script>
+  <script src="/static/network-recovery.js?v=20260813-model-profile-selector" defer></script>
+  <script src="/static/clipboard.js?v=20260813-model-profile-selector" defer></script>
+  <script src="/static/copy-controller.js?v=20260813-model-profile-selector" defer></script>
+  <script src="/static/model-selection.js?v=20260813-model-profile-selector" defer></script>
+  <script src="/static/app.js?v=20260813-model-profile-selector" defer></script>
 </body>
 </html>
