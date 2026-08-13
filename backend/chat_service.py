@@ -17,6 +17,7 @@ from backend.exceptions import (
 )
 from backend.llm_client import LLMClient, LLMMessage
 from backend.llm_profiles import (
+    LLMProfile,
     LLMProfileRegistry,
     SessionProfileStatus,
 )
@@ -266,14 +267,19 @@ class ChatService:
 
     def resolve_session_profile(
         self, chat_session: ChatSession,
-    ) -> LLMClient:
-        """Resolve the session's profile compatibility and return a ready client.
+    ) -> LLMProfile:
+        """Resolve the session's profile compatibility and return the
+        validated, immutable profile.
 
         This method receives a persisted ``ChatSession`` ORM object (not a
         profile id string).  It checks the stored ``llm_profile_id`` and
         ``llm_model_snapshot`` against the registry.
 
-        Returns the profile's client when the status is *ready*.
+        Returns the full ``LLMProfile`` when the status is *ready*.  The
+        profile is a frozen dataclass carrying ``id``, ``kind``,
+        ``model`` and ``client`` — callers use ``profile.client`` to
+        send and the profile fields as the message provenance
+        snapshot.
 
         Raises
         ------
@@ -302,7 +308,7 @@ class ChatService:
 
         # status is READY — profile is guaranteed non-None
         assert resolution.profile is not None
-        return resolution.profile.client
+        return resolution.profile
 
     async def handle_session_message(
         self,
@@ -357,8 +363,12 @@ class ChatService:
                 raise SessionNotFoundError(session_id)
 
             # -- Resolve profile compatibility ---------------------------
-            # Raises before any data is saved if not ready.
-            llm_client = self.resolve_session_profile(chat_session)
+            # Raises before any data is saved if not ready.  The frozen
+            # profile is captured ONCE — both message snapshots below
+            # come from this same object, never re-read from the
+            # registry or the session after the LLM call completes.
+            profile = self.resolve_session_profile(chat_session)
+            llm_client = profile.client
 
             # -- Determine whether this is the first user message --------
             existing_user_msg_count = db.execute(
@@ -375,6 +385,9 @@ class ChatService:
                 session_id=chat_session.id,
                 role="user",
                 content=content,
+                llm_profile_id_snapshot=profile.id,
+                llm_profile_kind_snapshot=profile.kind,
+                llm_model_snapshot=profile.model,
             )
             db.add(user_message)
             chat_session.updated_at = utc_now()
@@ -428,11 +441,15 @@ class ChatService:
                         status_code=502,
                     )
 
-                # Save assistant message
+                # Save assistant message with the SAME captured snapshot
+                # triple as the user message — never re-resolved.
                 assistant_message = Message(
                     session_id=chat_session.id,
                     role="assistant",
                     content=reply,
+                    llm_profile_id_snapshot=profile.id,
+                    llm_profile_kind_snapshot=profile.kind,
+                    llm_model_snapshot=profile.model,
                 )
                 db.add(assistant_message)
                 chat_session.updated_at = utc_now()

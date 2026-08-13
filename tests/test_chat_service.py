@@ -580,3 +580,236 @@ class TestTransactionFailure:
             select(func.count()).select_from(ChatSession)
         ).scalar()
         assert count >= 1
+
+
+# ============================================================================
+# Message provenance snapshots
+# ============================================================================
+
+
+class TestMessageProvenanceSnapshots:
+    """handle_session_message writes the captured profile's snapshot
+    triple onto both the user and the assistant message."""
+
+    def _read_messages(self, db_session, session_id):
+        """Re-read all messages from the database, ordered by id."""
+        db_session.expire_all()
+        return (
+            db_session.execute(
+                select(Message)
+                .where(Message.session_id == session_id)
+                .order_by(Message.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    @pytest.mark.anyio
+    async def test_default_profile_success_writes_full_triple(
+        self, db_session, spy_llm,
+    ):
+        """Both messages carry (default, api, injected-test-model)."""
+        chat_session = _create_session(db_session)
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, "hello", db_session,
+        )
+
+        rows = self._read_messages(db_session, chat_session.id)
+        assert len(rows) == 2
+        for msg in rows:
+            assert msg.llm_profile_id_snapshot == "default"
+            assert msg.llm_profile_kind_snapshot == "api"
+            assert msg.llm_model_snapshot == "injected-test-model"
+
+    @pytest.mark.anyio
+    async def test_local_profile_session_writes_local_triple(self, db_session):
+        """A session bound to a local profile stores that exact triple."""
+        from backend.llm_profiles import LLMProfile, LLMProfileRegistry
+
+        default_spy = SpyLLMClient(response="default reply")
+        local_spy = SpyLLMClient(response="local reply")
+        registry = LLMProfileRegistry([
+            LLMProfile(
+                id="default", label="Default", kind="fake",
+                model="fake", client=default_spy, is_default=True,
+            ),
+            LLMProfile(
+                id="local", label="Local", kind="local",
+                model="qwen3.5:4b", client=local_spy, is_default=False,
+            ),
+        ])
+        service = ChatService(profiles=registry)
+
+        session = ChatSession(
+            llm_profile_id="local",
+            llm_model_snapshot="qwen3.5:4b",
+        )
+        db_session.add(session)
+        db_session.commit()
+        db_session.refresh(session)
+
+        await service.handle_session_message(session.id, "hello", db_session)
+
+        rows = self._read_messages(db_session, session.id)
+        assert len(rows) == 2
+        for msg in rows:
+            assert msg.llm_profile_id_snapshot == "local"
+            assert msg.llm_profile_kind_snapshot == "local"
+            assert msg.llm_model_snapshot == "qwen3.5:4b"
+
+    @pytest.mark.anyio
+    async def test_user_and_assistant_triples_identical(
+        self, db_session, spy_llm,
+    ):
+        """Both messages carry exactly the same triple values."""
+        chat_session = _create_session(db_session)
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, "hello", db_session,
+        )
+
+        rows = self._read_messages(db_session, chat_session.id)
+        user = next(m for m in rows if m.role == "user")
+        assistant = next(m for m in rows if m.role == "assistant")
+        assert (
+            user.llm_profile_id_snapshot,
+            user.llm_profile_kind_snapshot,
+            user.llm_model_snapshot,
+        ) == (
+            assistant.llm_profile_id_snapshot,
+            assistant.llm_profile_kind_snapshot,
+            assistant.llm_model_snapshot,
+        )
+
+    @pytest.mark.anyio
+    async def test_llm_error_keeps_user_message_with_triple(self, db_session):
+        """When the LLM raises, only the user message persists — with a
+        complete, accurate snapshot."""
+        chat_session = _create_session(db_session)
+        spy = SpyLLMClient(error=LLMError("upstream failure", status_code=502))
+        service = ChatService(spy)
+
+        with pytest.raises(LLMError):
+            await service.handle_session_message(
+                chat_session.id, "hello", db_session,
+            )
+
+        rows = self._read_messages(db_session, chat_session.id)
+        assert len(rows) == 1
+        assert rows[0].role == "user"
+        assert rows[0].llm_profile_id_snapshot == "default"
+        assert rows[0].llm_profile_kind_snapshot == "api"
+        assert rows[0].llm_model_snapshot == "injected-test-model"
+
+    @pytest.mark.anyio
+    async def test_blank_reply_keeps_user_message_with_triple(self, db_session):
+        """A blank reply keeps only the user message with its triple."""
+        chat_session = _create_session(db_session)
+        spy = SpyLLMClient(response="   \n\t  ")
+        service = ChatService(spy)
+
+        with pytest.raises(LLMInvalidResponseError):
+            await service.handle_session_message(
+                chat_session.id, "hello", db_session,
+            )
+
+        rows = self._read_messages(db_session, chat_session.id)
+        assert len(rows) == 1
+        assert rows[0].role == "user"
+        assert rows[0].llm_profile_id_snapshot == "default"
+        assert rows[0].llm_profile_kind_snapshot == "api"
+        assert rows[0].llm_model_snapshot == "injected-test-model"
+
+    @pytest.mark.anyio
+    async def test_phase1_commit_failure_no_llm_no_messages(
+        self, db_session, spy_llm, monkeypatch,
+    ):
+        """A Phase 1 commit failure calls no LLM and persists nothing."""
+        chat_session = _create_session(db_session)
+        service = ChatService(spy_llm)
+
+        def _failing_commit():
+            raise RuntimeError("simulated DB failure")
+
+        monkeypatch.setattr(db_session, "commit", _failing_commit)
+
+        with pytest.raises(RuntimeError, match="simulated DB failure"):
+            await service.handle_session_message(
+                chat_session.id, "hello", db_session,
+            )
+
+        assert len(spy_llm.calls) == 0
+
+        rows = self._read_messages(db_session, chat_session.id)
+        assert len(rows) == 0
+
+    @pytest.mark.anyio
+    async def test_phase2_commit_failure_keeps_user_with_triple(
+        self, db_session, spy_llm, monkeypatch,
+    ):
+        """A Phase 2 commit failure keeps the user message and its
+        snapshot; no assistant message survives."""
+        chat_session = _create_session(db_session)
+        service = ChatService(spy_llm)
+
+        call_count = 0
+        original_commit = db_session.commit
+
+        def _selective_failing_commit():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise RuntimeError("simulated DB failure on second commit")
+            return original_commit()
+
+        monkeypatch.setattr(db_session, "commit", _selective_failing_commit)
+
+        with pytest.raises(RuntimeError, match="simulated DB failure"):
+            await service.handle_session_message(
+                chat_session.id, "hello", db_session,
+            )
+
+        rows = self._read_messages(db_session, chat_session.id)
+        assert len(rows) == 1
+        assert rows[0].role == "user"
+        assert rows[0].llm_profile_id_snapshot == "default"
+        assert rows[0].llm_profile_kind_snapshot == "api"
+        assert rows[0].llm_model_snapshot == "injected-test-model"
+
+    @pytest.mark.anyio
+    async def test_null_snapshot_history_not_backfilled(
+        self, db_session, spy_llm,
+    ):
+        """Pre-existing NULL-snapshot history enters the LLM context in
+        order and is NOT rewritten or backfilled in the database."""
+        chat_session = _create_session(db_session)
+        _add_messages(db_session, chat_session.id, [("q1", "a1")])
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, "q2", db_session,
+        )
+
+        # History was sent as plain role/content
+        contents = [m["content"] for m in spy_llm.calls[0][1:]]
+        assert contents == ["q1", "a1", "q2"]
+
+        # The old rows keep NULL snapshots; only the new round has them
+        rows = self._read_messages(db_session, chat_session.id)
+        assert len(rows) == 4
+        old_user, old_assistant = rows[0], rows[1]
+        assert old_user.llm_profile_id_snapshot is None
+        assert old_user.llm_profile_kind_snapshot is None
+        assert old_user.llm_model_snapshot is None
+        assert old_assistant.llm_profile_id_snapshot is None
+        assert old_assistant.llm_profile_kind_snapshot is None
+        assert old_assistant.llm_model_snapshot is None
+
+        new_user, new_assistant = rows[2], rows[3]
+        for msg in (new_user, new_assistant):
+            assert msg.llm_profile_id_snapshot == "default"
+            assert msg.llm_profile_kind_snapshot == "api"
+            assert msg.llm_model_snapshot == "injected-test-model"

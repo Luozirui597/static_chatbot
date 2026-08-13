@@ -1576,3 +1576,173 @@ class TestPhase1Atomicity:
         finally:
             app.dependency_overrides.pop(get_db, None)
             main_module.chat_service = original_svc
+
+
+# ============================================================================
+# Message provenance snapshots via the API
+# ============================================================================
+
+
+class TestMessageProvenanceSnapshotsAPI:
+    """The send API returns and persists accurate provenance triples."""
+
+    def test_success_response_contains_snapshot_triple(
+        self, client, spy_llm,
+    ):
+        """Both response messages carry
+        (default, api, injected-test-model)."""
+        sid = _create_session(client)
+
+        resp = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "hello"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+
+        for key in ("user_message", "assistant_message"):
+            msg = body[key]
+            assert msg["llm_profile_id_snapshot"] == "default"
+            assert msg["llm_profile_kind_snapshot"] == "api"
+            assert msg["llm_model_snapshot"] == "injected-test-model"
+
+    def test_database_rows_match_response_triple(
+        self, client, spy_llm, test_session_factory,
+    ):
+        """The persisted rows carry the same triple as the response."""
+        sid = _create_session(client)
+
+        resp = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "hello"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+
+        db = test_session_factory()
+        rows = (
+            db.execute(
+                select(Message)
+                .where(Message.session_id == sid)
+                .order_by(Message.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+        db.close()
+
+        assert len(rows) == 2
+        for row in rows:
+            assert row.llm_profile_id_snapshot == "default"
+            assert row.llm_profile_kind_snapshot == "api"
+            assert row.llm_model_snapshot == "injected-test-model"
+
+        assert (
+            rows[0].llm_profile_id_snapshot,
+            rows[0].llm_profile_kind_snapshot,
+            rows[0].llm_model_snapshot,
+        ) == (
+            body["user_message"]["llm_profile_id_snapshot"],
+            body["user_message"]["llm_profile_kind_snapshot"],
+            body["user_message"]["llm_model_snapshot"],
+        )
+        assert (
+            rows[1].llm_profile_id_snapshot,
+            rows[1].llm_profile_kind_snapshot,
+            rows[1].llm_model_snapshot,
+        ) == (
+            body["assistant_message"]["llm_profile_id_snapshot"],
+            body["assistant_message"]["llm_profile_kind_snapshot"],
+            body["assistant_message"]["llm_model_snapshot"],
+        )
+
+    def test_llm_error_502_keeps_user_with_triple(
+        self, client, spy_llm, test_session_factory,
+    ):
+        """A 502 leaves only the user message, with an accurate triple."""
+        sid = _create_session(client)
+        spy_llm.error = LLMError("Upstream failure", status_code=502)
+
+        resp = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "hello"},
+        )
+        assert resp.status_code == 502
+
+        db = test_session_factory()
+        rows = (
+            db.execute(
+                select(Message)
+                .where(Message.session_id == sid)
+                .order_by(Message.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+        db.close()
+
+        assert len(rows) == 1
+        assert rows[0].role == "user"
+        assert rows[0].llm_profile_id_snapshot == "default"
+        assert rows[0].llm_profile_kind_snapshot == "api"
+        assert rows[0].llm_model_snapshot == "injected-test-model"
+
+    def test_llm_error_504_keeps_user_with_triple(
+        self, client, spy_llm, test_session_factory,
+    ):
+        """A 504 leaves only the user message, with an accurate triple."""
+        sid = _create_session(client)
+        spy_llm.error = LLMError("Upstream API timed out", status_code=504)
+
+        resp = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "hello"},
+        )
+        assert resp.status_code == 504
+
+        db = test_session_factory()
+        rows = (
+            db.execute(
+                select(Message)
+                .where(Message.session_id == sid)
+            )
+            .scalars()
+            .all()
+        )
+        db.close()
+
+        assert len(rows) == 1
+        assert rows[0].role == "user"
+        assert rows[0].llm_profile_id_snapshot == "default"
+        assert rows[0].llm_profile_kind_snapshot == "api"
+        assert rows[0].llm_model_snapshot == "injected-test-model"
+
+    def test_blank_reply_keeps_user_with_triple(
+        self, client, spy_llm, test_session_factory,
+    ):
+        """A blank reply leaves only the user message, with its triple."""
+        sid = _create_session(client)
+        spy_llm.response = "   \n\t  "
+
+        resp = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"message": "hello"},
+        )
+        assert resp.status_code == 502
+
+        db = test_session_factory()
+        rows = (
+            db.execute(
+                select(Message)
+                .where(Message.session_id == sid)
+            )
+            .scalars()
+            .all()
+        )
+        db.close()
+
+        assert len(rows) == 1
+        assert rows[0].role == "user"
+        assert rows[0].llm_profile_id_snapshot == "default"
+        assert rows[0].llm_profile_kind_snapshot == "api"
+        assert rows[0].llm_model_snapshot == "injected-test-model"

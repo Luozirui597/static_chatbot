@@ -291,7 +291,7 @@ class TestSessionResolution:
 
 
 class TestChatServiceResolveProfile:
-    def test_ready_returns_client(self):
+    def test_ready_returns_full_profile(self):
         from backend.chat_service import ChatService
         from backend.models import ChatSession
 
@@ -301,7 +301,11 @@ class TestChatServiceResolveProfile:
             llm_profile_id="default",
             llm_model_snapshot="injected-test-model",
         )
-        assert svc.resolve_session_profile(session) is c
+        profile = svc.resolve_session_profile(session)
+        assert profile.id == "default"
+        assert profile.kind == "api"
+        assert profile.model == "injected-test-model"
+        assert profile.client is c
 
     def test_profile_unavailable_raises(self):
         from backend.chat_service import ChatService
