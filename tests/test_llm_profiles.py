@@ -1410,6 +1410,27 @@ class TestCreateSessionTransaction:
 # ============================================================================
 
 
+def _create_legacy_messages_table(raw):
+    """Create the pre-snapshot messages table for legacy DB fixtures.
+
+    This is the real table shape from before the message provenance
+    snapshot migration: it must NOT include
+    ``llm_profile_id_snapshot``, ``llm_profile_kind_snapshot`` or
+    ``llm_model_snapshot`` — otherwise the old-database migration
+    tests would no longer exercise the ALTER path.
+    """
+    raw.execute(
+        "CREATE TABLE messages ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  session_id INTEGER NOT NULL "
+        "REFERENCES chat_sessions(id) ON DELETE CASCADE,"
+        "  role VARCHAR(20) NOT NULL,"
+        "  content TEXT NOT NULL,"
+        "  created_at DATETIME NOT NULL"
+        ")"
+    )
+
+
 class TestLLMProfileMigration:
     """llm_profile_v1 migration behaviour."""
 
@@ -1457,6 +1478,7 @@ class TestLLMProfileMigration:
             "  title_is_manual INTEGER NOT NULL DEFAULT 0"
             ")"
         )
+        _create_legacy_messages_table(raw)
         raw.execute(
             "CREATE TABLE schema_migrations ("
             "  version VARCHAR(255) PRIMARY KEY,"
@@ -1556,6 +1578,7 @@ class TestLLMProfileMigration:
             "  llm_model_snapshot VARCHAR(255)"
             ")"
         )
+        _create_legacy_messages_table(raw)
         raw.execute(
             "CREATE TABLE schema_migrations ("
             "  version VARCHAR(255) PRIMARY KEY,"
@@ -1687,6 +1710,7 @@ class TestLLMProfileMigration:
             "  llm_model_snapshot VARCHAR(255)"
             ")"
         )
+        _create_legacy_messages_table(raw)
         raw.execute(
             "CREATE TABLE schema_migrations ("
             "  version VARCHAR(255) PRIMARY KEY,"
@@ -1834,6 +1858,7 @@ class TestLLMProfileMigration:
             "  title_is_manual INTEGER NOT NULL DEFAULT 0"
             ")"
         )
+        _create_legacy_messages_table(raw)
         raw.execute(
             "CREATE TABLE schema_migrations ("
             "  version VARCHAR(255) PRIMARY KEY,"
@@ -1942,6 +1967,7 @@ class TestLLMProfileMigration:
             "  updated_at DATETIME NOT NULL"
             ")"
         )
+        _create_legacy_messages_table(raw)
         raw.execute(
             "CREATE TABLE schema_migrations ("
             "  version VARCHAR(255) PRIMARY KEY,"

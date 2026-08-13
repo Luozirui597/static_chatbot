@@ -200,6 +200,79 @@ def run_migrations(bind: Engine) -> None:
                 )
             )
 
+        # ── Migration: message_llm_snapshot_v1 ──────────────────────
+        row = conn.execute(
+            sa_text(
+                "SELECT version FROM schema_migrations "
+                "WHERE version = 'message_llm_snapshot_v1'"
+            )
+        ).fetchone()
+
+        if row is None:
+            # Fail closed when the messages table itself does not
+            # exist: silently recording the version would mark an
+            # incomplete schema as migrated.  Normal startup is
+            # unaffected because the lifespan runs create_tables()
+            # before run_migrations().
+            has_messages = conn.execute(
+                sa_text(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'messages'"
+                )
+            ).fetchone()
+
+            if has_messages is None:
+                raise RuntimeError(
+                    "Cannot apply message_llm_snapshot_v1: "
+                    "the 'messages' table is missing"
+                )
+
+            cols = [
+                r[1]
+                for r in conn.execute(
+                    sa_text("PRAGMA table_info('messages')")
+                ).fetchall()
+            ]
+
+            # Add only the missing columns.  All are nullable with
+            # no database default — existing messages keep NULL
+            # snapshots; their model source is never backfilled or
+            # fabricated.
+            if "llm_profile_id_snapshot" not in cols:
+                conn.execute(
+                    sa_text(
+                        "ALTER TABLE messages "
+                        "ADD COLUMN llm_profile_id_snapshot VARCHAR(50)"
+                    )
+                )
+
+            if "llm_profile_kind_snapshot" not in cols:
+                conn.execute(
+                    sa_text(
+                        "ALTER TABLE messages "
+                        "ADD COLUMN llm_profile_kind_snapshot VARCHAR(20)"
+                    )
+                )
+
+            if "llm_model_snapshot" not in cols:
+                conn.execute(
+                    sa_text(
+                        "ALTER TABLE messages "
+                        "ADD COLUMN llm_model_snapshot VARCHAR(255)"
+                    )
+                )
+
+            # Record completion LAST.  If the record insert fails the
+            # version stays unrecorded and the next run re-enters the
+            # block — the per-column checks make the retry converge
+            # even when SQLite kept some or all of the ALTER results.
+            conn.execute(
+                sa_text(
+                    "INSERT INTO schema_migrations (version) "
+                    "VALUES ('message_llm_snapshot_v1')"
+                )
+            )
+
 
 # ---------------------------------------------------------------------------
 # Module-level singletons

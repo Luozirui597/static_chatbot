@@ -2,9 +2,9 @@
 
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.llm_profiles import SessionProfileStatus
 from backend.session_titles import normalize_title_whitespace
@@ -70,8 +70,40 @@ class MessageResponse(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     created_at: datetime
+    llm_profile_id_snapshot: Annotated[
+        str, Field(strict=True, min_length=1, max_length=50)
+    ] | None = None
+    llm_profile_kind_snapshot: Literal["fake", "api", "local"] | None = None
+    llm_model_snapshot: Annotated[
+        str, Field(strict=True, min_length=1, max_length=255)
+    ] | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def _snapshot_triple_consistency(self) -> "MessageResponse":
+        """Enforce the provenance triple invariant.
+
+        Legal states are exactly two: all three snapshot fields are
+        NULL (messages created before snapshot tracking), or all three
+        are non-blank, correctly-typed values.  Anything in between —
+        one or two NULLs, empty or whitespace-only strings — is
+        rejected rather than silently fabricated.
+        """
+        snapshot_values = (
+            self.llm_profile_id_snapshot,
+            self.llm_profile_kind_snapshot,
+            self.llm_model_snapshot,
+        )
+        if all(v is None for v in snapshot_values):
+            return self
+        if all(
+            isinstance(v, str) and v.strip() != "" for v in snapshot_values
+        ):
+            return self
+        raise ValueError(
+            "llm snapshot fields must be all null or all non-blank"
+        )
 
 
 class SendMessageResponse(BaseModel):

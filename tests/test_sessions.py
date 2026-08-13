@@ -876,6 +876,19 @@ class TestMigration:
             ")"
         )
         raw.execute(
+            "CREATE TABLE messages ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  session_id INTEGER NOT NULL "
+            "REFERENCES chat_sessions(id) ON DELETE CASCADE,"
+            "  role VARCHAR(20) NOT NULL,"
+            "  content TEXT NOT NULL,"
+            "  created_at DATETIME NOT NULL,"
+            "  CHECK (role IN ('user', 'assistant')),"
+            "  CHECK (length(trim(content, "
+            "    char(9) || char(10) || char(13) || char(32))) > 0)"
+            ")"
+        )
+        raw.execute(
             "CREATE TABLE schema_migrations ("
             "  version VARCHAR(255) PRIMARY KEY,"
             "  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
@@ -946,6 +959,19 @@ class TestMigration:
             ")"
         )
         raw.execute(
+            "CREATE TABLE messages ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  session_id INTEGER NOT NULL "
+            "REFERENCES chat_sessions(id) ON DELETE CASCADE,"
+            "  role VARCHAR(20) NOT NULL,"
+            "  content TEXT NOT NULL,"
+            "  created_at DATETIME NOT NULL,"
+            "  CHECK (role IN ('user', 'assistant')),"
+            "  CHECK (length(trim(content, "
+            "    char(9) || char(10) || char(13) || char(32))) > 0)"
+            ")"
+        )
+        raw.execute(
             "CREATE TABLE schema_migrations ("
             "  version VARCHAR(255) PRIMARY KEY,"
             "  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
@@ -992,6 +1018,19 @@ class TestMigration:
             "  created_at DATETIME NOT NULL,"
             "  updated_at DATETIME NOT NULL,"
             "  title_is_manual INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        raw.execute(
+            "CREATE TABLE messages ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  session_id INTEGER NOT NULL "
+            "REFERENCES chat_sessions(id) ON DELETE CASCADE,"
+            "  role VARCHAR(20) NOT NULL,"
+            "  content TEXT NOT NULL,"
+            "  created_at DATETIME NOT NULL,"
+            "  CHECK (role IN ('user', 'assistant')),"
+            "  CHECK (length(trim(content, "
+            "    char(9) || char(10) || char(13) || char(32))) > 0)"
             ")"
         )
         raw.execute(
@@ -1060,5 +1099,387 @@ class TestMigration:
                     )
                 ).scalar()
                 assert rec_count == 1
+        finally:
+            eng.dispose()
+
+
+# ============================================================================
+# Migration: message_llm_snapshot_v1
+# ============================================================================
+
+
+# Each snapshot column's real target type.  Pre-existing columns in
+# test fixtures are created with these exact types — the migration only
+# adds missing columns and never repairs mistyped ones.
+_MESSAGE_SNAPSHOT_COL_TYPES = {
+    "llm_profile_id_snapshot": "VARCHAR(50)",
+    "llm_profile_kind_snapshot": "VARCHAR(20)",
+    "llm_model_snapshot": "VARCHAR(255)",
+}
+
+
+class TestMessageSnapshotMigration:
+    """The message provenance columns are added idempotently."""
+
+    SNAPSHOT_COLS = (
+        "llm_profile_id_snapshot",
+        "llm_profile_kind_snapshot",
+        "llm_model_snapshot",
+    )
+
+    SNAPSHOT_COL_TYPES = _MESSAGE_SNAPSHOT_COL_TYPES
+
+    def _make_old_db(self, db_path, present_cols):
+        """Build an old-format messages table with *present_cols* of
+        the snapshot columns already added (simulating partial ALTER
+        survival after a failed migration)."""
+        raw = sqlite3.connect(str(db_path))
+        raw.execute("PRAGMA foreign_keys = ON")
+        raw.execute(
+            "CREATE TABLE chat_sessions ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  title VARCHAR(255) NOT NULL DEFAULT 'New Chat',"
+            "  created_at DATETIME NOT NULL,"
+            "  updated_at DATETIME NOT NULL,"
+            "  title_is_manual INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        cols_sql = (
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  session_id INTEGER NOT NULL "
+            "REFERENCES chat_sessions(id) ON DELETE CASCADE,"
+            "  role VARCHAR(20) NOT NULL,"
+            "  content TEXT NOT NULL,"
+            "  created_at DATETIME NOT NULL"
+        )
+        for col in present_cols:
+            cols_sql += f",\n  {col} {self.SNAPSHOT_COL_TYPES[col]}"
+        raw.execute(f"CREATE TABLE messages ({cols_sql})")
+        raw.execute(
+            "CREATE TABLE schema_migrations ("
+            "  version VARCHAR(255) PRIMARY KEY,"
+            "  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        raw.execute(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('title_is_manual_v1')"
+        )
+        raw.execute(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('llm_profile_v1')"
+        )
+        raw.execute(
+            "INSERT INTO chat_sessions (title, created_at, updated_at) "
+            "VALUES ('Old Chat', '2026-01-01', '2026-01-01')"
+        )
+        raw.execute(
+            "INSERT INTO messages (session_id, role, content, created_at) "
+            "VALUES (1, 'user', 'old message', '2026-01-02')"
+        )
+        raw.commit()
+        raw.close()
+
+    def _cols(self, conn, table):
+        return [
+            r[1]
+            for r in conn.execute(
+                sa_text(f"PRAGMA table_info('{table}')")
+            ).fetchall()
+        ]
+
+    def _record_count(self, conn, version):
+        return conn.execute(
+            sa_text(
+                "SELECT COUNT(*) FROM schema_migrations "
+                "WHERE version = :v"
+            ),
+            {"v": version},
+        ).scalar()
+
+    def _assert_snapshot_schema(self, conn):
+        """Unified schema assertion for the three snapshot columns.
+
+        Each column must appear exactly once, carry its real target
+        type, be nullable (notnull == 0) and have no default value
+        (dflt_value is NULL).  PRAGMA rows are
+        (cid, name, type, notnull, dflt_value, pk).
+        """
+        by_name = {}
+        for row in conn.execute(sa_text("PRAGMA table_info('messages')")):
+            by_name.setdefault(row[1], []).append(row)
+
+        for col, expected_type in self.SNAPSHOT_COL_TYPES.items():
+            entries = by_name.get(col, [])
+            assert len(entries) == 1, (
+                f"{col} appears {len(entries)} times"
+            )
+            entry = entries[0]
+            assert entry[2].upper() == expected_type, (
+                f"{col} type {entry[2]!r} != {expected_type}"
+            )
+            assert entry[3] == 0, f"{col} notnull == {entry[3]}, expected 0"
+            assert entry[4] is None, (
+                f"{col} default {entry[4]!r} is not NULL"
+            )
+
+    def test_old_db_missing_all_columns(self, tmp_path):
+        """All three columns missing → added, one record, old row NULL."""
+        db_path = tmp_path / "none.db"
+        self._make_old_db(db_path, present_cols=[])
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                cols = self._cols(conn, "messages")
+                for col in self.SNAPSHOT_COLS:
+                    assert col in cols, f"{col} missing"
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 1
+                self._assert_snapshot_schema(conn)
+
+                row = conn.execute(sa_text(
+                    "SELECT llm_profile_id_snapshot, "
+                    "llm_profile_kind_snapshot, llm_model_snapshot "
+                    "FROM messages WHERE content = 'old message'"
+                )).fetchone()
+                assert row == (None, None, None)
+        finally:
+            eng.dispose()
+
+    def test_old_db_missing_one_column(self, tmp_path):
+        """Two present, one missing → only the missing one added."""
+        db_path = tmp_path / "one.db"
+        self._make_old_db(
+            db_path,
+            present_cols=["llm_profile_id_snapshot", "llm_profile_kind_snapshot"],
+        )
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                cols = self._cols(conn, "messages")
+                for col in self.SNAPSHOT_COLS:
+                    assert cols.count(col) == 1, f"{col} count != 1"
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 1
+                self._assert_snapshot_schema(conn)
+        finally:
+            eng.dispose()
+
+    def test_old_db_missing_two_columns(self, tmp_path):
+        """One present, two missing → only the missing two added."""
+        db_path = tmp_path / "two.db"
+        self._make_old_db(
+            db_path, present_cols=["llm_model_snapshot"],
+        )
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                cols = self._cols(conn, "messages")
+                for col in self.SNAPSHOT_COLS:
+                    assert cols.count(col) == 1, f"{col} count != 1"
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 1
+                self._assert_snapshot_schema(conn)
+        finally:
+            eng.dispose()
+
+    def test_all_columns_exist_record_missing(self, tmp_path):
+        """Columns already present, record missing → converge, no dup."""
+        db_path = tmp_path / "cols.db"
+        self._make_old_db(db_path, present_cols=list(self.SNAPSHOT_COLS))
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                cols = self._cols(conn, "messages")
+                for col in self.SNAPSHOT_COLS:
+                    assert cols.count(col) == 1, f"{col} duplicated"
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 1
+                self._assert_snapshot_schema(conn)
+        finally:
+            eng.dispose()
+
+    def test_record_exists_skips_alter(self, tmp_path):
+        """Record present → migration fully skipped, no ALTER."""
+        db_path = tmp_path / "done.db"
+        self._make_old_db(db_path, present_cols=list(self.SNAPSHOT_COLS))
+
+        raw = sqlite3.connect(str(db_path))
+        raw.execute(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('message_llm_snapshot_v1')"
+        )
+        raw.commit()
+        raw.close()
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)  # must not raise
+
+            with eng.begin() as conn:
+                cols = self._cols(conn, "messages")
+                for col in self.SNAPSHOT_COLS:
+                    assert cols.count(col) == 1
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 1
+        finally:
+            eng.dispose()
+
+    def test_idempotent_on_second_run(self, tmp_path):
+        """Running the migration twice leaves one record, no errors."""
+        db_path = tmp_path / "idem.db"
+        self._make_old_db(db_path, present_cols=[])
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 1
+                for col in self.SNAPSHOT_COLS:
+                    assert self._cols(conn, "messages").count(col) == 1
+        finally:
+            eng.dispose()
+
+    def test_fresh_db_create_tables_then_migrate(self, tmp_path):
+        """create_all() provides the columns; migration only records."""
+        eng = create_database_engine(f"sqlite:///{tmp_path}/fresh.db")
+        try:
+            create_tables(bind=eng)
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                for col in self.SNAPSHOT_COLS:
+                    assert col in self._cols(conn, "messages")
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 1
+                self._assert_snapshot_schema(conn)
+        finally:
+            eng.dispose()
+
+    def test_record_insert_failure_then_retry_converges(self, tmp_path):
+        """Record insert fails → no record; retry converges even if the
+        ALTER results survived (no duplicate columns)."""
+        db_path = tmp_path / "fail.db"
+        self._make_old_db(db_path, present_cols=[])
+
+        raw = sqlite3.connect(str(db_path))
+        raw.execute(
+            "CREATE TRIGGER fail_message_snapshot_migration "
+            "BEFORE INSERT ON schema_migrations "
+            "WHEN NEW.version = 'message_llm_snapshot_v1' "
+            "BEGIN "
+            "  SELECT RAISE(FAIL, 'simulated failure'); "
+            "END"
+        )
+        raw.commit()
+        raw.close()
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            with pytest.raises(IntegrityError, match="simulated failure"):
+                run_migrations(eng)
+
+            with eng.begin() as conn:
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 0
+
+            # Drop the trigger and retry — the per-column checks make
+            # this converge whether or not SQLite kept the ALTERs.
+            raw2 = sqlite3.connect(str(db_path))
+            raw2.execute(
+                "DROP TRIGGER IF EXISTS fail_message_snapshot_migration"
+            )
+            raw2.commit()
+            raw2.close()
+
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 1
+                cols = self._cols(conn, "messages")
+                for col in self.SNAPSHOT_COLS:
+                    assert cols.count(col) == 1, f"{col} count != 1"
+                self._assert_snapshot_schema(conn)
+        finally:
+            eng.dispose()
+
+    def test_messages_table_missing_fails_closed(self, tmp_path):
+        """A database without the messages table fails loudly and never
+        records the migration; creating the table afterwards lets a
+        retry converge."""
+        db_path = tmp_path / "notable.db"
+        raw = sqlite3.connect(str(db_path))
+        raw.execute("PRAGMA foreign_keys = ON")
+        raw.execute(
+            "CREATE TABLE chat_sessions ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  title VARCHAR(255) NOT NULL DEFAULT 'New Chat',"
+            "  created_at DATETIME NOT NULL,"
+            "  updated_at DATETIME NOT NULL,"
+            "  title_is_manual INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        # NOTE: no messages table on purpose — this fixture tests the
+        # fail-closed path.
+        raw.execute(
+            "CREATE TABLE schema_migrations ("
+            "  version VARCHAR(255) PRIMARY KEY,"
+            "  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        raw.execute(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('title_is_manual_v1')"
+        )
+        raw.execute(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('llm_profile_v1')"
+        )
+        raw.commit()
+        raw.close()
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            # No messages table → fail closed, no success record.
+            with pytest.raises(RuntimeError, match="messages.*missing"):
+                run_migrations(eng)
+
+            with eng.begin() as conn:
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 0
+
+            # Creating the table (with all modern columns) lets the
+            # retry converge to one record.
+            create_tables(bind=eng)
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                assert self._record_count(conn, "message_llm_snapshot_v1") == 1
+                self._assert_snapshot_schema(conn)
+        finally:
+            eng.dispose()
+
+    def test_does_not_break_existing_migrations(self, tmp_path):
+        """title_is_manual_v1 and llm_profile_v1 records survive."""
+        db_path = tmp_path / "coexist.db"
+        self._make_old_db(db_path, present_cols=[])
+
+        eng = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(eng)
+
+            with eng.begin() as conn:
+                for version in (
+                    "title_is_manual_v1",
+                    "llm_profile_v1",
+                    "message_llm_snapshot_v1",
+                ):
+                    assert self._record_count(conn, version) == 1, version
         finally:
             eng.dispose()

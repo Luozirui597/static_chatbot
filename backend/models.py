@@ -135,6 +135,23 @@ class Message(Base):
         default=utc_now, nullable=False
     )
 
+    # Message-level provenance snapshots.  All three are nullable and
+    # default to None — messages created before snapshot tracking (and
+    # messages created while snapshots are not yet written) keep NULL
+    # values; their model source is never fabricated.  The all-null /
+    # all-non-null invariant is enforced by the response schema, not
+    # by a SQLite CHECK constraint (adding one would require a table
+    # rebuild).
+    llm_profile_id_snapshot: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, default=None
+    )
+    llm_profile_kind_snapshot: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, default=None
+    )
+    llm_model_snapshot: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, default=None
+    )
+
     session: Mapped["ChatSession"] = relationship(
         "ChatSession", back_populates="messages"
     )
