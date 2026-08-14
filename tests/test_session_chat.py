@@ -1746,3 +1746,280 @@ class TestMessageProvenanceSnapshotsAPI:
         assert rows[0].llm_profile_id_snapshot == "default"
         assert rows[0].llm_profile_kind_snapshot == "api"
         assert rows[0].llm_model_snapshot == "injected-test-model"
+
+
+# ============================================================================
+# Switch session profile via the API
+# ============================================================================
+
+
+class TestSwitchProfileAPI:
+    """PATCH /api/sessions/{id}/llm-profile contract."""
+
+    @pytest.fixture
+    def switch_client(self, test_engine, test_session_factory):
+        """TestClient wired to a two-profile registry (api default +
+        local)."""
+        import backend.main as main_module
+        from backend.llm_profiles import LLMProfile, LLMProfileRegistry
+
+        self.local_spy = SpyLLMClient(response="local reply")
+        registry = LLMProfileRegistry([
+            LLMProfile(
+                id="default", label="API", kind="api",
+                model="remote-m1",
+                client=SpyLLMClient(response="api reply"),
+                is_default=True,
+            ),
+            LLMProfile(
+                id="local", label="Local", kind="local",
+                model="qwen3.5:4b", client=self.local_spy,
+                is_default=False,
+            ),
+        ])
+        svc = ChatService(profiles=registry)
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original = main_module.chat_service
+        main_module.chat_service = svc
+        try:
+            with TestClient(app) as c:
+                yield c
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original
+
+    def _create_local_session(self, switch_client) -> int:
+        resp = switch_client.post(
+            "/api/sessions", json={"llm_profile_id": "local"},
+        )
+        assert resp.status_code == 201
+        return resp.json()["id"]
+
+    def test_switch_200_returns_full_session_response(self, switch_client):
+        sid = self._create_local_session(switch_client)
+        # No messages → no acknowledgement needed even for API target.
+        resp = switch_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": "default",
+                  "acknowledge_remote_history": False},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == sid
+        assert body["llm_profile_id"] == "default"
+        assert body["llm_profile_label"] == "API"
+        assert body["llm_profile_status"] == "ready"
+        assert body["llm_model_snapshot"] == "remote-m1"
+        assert "title" in body
+
+    def test_switch_404_session_not_found(self, switch_client):
+        resp = switch_client.patch(
+            "/api/sessions/9999/llm-profile",
+            json={"llm_profile_id": "local",
+                  "acknowledge_remote_history": False},
+        )
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "Session not found"}
+
+    def test_switch_422_unknown_profile(self, switch_client):
+        sid = self._create_local_session(switch_client)
+        resp = switch_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": "nope",
+                  "acknowledge_remote_history": False},
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize("bad_id", ["bad/id", "Bad", "", "   "])
+    def test_switch_422_invalid_profile_id(self, switch_client, bad_id):
+        sid = self._create_local_session(switch_client)
+        resp = switch_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": bad_id,
+                  "acknowledge_remote_history": False},
+        )
+        assert resp.status_code == 422
+
+    def test_switch_422_non_string_profile_id(self, switch_client):
+        sid = self._create_local_session(switch_client)
+        resp = switch_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": 123,
+                  "acknowledge_remote_history": False},
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize("bad_ack", ["true", 1, 0, None])
+    def test_switch_422_non_strict_ack(self, switch_client, bad_ack):
+        sid = self._create_local_session(switch_client)
+        resp = switch_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": "default",
+                  "acknowledge_remote_history": bad_ack},
+        )
+        assert resp.status_code == 422
+
+    def test_switch_409_structured_and_binding_unchanged(
+        self, switch_client,
+    ):
+        sid = self._create_local_session(switch_client)
+        # One message on the local profile → switching to the API
+        # profile requires acknowledgement.
+        send = switch_client.post(
+            f"/api/sessions/{sid}/messages", json={"message": "hello"},
+        )
+        assert send.status_code == 200
+
+        before = switch_client.get(f"/api/sessions/{sid}").json()
+
+        resp = switch_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": "default",
+                  "acknowledge_remote_history": False},
+        )
+        assert resp.status_code == 409
+        body = resp.json()
+        assert isinstance(body["detail"], dict)
+        assert body["detail"]["code"] == "remote_history_ack_required"
+        assert isinstance(body["detail"]["message"], str)
+        assert "remote API" in body["detail"]["message"]
+
+        after = switch_client.get(f"/api/sessions/{sid}").json()
+        assert after["llm_profile_id"] == "local"
+        assert after["llm_model_snapshot"] == "qwen3.5:4b"
+        assert after["updated_at"] == before["updated_at"]
+
+    def test_switch_409_with_ack_true_succeeds(self, switch_client):
+        sid = self._create_local_session(switch_client)
+        switch_client.post(
+            f"/api/sessions/{sid}/messages", json={"message": "hello"},
+        )
+
+        resp = switch_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": "default",
+                  "acknowledge_remote_history": True},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["llm_profile_id"] == "default"
+        assert resp.json()["llm_profile_status"] == "ready"
+
+    def test_switch_moves_session_to_top(self, switch_client,
+                                         test_session_factory):
+        from datetime import datetime as dt
+
+        id_a = switch_client.post(
+            "/api/sessions", json={"llm_profile_id": "local"},
+        ).json()["id"]
+        id_b = switch_client.post(
+            "/api/sessions", json={"llm_profile_id": "local"},
+        ).json()["id"]
+
+        # Pin deterministic updated_at values: A older than B.
+        db = test_session_factory()
+        db.get(ChatSession, id_a).updated_at = dt(2020, 1, 1, 0, 0, 0)  # noqa: DTZ001
+        db.get(ChatSession, id_b).updated_at = dt(2020, 1, 2, 0, 0, 0)  # noqa: DTZ001
+        db.commit()
+        db.close()
+
+        # A real binding change (local → default; no messages, so no
+        # acknowledgement needed) must bump updated_at and move the
+        # session to the top of the list.
+        resp = switch_client.patch(
+            f"/api/sessions/{id_a}/llm-profile",
+            json={"llm_profile_id": "default",
+                  "acknowledge_remote_history": False},
+        )
+        assert resp.status_code == 200
+
+        listed = switch_client.get("/api/sessions").json()
+        assert listed[0]["id"] == id_a
+
+    def test_switch_preserves_title(self, switch_client):
+        sid = self._create_local_session(switch_client)
+        rename = switch_client.patch(
+            f"/api/sessions/{sid}", json={"title": "My Chat"},
+        )
+        assert rename.status_code == 200
+
+        resp = switch_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": "default",
+                  "acknowledge_remote_history": False},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "My Chat"
+
+
+class TestSwitchProfilePydantic422SkipsService:
+    """Pydantic request validation rejects the body BEFORE the service
+    layer is reached — switch_session_profile is never called."""
+
+    @pytest.fixture
+    def counting_client(self, test_engine, test_session_factory):
+        import backend.main as main_module
+        from backend.llm_profiles import LLMProfile, LLMProfileRegistry
+
+        registry = LLMProfileRegistry([
+            LLMProfile(
+                id="default", label="API", kind="api",
+                model="remote-m1", client=SpyLLMClient(),
+                is_default=True,
+            ),
+        ])
+        svc = ChatService(profiles=registry)
+        self.service_calls = {"n": 0}
+        original_switch = svc.switch_session_profile
+
+        async def _counting_switch(*args, **kwargs):
+            self.service_calls["n"] += 1
+            return await original_switch(*args, **kwargs)
+
+        svc.switch_session_profile = _counting_switch
+
+        def override_get_db():
+            db = test_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        app.dependency_overrides[get_db] = override_get_db
+        original = main_module.chat_service
+        main_module.chat_service = svc
+        try:
+            with TestClient(app) as c:
+                yield c
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            main_module.chat_service = original
+
+    def test_invalid_profile_id_does_not_call_service(self, counting_client):
+        sid = counting_client.post("/api/sessions").json()["id"]
+
+        resp = counting_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": "bad/id",
+                  "acknowledge_remote_history": False},
+        )
+        assert resp.status_code == 422
+        assert self.service_calls["n"] == 0
+
+    def test_non_strict_ack_does_not_call_service(self, counting_client):
+        sid = counting_client.post("/api/sessions").json()["id"]
+
+        resp = counting_client.patch(
+            f"/api/sessions/{sid}/llm-profile",
+            json={"llm_profile_id": "default",
+                  "acknowledge_remote_history": "true"},
+        )
+        assert resp.status_code == 422
+        assert self.service_calls["n"] == 0

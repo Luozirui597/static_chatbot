@@ -4,16 +4,28 @@ Every test uses a temporary SQLite database and a SpyLLMClient — no
 real network requests are ever made.
 """
 
+import asyncio
 import copy
+from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from backend.chat_service import MAX_HISTORY_MESSAGES, ChatService
+from backend.chat_service import (
+    MAX_HISTORY_MESSAGES,
+    ChatService,
+    SessionLockRegistry,
+    SessionNotFoundError,
+)
 from backend.database import create_database_engine, create_tables
-from backend.exceptions import LLMError, LLMInvalidResponseError
+from backend.exceptions import (
+    LLMError,
+    LLMInvalidResponseError,
+    UnknownLLMProfileError,
+)
 from backend.llm_client import LLMMessage
+from backend.llm_profiles import SessionProfileStatus
 from backend.models import ChatSession, Message
 from backend.system_prompt import SYSTEM_PROMPT
 
@@ -813,3 +825,1030 @@ class TestMessageProvenanceSnapshots:
             assert msg.llm_profile_id_snapshot == "default"
             assert msg.llm_profile_kind_snapshot == "api"
             assert msg.llm_model_snapshot == "injected-test-model"
+
+
+# ============================================================================
+# Switch session profile (service level)
+# ============================================================================
+
+
+def _switch_registry(default_client, default_kind="fake",
+                     default_model="fake", extras=()):
+    """Build a registry: one default profile plus *extras*
+    (dicts with id/label/kind/model/client)."""
+    from backend.llm_profiles import LLMProfile, LLMProfileRegistry
+
+    profiles = [
+        LLMProfile(
+            id="default", label="Default", kind=default_kind,
+            model=default_model, client=default_client, is_default=True,
+        ),
+    ]
+    for e in extras:
+        profiles.append(LLMProfile(
+            id=e["id"], label=e["label"], kind=e["kind"],
+            model=e["model"], client=e["client"], is_default=False,
+        ))
+    return LLMProfileRegistry(profiles)
+
+
+def _make_bound_session(db, profile_id, snapshot):
+    """Insert a ChatSession bound to *profile_id* with *snapshot*."""
+    s = ChatSession(
+        llm_profile_id=profile_id,
+        llm_model_snapshot=snapshot,
+    )
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    return s
+
+
+def _add_history(db, session_id, snapshot_triple):
+    """Insert one user + one assistant message with *snapshot_triple*
+    (a 3-tuple) as the provenance snapshot."""
+    db.add(Message(
+        session_id=session_id, role="user", content="old q",
+        llm_profile_id_snapshot=snapshot_triple[0],
+        llm_profile_kind_snapshot=snapshot_triple[1],
+        llm_model_snapshot=snapshot_triple[2],
+    ))
+    db.add(Message(
+        session_id=session_id, role="assistant", content="old a",
+        llm_profile_id_snapshot=snapshot_triple[0],
+        llm_profile_kind_snapshot=snapshot_triple[1],
+        llm_model_snapshot=snapshot_triple[2],
+    ))
+    db.commit()
+
+
+def _read_session_from_db(db, session_id):
+    """Re-read the session through a fresh identity-map-free query."""
+    from sqlalchemy.orm import sessionmaker
+
+    engine = db.get_bind()
+    SessionLocal = sessionmaker(
+        bind=engine, autoflush=False, expire_on_commit=False,
+    )
+    fresh = SessionLocal()
+    try:
+        return fresh.get(ChatSession, session_id)
+    finally:
+        fresh.close()
+
+
+class TestSwitchSessionProfile:
+    """ChatService.switch_session_profile behaviour."""
+
+    def _api_registry(self):
+        """default=api(remote-m1), local=local(qwen3.5:4b)."""
+        self.default_spy = SpyLLMClient(response="default reply")
+        self.local_spy = SpyLLMClient(response="local reply")
+        return _switch_registry(
+            default_client=self.default_spy,
+            default_kind="api",
+            default_model="remote-m1",
+            extras=[{
+                "id": "local", "label": "Local", "kind": "local",
+                "model": "qwen3.5:4b", "client": self.local_spy,
+            }],
+        )
+
+    # -- A. basic ---------------------------------------------------------
+
+    @pytest.mark.anyio
+    async def test_api_to_local_switch_succeeds(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(
+            db_session, "default", "remote-m1",
+        )
+
+        updated = await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        assert updated.llm_profile_id == "local"
+        assert updated.llm_model_snapshot == "qwen3.5:4b"
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.llm_profile_id == "local"
+        assert fresh.llm_model_snapshot == "qwen3.5:4b"
+        # Re-resolving returns READY
+        profile = service.resolve_session_profile(fresh)
+        assert profile.id == "local"
+
+    @pytest.mark.anyio
+    async def test_local_to_api_with_history_ack_true(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", "qwen3.5:4b")
+        _add_history(db_session, session.id, ("local", "local", "qwen3.5:4b"))
+
+        updated = await service.switch_session_profile(
+            session.id, "default", True, db_session,
+        )
+
+        assert updated.llm_profile_id == "default"
+        assert updated.llm_model_snapshot == "remote-m1"
+
+    @pytest.mark.anyio
+    async def test_local_to_api_no_history_needs_no_ack(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", "qwen3.5:4b")
+
+        updated = await service.switch_session_profile(
+            session.id, "default", False, db_session,
+        )
+
+        assert updated.llm_profile_id == "default"
+
+    @pytest.mark.anyio
+    async def test_switch_returns_ready_status(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", "qwen3.5:4b")
+
+        updated = await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        response = service.build_session_response(updated)
+        assert response["llm_profile_status"] == SessionProfileStatus.READY
+
+    @pytest.mark.anyio
+    async def test_next_message_uses_new_client(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+        await service.handle_session_message(session.id, "hello", db_session)
+
+        assert len(self.local_spy.calls) == 1
+        assert len(self.default_spy.calls) == 0
+
+    @pytest.mark.anyio
+    async def test_history_order_preserved_in_new_client(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        _add_history(db_session, session.id, ("default", "api", "remote-m1"))
+
+        await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+        await service.handle_session_message(session.id, "new q", db_session)
+
+        contents = [m["content"] for m in self.local_spy.calls[0][1:]]
+        assert contents == ["old q", "old a", "new q"]
+
+    @pytest.mark.anyio
+    async def test_existing_messages_not_rewritten(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        _add_history(db_session, session.id, ("default", "api", "remote-m1"))
+
+        await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+        await service.handle_session_message(session.id, "new q", db_session)
+
+        rows = (
+            db_session.execute(
+                select(Message)
+                .where(Message.session_id == session.id)
+                .order_by(Message.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 4
+        # Old rows keep their original triples
+        assert rows[0].llm_profile_id_snapshot == "default"
+        assert rows[0].llm_profile_kind_snapshot == "api"
+        assert rows[0].llm_model_snapshot == "remote-m1"
+        assert rows[1].llm_profile_id_snapshot == "default"
+        # New rows carry the new profile
+        for msg in (rows[2], rows[3]):
+            assert msg.llm_profile_id_snapshot == "local"
+            assert msg.llm_profile_kind_snapshot == "local"
+            assert msg.llm_model_snapshot == "qwen3.5:4b"
+
+    # -- B. idempotence and repair ---------------------------------------
+
+    @pytest.mark.anyio
+    async def test_same_profile_idempotent_no_update(self, db_session, monkeypatch):
+        from datetime import datetime as dt
+
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        pinned = dt(2020, 1, 1, 0, 0, 0)  # noqa: DTZ001
+        session.updated_at = pinned
+        db_session.commit()
+
+        # Count every persistence entry point: the idempotent path
+        # must call NONE of them.
+        calls = {"flush": 0, "refresh": 0, "commit": 0}
+
+        def _counted_flush(*_a, **_k):
+            calls["flush"] += 1
+            return original_flush()
+
+        def _counted_refresh(*_a, **_k):
+            calls["refresh"] += 1
+            return original_refresh()
+
+        def _counted_commit(*_a, **_k):
+            calls["commit"] += 1
+            return original_commit()
+
+        original_flush = db_session.flush
+        original_refresh = db_session.refresh
+        original_commit = db_session.commit
+        monkeypatch.setattr(db_session, "flush", _counted_flush)
+        monkeypatch.setattr(db_session, "refresh", _counted_refresh)
+        monkeypatch.setattr(db_session, "commit", _counted_commit)
+
+        statements = []
+        from sqlalchemy import event
+
+        def _record(_conn, _cursor, statement, _params, _ctx, _emany):
+            statements.append(statement)
+
+        engine = db_session.get_bind()
+        event.listen(engine, "before_cursor_execute", _record)
+        try:
+            updated = await service.switch_session_profile(
+                session.id, "default", False, db_session,
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", _record)
+
+        assert calls == {"flush": 0, "refresh": 0, "commit": 0}
+        assert updated.llm_profile_id == "default"
+        assert updated.llm_model_snapshot == "remote-m1"
+        assert updated.updated_at == pinned
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.updated_at == pinned
+
+        updates = [
+            s for s in statements
+            if "UPDATE chat_sessions" in s.upper()
+        ]
+        assert updates == []
+
+    @pytest.mark.anyio
+    async def test_same_profile_null_snapshot_repaired(self, db_session):
+        """A legacy NULL snapshot on a local binding is repaired when
+        re-applying the same local profile (no ack needed)."""
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", None)
+
+        updated = await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        assert updated.llm_model_snapshot == "qwen3.5:4b"
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.llm_model_snapshot == "qwen3.5:4b"
+        assert fresh.updated_at is not None
+
+    @pytest.mark.anyio
+    async def test_same_profile_stale_snapshot_repaired(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", "old-model")
+
+        updated = await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        assert updated.llm_model_snapshot == "qwen3.5:4b"
+        assert (
+            service.resolve_session_profile(
+                _read_session_from_db(db_session, session.id)
+            ).id
+            == "local"
+        )
+
+    @pytest.mark.anyio
+    async def test_legacy_rebind_restores_ready(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", None)
+
+        await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        fresh = _read_session_from_db(db_session, session.id)
+        profile = service.resolve_session_profile(fresh)
+        assert profile.id == "local"
+
+    @pytest.mark.anyio
+    async def test_model_changed_rebind_restores_ready(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", "old-model")
+
+        await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        fresh = _read_session_from_db(db_session, session.id)
+        profile = service.resolve_session_profile(fresh)
+        assert profile.id == "local"
+
+    @pytest.mark.anyio
+    async def test_profile_unavailable_rebind_restores_ready(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "gone", "old-model")
+
+        await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        fresh = _read_session_from_db(db_session, session.id)
+        profile = service.resolve_session_profile(fresh)
+        assert profile.id == "local"
+
+    @pytest.mark.anyio
+    async def test_real_change_updates_updated_at(self, db_session):
+        from datetime import datetime as dt
+
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        pinned = dt(2020, 1, 1, 0, 0, 0)  # noqa: DTZ001
+        session.updated_at = pinned
+        db_session.commit()
+
+        await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.updated_at > pinned
+
+    @pytest.mark.anyio
+    async def test_title_and_manual_flag_unchanged(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        session.title = "My Chat"
+        session.title_is_manual = True
+        db_session.commit()
+
+        updated = await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        assert updated.title == "My Chat"
+        assert updated.title_is_manual is True
+
+    # -- C. privacy matrix -----------------------------------------------
+
+    @pytest.mark.anyio
+    async def test_local_to_api_with_history_ack_false_raises(self, db_session):
+        from backend.exceptions import SessionProfileSwitchAckRequiredError
+
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", "qwen3.5:4b")
+        _add_history(db_session, session.id, ("local", "local", "qwen3.5:4b"))
+        before = _read_session_from_db(db_session, session.id)
+
+        with pytest.raises(SessionProfileSwitchAckRequiredError) as exc:
+            await service.switch_session_profile(
+                session.id, "default", False, db_session,
+            )
+        assert exc.value.code == "remote_history_ack_required"
+
+        after = _read_session_from_db(db_session, session.id)
+        assert after.llm_profile_id == "local"
+        assert after.llm_model_snapshot == "qwen3.5:4b"
+        assert after.updated_at == before.updated_at
+        assert len(self.default_spy.calls) == 0
+        assert len(self.local_spy.calls) == 0
+
+    @pytest.mark.anyio
+    async def test_api_a_to_api_b_with_history_requires_ack(self, db_session):
+        from backend.exceptions import SessionProfileSwitchAckRequiredError
+
+        spy_b = SpyLLMClient(response="b")
+        registry = _switch_registry(
+            default_client=SpyLLMClient(response="a"),
+            default_kind="api",
+            default_model="remote-m1",
+            extras=[{
+                "id": "api-b", "label": "API B", "kind": "api",
+                "model": "remote-m2", "client": spy_b,
+            }],
+        )
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        _add_history(db_session, session.id, ("default", "api", "remote-m1"))
+
+        with pytest.raises(SessionProfileSwitchAckRequiredError):
+            await service.switch_session_profile(
+                session.id, "api-b", False, db_session,
+            )
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.llm_profile_id == "default"
+        assert fresh.llm_model_snapshot == "remote-m1"
+
+    @pytest.mark.anyio
+    async def test_same_reliable_api_binding_needs_no_ack(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        _add_history(db_session, session.id, ("default", "api", "remote-m1"))
+
+        updated = await service.switch_session_profile(
+            session.id, "default", False, db_session,
+        )
+
+        assert updated.llm_profile_id == "default"
+
+    @pytest.mark.anyio
+    async def test_legacy_to_api_requires_ack(self, db_session):
+        from backend.exceptions import SessionProfileSwitchAckRequiredError
+
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", None)
+        _add_history(db_session, session.id, (None, None, None))
+
+        with pytest.raises(SessionProfileSwitchAckRequiredError):
+            await service.switch_session_profile(
+                session.id, "default", False, db_session,
+            )
+
+    @pytest.mark.anyio
+    async def test_model_changed_to_api_requires_ack(self, db_session):
+        from backend.exceptions import SessionProfileSwitchAckRequiredError
+
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "old-model")
+        _add_history(db_session, session.id, ("default", "api", "old-model"))
+
+        with pytest.raises(SessionProfileSwitchAckRequiredError):
+            await service.switch_session_profile(
+                session.id, "default", False, db_session,
+            )
+
+    @pytest.mark.anyio
+    async def test_profile_unavailable_to_api_requires_ack(self, db_session):
+        from backend.exceptions import SessionProfileSwitchAckRequiredError
+
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "gone", "old-model")
+        _add_history(db_session, session.id, (None, None, None))
+
+        with pytest.raises(SessionProfileSwitchAckRequiredError):
+            await service.switch_session_profile(
+                session.id, "default", False, db_session,
+            )
+
+    @pytest.mark.anyio
+    async def test_api_to_local_with_history_needs_no_ack(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        _add_history(db_session, session.id, ("default", "api", "remote-m1"))
+
+        updated = await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        assert updated.llm_profile_id == "local"
+
+    # -- D. errors and transactions --------------------------------------
+
+    @pytest.mark.anyio
+    async def test_session_not_found(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+
+        with pytest.raises(SessionNotFoundError):
+            await service.switch_session_profile(
+                9999, "local", False, db_session,
+            )
+        assert len(service._lock_registry._entries) == 0
+
+    @pytest.mark.anyio
+    async def test_unknown_profile_binding_unchanged(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        with pytest.raises(UnknownLLMProfileError):
+            await service.switch_session_profile(
+                session.id, "nope", False, db_session,
+            )
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.llm_profile_id == "default"
+        assert fresh.llm_model_snapshot == "remote-m1"
+        assert len(service._lock_registry._entries) == 0
+
+    @pytest.mark.anyio
+    async def test_commit_failure_rolls_back_and_preserves_state(
+        self, db_session, monkeypatch,
+    ):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        before = _read_session_from_db(db_session, session.id)
+
+        def _failing_commit():
+            raise RuntimeError("simulated commit failure")
+
+        monkeypatch.setattr(db_session, "commit", _failing_commit)
+
+        with pytest.raises(RuntimeError, match="simulated commit failure"):
+            await service.switch_session_profile(
+                session.id, "local", False, db_session,
+            )
+
+        monkeypatch.undo()
+
+        # The rollback inside the service must have closed the
+        # transaction.  Check BEFORE opening any fresh session: the
+        # shared StaticPool connection makes a later query re-open a
+        # transaction on this session (a test-environment artefact).
+        assert db_session.in_transaction() is False
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.llm_profile_id == "default"
+        assert fresh.llm_model_snapshot == "remote-m1"
+        assert fresh.updated_at == before.updated_at
+        assert len(service._lock_registry._entries) == 0
+
+    @pytest.mark.anyio
+    async def test_switch_never_calls_any_llm(self, db_session):
+        registry = self._api_registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+        _add_history(db_session, session.id, ("default", "api", "remote-m1"))
+
+        await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+
+        assert len(self.default_spy.calls) == 0
+        assert len(self.local_spy.calls) == 0
+        assert len(service._lock_registry._entries) == 0
+
+
+class _GatedLockRegistry:
+    """Test-only wrapper around the real SessionLockRegistry.
+
+    The FIRST coroutine to enter the per-session lock signals
+    ``first_acquired`` and then waits on ``allow_first`` while still
+    HOLDING the real lock.  Any later entrant signals
+    ``second_attempted`` before waiting on the real lock.  This proves
+    that the second operation genuinely waits on the same lock —
+    entirely event-driven, no wall-clock sleeps.
+
+    Only used by tests; production code keeps its own real registry.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self.first_acquired = asyncio.Event()
+        self.allow_first = asyncio.Event()
+        self.second_attempted = asyncio.Event()
+        self._entrants = 0
+
+    @asynccontextmanager
+    async def session_lock(self, session_id):
+        self._entrants += 1
+        is_first = self._entrants == 1
+        if not is_first:
+            self.second_attempted.set()
+        try:
+            async with self._real.session_lock(session_id):
+                if is_first:
+                    self.first_acquired.set()
+                    await self.allow_first.wait()
+                yield
+        finally:
+            self._entrants -= 1
+
+    @property
+    def entries(self):
+        return self._real._entries
+
+
+async def _wait_event(event, name):
+    """Fail-safe wait for a gate event.
+
+    The timeout only prevents the TEST from hanging forever — it never
+    decides concurrency ordering (the events and task-done checks do).
+    """
+    try:
+        await asyncio.wait_for(event.wait(), timeout=5)
+    except TimeoutError as exc:
+        raise AssertionError(f"Timed out waiting for {name}") from exc
+
+
+async def _wait_task(task, name):
+    """Fail-safe await of a spawned test task."""
+    try:
+        return await asyncio.wait_for(task, timeout=5)
+    except TimeoutError as exc:
+        raise AssertionError(f"Timed out waiting for task {name}") from exc
+
+
+async def _cancel_and_reap(tasks):
+    """Cancel unfinished tasks and reap every task (including raised
+    exceptions) so no background coroutine leaks out of a test."""
+    for t in tasks:
+        if t is not None and not t.done():
+            t.cancel()
+    await asyncio.gather(*[t for t in tasks if t is not None],
+                         return_exceptions=True)
+
+
+class TestSwitchSessionProfileConcurrency:
+    """Lock ordering between switch and send / delete / rename.
+
+    Every test wraps the real SessionLockRegistry with
+    ``_GatedLockRegistry`` and drives the interleaving with
+    asyncio.Events — no sleeps, no wall-clock timing.  Event waits and
+    task awaits carry 5-second fail-safe timeouts so a production lock
+    regression fails loudly instead of hanging."""
+
+    def _registry(self):
+        self.default_spy = SpyLLMClient(response="default reply")
+        self.local_spy = SpyLLMClient(response="local reply")
+        return _switch_registry(
+            default_client=self.default_spy,
+            default_kind="api",
+            default_model="remote-m1",
+            extras=[{
+                "id": "local", "label": "Local", "kind": "local",
+                "model": "qwen3.5:4b", "client": self.local_spy,
+            }],
+        )
+
+    def _gated_service(self):
+        registry = self._registry()
+        service = ChatService(profiles=registry)
+        self.gate = _GatedLockRegistry(SessionLockRegistry())
+        service._lock_registry = self.gate
+        return service
+
+    async def _run_gated(self, first_fn, second_fn):
+        """Run *first_fn* (gated, holds the lock) and *second_fn* (waits
+        on the lock); assert the wait, release, and collect both.
+
+        All waits carry 5-second fail-safe timeouts.  On ANY failure
+        (event timeout, assertion, task exception) the gate is
+        released, unfinished tasks are cancelled and every task is
+        reaped so nothing leaks into the background."""
+        first_task = asyncio.create_task(first_fn())
+        second_task = None
+        try:
+            await _wait_event(self.gate.first_acquired, "first_acquired")
+            second_task = asyncio.create_task(second_fn())
+            await _wait_event(self.gate.second_attempted, "second_attempted")
+            # second is now genuinely waiting on the real lock.
+            assert not second_task.done()
+        except BaseException:
+            self.gate.allow_first.set()
+            await _cancel_and_reap([second_task, first_task])
+            raise
+
+        self.gate.allow_first.set()
+        try:
+            first_result = await _wait_task(first_task, "first")
+            second_result = await _wait_task(second_task, "second")
+        except BaseException:
+            await _cancel_and_reap([second_task, first_task])
+            raise
+        return first_result, second_result
+
+    @pytest.mark.anyio
+    async def test_send_holds_lock_switch_waits(self, db_session):
+        """send acquires first; switch genuinely waits, then runs after
+        the send round completes with the OLD profile."""
+        service = self._gated_service()
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        async def send():
+            return await service.handle_session_message(
+                session.id, "q1", db_session,
+            )
+
+        async def switch():
+            return await service.switch_session_profile(
+                session.id, "local", False, db_session,
+            )
+
+        _, _ = await self._run_gated(send, switch)
+
+        rows = (
+            db_session.execute(
+                select(Message)
+                .where(Message.session_id == session.id)
+                .order_by(Message.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 2
+        for msg in rows:
+            assert msg.llm_profile_id_snapshot == "default"
+            assert msg.llm_profile_kind_snapshot == "api"
+            assert msg.llm_model_snapshot == "remote-m1"
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.llm_profile_id == "local"
+        assert len(self.gate.entries) == 0
+
+    @pytest.mark.anyio
+    async def test_switch_holds_lock_send_waits_uses_new_client(
+        self, db_session,
+    ):
+        """switch acquires first; send genuinely waits and afterwards
+        uses the NEW profile's client."""
+        service = self._gated_service()
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        async def switch():
+            return await service.switch_session_profile(
+                session.id, "local", False, db_session,
+            )
+
+        async def send():
+            return await service.handle_session_message(
+                session.id, "q1", db_session,
+            )
+
+        _, _ = await self._run_gated(switch, send)
+
+        assert len(self.local_spy.calls) == 1
+        assert len(self.default_spy.calls) == 0
+        rows = (
+            db_session.execute(
+                select(Message).where(Message.session_id == session.id)
+            )
+            .scalars()
+            .all()
+        )
+        for msg in rows:
+            assert msg.llm_profile_id_snapshot == "local"
+        assert len(self.gate.entries) == 0
+
+    @pytest.mark.anyio
+    async def test_delete_holds_lock_switch_waits_then_404(self, db_session):
+        """delete acquires first; switch waits and then gets 404."""
+        service = self._gated_service()
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        first_task = asyncio.create_task(
+            service.delete_session(session.id, db_session)
+        )
+        switch_task = None
+        try:
+            await _wait_event(self.gate.first_acquired, "first_acquired")
+            switch_task = asyncio.create_task(
+                service.switch_session_profile(
+                    session.id, "local", False, db_session,
+                )
+            )
+            await _wait_event(self.gate.second_attempted, "second_attempted")
+            assert not switch_task.done()
+        except BaseException:
+            self.gate.allow_first.set()
+            await _cancel_and_reap([switch_task, first_task])
+            raise
+
+        self.gate.allow_first.set()
+        try:
+            await _wait_task(first_task, "delete")
+        except BaseException:
+            await _cancel_and_reap([switch_task, first_task])
+            raise
+        with pytest.raises(SessionNotFoundError):
+            await _wait_task(switch_task, "switch")
+        assert len(self.gate.entries) == 0
+
+    @pytest.mark.anyio
+    async def test_switch_holds_lock_delete_waits_then_removes(
+        self, db_session,
+    ):
+        """switch acquires first; delete waits and then removes the
+        session."""
+        service = self._gated_service()
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        async def switch():
+            await service.switch_session_profile(
+                session.id, "local", False, db_session,
+            )
+
+        async def delete():
+            await service.delete_session(session.id, db_session)
+
+        await self._run_gated(switch, delete)
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh is None
+        assert len(self.gate.entries) == 0
+
+    @pytest.mark.anyio
+    async def test_rename_holds_lock_switch_waits_both_preserved(
+        self, db_session,
+    ):
+        service = self._gated_service()
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        async def rename():
+            await service.rename_session(
+                session.id, "Manual Title", db_session,
+            )
+
+        async def switch():
+            await service.switch_session_profile(
+                session.id, "local", False, db_session,
+            )
+
+        await self._run_gated(rename, switch)
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.title == "Manual Title"
+        assert fresh.title_is_manual is True
+        assert fresh.llm_profile_id == "local"
+        assert len(self.gate.entries) == 0
+
+    @pytest.mark.anyio
+    async def test_switch_holds_lock_rename_waits_both_preserved(
+        self, db_session,
+    ):
+        service = self._gated_service()
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        async def switch():
+            await service.switch_session_profile(
+                session.id, "local", False, db_session,
+            )
+
+        async def rename():
+            await service.rename_session(
+                session.id, "Manual Title", db_session,
+            )
+
+        await self._run_gated(switch, rename)
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.title == "Manual Title"
+        assert fresh.title_is_manual is True
+        assert fresh.llm_profile_id == "local"
+        assert len(self.gate.entries) == 0
+
+    @pytest.mark.anyio
+    async def test_switch_cancelled_while_waiting_for_lock(self, db_session):
+        """Cancelling the waiting switch leaves the binding unchanged
+        and the registry clean."""
+        service = self._gated_service()
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        async def send():
+            await service.handle_session_message(session.id, "q1", db_session)
+
+        first_task = asyncio.create_task(send())
+        switch_task = None
+        try:
+            await _wait_event(self.gate.first_acquired, "first_acquired")
+            switch_task = asyncio.create_task(
+                service.switch_session_profile(
+                    session.id, "local", False, db_session,
+                )
+            )
+            await _wait_event(self.gate.second_attempted, "second_attempted")
+            switch_task.cancel()
+            try:
+                await _wait_task(switch_task, "cancelled switch")
+            except asyncio.CancelledError:
+                pass
+        except BaseException:
+            self.gate.allow_first.set()
+            await _cancel_and_reap([switch_task, first_task])
+            raise
+        finally:
+            self.gate.allow_first.set()
+        await _wait_task(first_task, "send")
+        await _cancel_and_reap([switch_task])
+
+        fresh = _read_session_from_db(db_session, session.id)
+        assert fresh.llm_profile_id == "default"
+        assert fresh.llm_model_snapshot == "remote-m1"
+        assert len(self.gate.entries) == 0
+
+    @pytest.mark.anyio
+    async def test_registry_clean_after_409_path(self, db_session):
+        from backend.exceptions import SessionProfileSwitchAckRequiredError
+
+        service = self._gated_service()
+        # Single-operation test: let the first entrant pass the gate.
+        self.gate.allow_first.set()
+        session = _make_bound_session(db_session, "local", "qwen3.5:4b")
+        _add_history(db_session, session.id, ("local", "local", "qwen3.5:4b"))
+
+        with pytest.raises(SessionProfileSwitchAckRequiredError):
+            await service.switch_session_profile(
+                session.id, "default", False, db_session,
+            )
+        assert len(self.gate.entries) == 0
+
+
+# ============================================================================
+# 20-message history boundary after a switch
+# ============================================================================
+
+
+class TestSwitchHistoryBoundary:
+    """After switching, the new client receives at most the 20 most
+    recent prior messages, in order."""
+
+    @pytest.mark.anyio
+    async def test_24_history_switch_sends_only_last_20(self, db_session):
+        old_spy = SpyLLMClient(response="old reply")
+        new_spy = SpyLLMClient(response="new reply")
+        registry = _switch_registry(
+            default_client=old_spy,
+            default_kind="fake",
+            default_model="fake",
+            extras=[{
+                "id": "local", "label": "Local", "kind": "local",
+                "model": "qwen3.5:4b", "client": new_spy,
+            }],
+        )
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "fake")
+
+        # 24 prior messages (12 pairs) with the old-profile snapshot.
+        for i in range(12):
+            for role, text in (("user", f"q{i}"), ("assistant", f"a{i}")):
+                db_session.add(Message(
+                    session_id=session.id, role=role, content=text,
+                    llm_profile_id_snapshot="default",
+                    llm_profile_kind_snapshot="fake",
+                    llm_model_snapshot="fake",
+                ))
+        db_session.commit()
+
+        await service.switch_session_profile(
+            session.id, "local", False, db_session,
+        )
+        await service.handle_session_message(session.id, "new-q", db_session)
+
+        # The new client saw: system + exactly 20 history + new user.
+        msgs = new_spy.calls[0]
+        assert msgs[0] == {"role": "system", "content": SYSTEM_PROMPT}
+        history = msgs[1:-1]
+        assert len(history) == MAX_HISTORY_MESSAGES
+
+        expected = []
+        # 12 pairs = 24 messages; the oldest 4 (q0,a0,q1,a1) are out of
+        # the window.  The newest 20 start at q2.
+        for i in range(2, 12):
+            expected.append({"role": "user", "content": f"q{i}"})
+            expected.append({"role": "assistant", "content": f"a{i}"})
+        assert history == expected
+        assert msgs[-1] == {"role": "user", "content": "new-q"}
+
+        # Old messages untouched; new round carries the new profile.
+        rows = (
+            db_session.execute(
+                select(Message)
+                .where(Message.session_id == session.id)
+                .order_by(Message.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 26
+        for msg in rows[:24]:
+            assert msg.llm_profile_id_snapshot == "default"
+            assert msg.llm_profile_kind_snapshot == "fake"
+            assert msg.llm_model_snapshot == "fake"
+        for msg in rows[24:]:
+            assert msg.llm_profile_id_snapshot == "local"
+            assert msg.llm_profile_kind_snapshot == "local"
+            assert msg.llm_model_snapshot == "qwen3.5:4b"

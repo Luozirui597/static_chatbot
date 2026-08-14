@@ -15,6 +15,7 @@ from backend.database import create_tables, engine, get_db, run_migrations
 from backend.exceptions import (
     LLMError,
     SessionProfileConflictError,
+    SessionProfileSwitchAckRequiredError,
     SessionProfileUnavailableError,
     UnknownLLMProfileError,
 )
@@ -28,9 +29,11 @@ from backend.schemas import (
     DeleteResponse,
     LLMProfilePublic,
     MessageResponse,
+    RemoteHistoryAckRequiredDetail,
     RenameSessionRequest,
     SendMessageResponse,
     SessionResponse,
+    SwitchSessionProfileRequest,
 )
 
 # ---------------------------------------------------------------------------
@@ -344,6 +347,49 @@ async def rename_session(
         raise HTTPException(
             status_code=404, detail="Session not found"
         ) from None
+    return chat_service.build_session_response(session)
+
+
+@app.patch(
+    "/api/sessions/{session_id}/llm-profile",
+    response_model=SessionResponse,
+)
+async def switch_session_profile(
+    session_id: int,
+    request: SwitchSessionProfileRequest,
+    db: Session = Depends(get_db),  # noqa: B008 — FastAPI dependency pattern
+):
+    """Re-bind a session to another LLM profile.
+
+    Waits on the same per-session lock as send / delete / rename —
+    there is no "busy" response.  Switching never calls any LLM.
+    """
+    try:
+        session = await chat_service.switch_session_profile(
+            session_id=session_id,
+            profile_id=request.llm_profile_id,
+            acknowledge_remote_history=request.acknowledge_remote_history,
+            db=db,
+        )
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=404, detail="Session not found"
+        ) from None
+    except UnknownLLMProfileError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+    except SessionProfileSwitchAckRequiredError as exc:
+        # Structured, machine-readable 409 — callers match on the
+        # stable code, never on the message text.
+        raise HTTPException(
+            status_code=409,
+            detail=RemoteHistoryAckRequiredDetail(
+                code=exc.code,
+                message=str(exc),
+            ).model_dump(),
+        ) from exc
     return chat_service.build_session_response(session)
 
 

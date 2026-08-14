@@ -4,7 +4,14 @@ import re
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from backend.llm_profiles import SessionProfileStatus
 from backend.session_titles import normalize_title_whitespace
@@ -147,6 +154,31 @@ class RenameSessionRequest(BaseModel):
 _LLM_PROFILE_ID_PATTERN = r"^[a-z][a-z0-9-]*$"
 
 
+def _fullmatch_llm_profile_id(value: str) -> str:
+    """Reject values that only match the pattern as a prefix (e.g. a
+    trailing newline would pass ``re.match`` with ``$``)."""
+    if not re.fullmatch(_LLM_PROFILE_ID_PATTERN, value):
+        raise ValueError(
+            f"llm_profile_id must match {_LLM_PROFILE_ID_PATTERN}"
+        )
+    return value
+
+
+# Shared, single-source profile-id validation used by every request
+# model that carries an llm_profile_id.  Strict strings only (no type
+# coercion), 1-50 chars, ^[a-z][a-z0-9-]*$ enforced by fullmatch.
+LLMProfileId = Annotated[
+    str,
+    Field(
+        strict=True,
+        min_length=1,
+        max_length=50,
+        pattern=_LLM_PROFILE_ID_PATTERN,
+    ),
+    AfterValidator(_fullmatch_llm_profile_id),
+]
+
+
 class CreateSessionRequest(BaseModel):
     """Request body for POST /api/sessions.
 
@@ -154,23 +186,21 @@ class CreateSessionRequest(BaseModel):
     trailing-newline bypass.
     """
 
-    llm_profile_id: str = Field(
-        default="default",
-        strict=True,
-        min_length=1,
-        max_length=50,
-        pattern=_LLM_PROFILE_ID_PATTERN,
-        description="LLM profile id for the new session",
-    )
+    llm_profile_id: LLMProfileId = "default"
 
-    @field_validator("llm_profile_id")
-    @classmethod
-    def _fullmatch_id(cls, v: str) -> str:
-        if not re.fullmatch(_LLM_PROFILE_ID_PATTERN, v):
-            raise ValueError(
-                f"llm_profile_id must match {_LLM_PROFILE_ID_PATTERN}"
-            )
-        return v
+
+class SwitchSessionProfileRequest(BaseModel):
+    """Request body for PATCH /api/sessions/{id}/llm-profile."""
+
+    llm_profile_id: LLMProfileId
+    acknowledge_remote_history: bool = Field(default=False, strict=True)
+
+
+class RemoteHistoryAckRequiredDetail(BaseModel):
+    """Structured 409 detail for the remote-history acknowledgement."""
+
+    code: Literal["remote_history_ack_required"]
+    message: str
 
 
 class LLMProfilePublic(BaseModel):

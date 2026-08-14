@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from backend.exceptions import (
     LLMInvalidResponseError,
     SessionProfileConflictError,
+    SessionProfileSwitchAckRequiredError,
     SessionProfileUnavailableError,
     UnknownLLMProfileError,
 )
@@ -532,4 +533,144 @@ class ChatService:
             chat_session.updated_at = utc_now()
             db.commit()
             db.refresh(chat_session)
+            return chat_session
+
+    def _requires_remote_history_ack(
+        self,
+        chat_session: ChatSession,
+        target_profile: LLMProfile,
+        db: Session,
+    ) -> bool:
+        """Decide whether switching to *target_profile* requires the
+        client to acknowledge that chat history will be sent to a
+        remote API service.
+
+        Must run while holding the session lock, and counts the
+        messages table directly — it never trusts a client-supplied
+        message count.
+
+        Returns ``True`` only when all of the following hold:
+
+        * the target profile is an API profile;
+        * the session has at least one message;
+        * the session is NOT already the same reliable API binding
+          (same profile id, same model snapshot, resolution status
+          ready).
+        """
+        if target_profile.kind != "api":
+            return False
+
+        message_count = db.execute(
+            select(func.count()).select_from(Message).where(
+                Message.session_id == chat_session.id,
+            )
+        ).scalar()
+        if not message_count:
+            return False
+
+        same_reliable_api_binding = (
+            target_profile.kind == "api"
+            and chat_session.llm_profile_id == target_profile.id
+            and chat_session.llm_model_snapshot == target_profile.model
+            and self._profiles.resolve(
+                chat_session.llm_profile_id,
+                chat_session.llm_model_snapshot,
+            ).status
+            == SessionProfileStatus.READY
+        )
+        return not same_reliable_api_binding
+
+    async def switch_session_profile(
+        self,
+        session_id: int,
+        profile_id: str,
+        acknowledge_remote_history: bool,
+        db: Session,
+    ) -> ChatSession:
+        """Re-bind a session to another LLM profile.
+
+        Acquires the same per-session lock as send / delete / rename.
+        Holding the lock, it re-reads the session, looks the target
+        profile up in the registry, and runs the remote-history
+        privacy decision against the messages table.  The binding is
+        modified only after the decision passes.
+
+        Does **not** call any LLM, probe or start Ollama, touch the
+        messages, the title or ``title_is_manual``.
+
+        Idempotence: when the stored profile id AND model snapshot
+        already equal the target, no attribute is changed — no UPDATE
+        is generated and ``updated_at`` is untouched.  A real change
+        (different id, or a NULL / stale snapshot being repaired)
+        writes the target values and bumps ``updated_at``.
+
+        Parameters
+        ----------
+        session_id:
+            The id of the target chat session.
+        profile_id:
+            The registry id of the profile to bind.
+        acknowledge_remote_history:
+            The client's acknowledgement for remote-history transfer.
+        db:
+            An active SQLAlchemy ``Session``.
+
+        Returns
+        -------
+        ChatSession
+            The updated session.
+
+        Raises
+        ------
+        SessionNotFoundError
+            When *session_id* does not exist in the database.
+        UnknownLLMProfileError
+            When *profile_id* is not in the registry.
+        SessionProfileSwitchAckRequiredError
+            When the remote-history acknowledgement is required but
+            not given — the binding is left untouched.
+        """
+        async with self._lock_registry.session_lock(session_id):
+            chat_session = db.get(ChatSession, session_id)
+            if chat_session is None:
+                raise SessionNotFoundError(session_id)
+
+            target_profile = self._profiles.get(profile_id)
+            if target_profile is None:
+                raise UnknownLLMProfileError(profile_id)
+
+            if self._requires_remote_history_ack(
+                chat_session, target_profile, db,
+            ) and not acknowledge_remote_history:
+                raise SessionProfileSwitchAckRequiredError()
+
+            # True idempotence: when the stored binding already equals
+            # the target, return immediately — no attribute writes, no
+            # flush, no refresh, no commit, no UPDATE, and updated_at
+            # stays untouched.  (The acknowledgement decision above
+            # still runs first, so an unreliable API binding cannot
+            # bypass the confirmation through this path.)
+            if (
+                chat_session.llm_profile_id == target_profile.id
+                and chat_session.llm_model_snapshot == target_profile.model
+            ):
+                return chat_session
+
+            chat_session.llm_profile_id = target_profile.id
+            chat_session.llm_model_snapshot = target_profile.model
+            # updated_at is written explicitly here (not via an
+            # onupdate hook) so the change is deterministic.
+            chat_session.updated_at = utc_now()
+
+            try:
+                # Flush applies the writes, refresh re-reads the row,
+                # commit finalises.  Any failure rolls the whole
+                # transaction back.
+                db.flush()
+                db.refresh(chat_session)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
             return chat_session

@@ -1,5 +1,7 @@
 """Application-level exceptions."""
 
+from typing import Literal
+
 
 class LLMError(Exception):
     """Raised by LLM clients when a request cannot be fulfilled.
@@ -58,3 +60,22 @@ class SessionProfileConflictError(Exception):
                 "to continue."
             )
         super().__init__(detail)
+
+
+class SessionProfileSwitchAckRequiredError(Exception):
+    """Switching this session to a remote API profile requires an
+    explicit acknowledgement that chat history will leave the machine.
+
+    The *code* attribute is stable and machine-readable — routes map
+    it to a structured 409 body and never match on message text.
+    """
+
+    code: Literal["remote_history_ack_required"] = "remote_history_ack_required"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Switching to a remote API model means that on your next "
+            "message, up to the 20 most recent chat messages and the "
+            "new message will be sent to a remote API service.  Set "
+            "acknowledge_remote_history=true to continue."
+        )
