@@ -26,6 +26,13 @@ const {
   profileKindFromRegistry,
   resolveNextSelectionId,
   findSessionButton,
+  resolveSessionProfileDraft,
+  canApplySessionProfile,
+  buildSwitchSessionProfilePayload,
+  needsRemoteHistoryConfirmation,
+  parseRemoteHistoryAckRequired,
+  messageProvenanceLabel,
+  canApplySwitchResponse,
 } = require(
   path.resolve(__dirname, "..", "frontend", "model-selection.js"),
 );
@@ -581,11 +588,24 @@ function makeMessage(extra) {
     role: "user",
     content: "hello",
     created_at: "2026-08-06T12:00:01",
+    // Legacy messages carry explicit null snapshots — the backend
+    // always returns the three fields.
+    llm_profile_id_snapshot: null,
+    llm_profile_kind_snapshot: null,
+    llm_model_snapshot: null,
   };
   if (extra) {
     Object.keys(extra).forEach(function (k) { m[k] = extra[k]; });
   }
   return m;
+}
+
+function makeTrackedMessage(kind, model) {
+  return makeMessage({
+    llm_profile_id_snapshot: "default",
+    llm_profile_kind_snapshot: kind,
+    llm_model_snapshot: model,
+  });
 }
 
 describe("isValidMessageResponse", function () {
@@ -997,5 +1017,700 @@ describe("findSessionButton", function () {
   it("skips elements without a dataset safely", function () {
     var mixed = [makeFakeButton(), makeFakeButton(7)];
     assert.equal(findSessionButton(mixed, 7), mixed[1]);
+  });
+});
+
+// -----------------------------------------------------------------------
+// resolveSessionProfileDraft
+// -----------------------------------------------------------------------
+
+describe("resolveSessionProfileDraft", function () {
+  var apiLocalRegistry = analyzeProfileRegistry([
+    makeProfile("default", { is_default: true, kind: "api", model: "m1" }),
+    makeProfile("local", { kind: "local", model: "qwen" }),
+  ]);
+
+  it("ready session returns its binding id", function () {
+    assert.equal(
+      resolveSessionProfileDraft(
+        makeSession({ llm_profile_id: "local", llm_model_snapshot: "qwen" }),
+        apiLocalRegistry,
+      ),
+      "local",
+    );
+  });
+
+  it("model_changed returns the same id for repair", function () {
+    assert.equal(
+      resolveSessionProfileDraft(
+        makeSession({
+          llm_profile_status: "model_changed",
+          llm_model_snapshot: "stale",
+        }),
+        apiLocalRegistry,
+      ),
+      "default",
+    );
+  });
+
+  it("legacy_unknown returns the same id for repair", function () {
+    assert.equal(
+      resolveSessionProfileDraft(
+        makeSession({ llm_profile_status: "legacy_unknown" }),
+        apiLocalRegistry,
+      ),
+      "default",
+    );
+  });
+
+  it("profile_unavailable with absent id returns null (no fallback)", function () {
+    assert.equal(
+      resolveSessionProfileDraft(
+        makeSession({
+          llm_profile_status: "profile_unavailable",
+          llm_profile_id: "gone",
+        }),
+        apiLocalRegistry,
+      ),
+      null,
+    );
+  });
+
+  it("profile_unavailable with a reappeared id returns that id", function () {
+    assert.equal(
+      resolveSessionProfileDraft(
+        makeSession({ llm_profile_status: "profile_unavailable" }),
+        apiLocalRegistry,
+      ),
+      "default",
+    );
+  });
+
+  it("invalid registry or invalid session yields null", function () {
+    var bad = analyzeProfileRegistry([makeProfile("a"), makeProfile("b")]);
+    assert.equal(
+      resolveSessionProfileDraft(
+        makeSession(),
+        bad,
+      ),
+      null,
+    );
+    assert.equal(
+      resolveSessionProfileDraft(null, apiLocalRegistry),
+      null,
+    );
+    assert.equal(resolveSessionProfileDraft(undefined, apiLocalRegistry), null);
+  });
+});
+
+// -----------------------------------------------------------------------
+// canApplySessionProfile
+// -----------------------------------------------------------------------
+
+describe("canApplySessionProfile", function () {
+  var registry = analyzeProfileRegistry([
+    makeProfile("default", { is_default: true, kind: "api", model: "m1" }),
+    makeProfile("local", { kind: "local", model: "qwen" }),
+  ]);
+
+  function opts(overrides) {
+    var base = {
+      session: makeSession({ llm_model_snapshot: "m1" }),
+      registry: registry,
+      draftProfileId: "default",
+      isSwitching: false,
+    };
+    if (overrides) {
+      Object.keys(overrides).forEach(function (k) { base[k] = overrides[k]; });
+    }
+    return base;
+  }
+
+  it("ready + same draft is strictly idempotent (false)", function () {
+    assert.equal(canApplySessionProfile(opts()), false);
+  });
+
+  it("ready + different draft is true", function () {
+    assert.equal(
+      canApplySessionProfile(opts({ draftProfileId: "local" })),
+      true,
+    );
+  });
+
+  it("non-ready statuses allow the same id for repair", function () {
+    ["model_changed", "legacy_unknown", "profile_unavailable"]
+      .forEach(function (status) {
+        assert.equal(
+          canApplySessionProfile(opts({
+            session: makeSession({
+              llm_profile_status: status,
+              llm_model_snapshot: null,
+            }),
+          })),
+          true,
+          status,
+        );
+      });
+  });
+
+  it("isSwitching must be exactly false", function () {
+    [true, undefined, null, 0, "", "no"].forEach(function (bad) {
+      assert.equal(
+        canApplySessionProfile(opts({ isSwitching: bad, draftProfileId: "local" })),
+        false,
+        "isSwitching " + bad,
+      );
+    });
+  });
+
+  it("invalid draft / registry / session yield false", function () {
+    assert.equal(canApplySessionProfile(opts({ draftProfileId: "gone" })), false);
+    assert.equal(
+      canApplySessionProfile(opts({ registry: analyzeProfileRegistry([]) })),
+      false,
+    );
+    assert.equal(canApplySessionProfile(opts({ session: null })), false);
+  });
+
+  it("null / undefined / array / string options never throw", function () {
+    [null, undefined, [], "x", 42].forEach(function (bad) {
+      assert.equal(canApplySessionProfile(bad), false);
+    });
+  });
+});
+
+// -----------------------------------------------------------------------
+// buildSwitchSessionProfilePayload
+// -----------------------------------------------------------------------
+
+describe("buildSwitchSessionProfilePayload", function () {
+  it("builds the exact two-key payload with ack true", function () {
+    assert.deepStrictEqual(
+      buildSwitchSessionProfilePayload("local", true),
+      { llm_profile_id: "local", acknowledge_remote_history: true },
+    );
+  });
+
+  it("builds the exact two-key payload with ack false", function () {
+    assert.deepStrictEqual(
+      buildSwitchSessionProfilePayload("default", false),
+      { llm_profile_id: "default", acknowledge_remote_history: false },
+    );
+  });
+
+  it("normalises non-strict truthiness to a strict boolean", function () {
+    assert.deepStrictEqual(
+      buildSwitchSessionProfilePayload("local", "yes"),
+      { llm_profile_id: "local", acknowledge_remote_history: false },
+    );
+  });
+});
+
+// -----------------------------------------------------------------------
+// needsRemoteHistoryConfirmation
+// -----------------------------------------------------------------------
+
+describe("needsRemoteHistoryConfirmation", function () {
+  var registry = analyzeProfileRegistry([
+    makeProfile("default", { is_default: true, kind: "api", model: "m1" }),
+    makeProfile("api-b", { kind: "api", model: "m2" }),
+    makeProfile("local", { kind: "local", model: "qwen" }),
+  ]);
+
+  function opts(overrides) {
+    var base = {
+      session: makeSession({
+        llm_profile_id: "local",
+        llm_model_snapshot: "qwen",
+      }),
+      targetProfileId: "default",
+      registry: registry,
+      historyState: "present",
+    };
+    if (overrides) {
+      Object.keys(overrides).forEach(function (k) { base[k] = overrides[k]; });
+    }
+    return base;
+  }
+
+  it("Local → API: present/unknown need confirmation, empty does not", function () {
+    assert.equal(needsRemoteHistoryConfirmation(opts({ historyState: "present" })), true);
+    assert.equal(needsRemoteHistoryConfirmation(opts({ historyState: "unknown" })), true);
+    assert.equal(needsRemoteHistoryConfirmation(opts({ historyState: "empty" })), false);
+  });
+
+  it("API → Local never needs the confirmation", function () {
+    assert.equal(
+      needsRemoteHistoryConfirmation(opts({
+        session: makeSession({ llm_model_snapshot: "m1" }),
+        targetProfileId: "local",
+      })),
+      false,
+    );
+  });
+
+  it("API A → API B with history needs the confirmation", function () {
+    assert.equal(
+      needsRemoteHistoryConfirmation(opts({
+        session: makeSession({ llm_model_snapshot: "m1" }),
+        targetProfileId: "api-b",
+      })),
+      true,
+    );
+  });
+
+  it("same reliable API binding never needs it", function () {
+    assert.equal(
+      needsRemoteHistoryConfirmation(opts({
+        session: makeSession({ llm_model_snapshot: "m1" }),
+        targetProfileId: "default",
+      })),
+      false,
+    );
+  });
+
+  it("stale snapshot on the same API id still needs it", function () {
+    assert.equal(
+      needsRemoteHistoryConfirmation(opts({
+        session: makeSession({
+          llm_profile_id: "default",
+          llm_model_snapshot: "old",
+        }),
+        targetProfileId: "default",
+      })),
+      true,
+    );
+  });
+
+  it("invalid historyState for an API target fails closed (true)", function () {
+    ["none", null, undefined, 123, {}].forEach(function (bad) {
+      assert.equal(
+        needsRemoteHistoryConfirmation(opts({ historyState: bad })),
+        true,
+        "historyState " + bad,
+      );
+    });
+  });
+
+  it("null / undefined / array / string options never throw (fail closed true)", function () {
+    [null, undefined, [], "x"].forEach(function (bad) {
+      assert.equal(needsRemoteHistoryConfirmation(bad), true);
+    });
+  });
+});
+
+// -----------------------------------------------------------------------
+// parseRemoteHistoryAckRequired
+// -----------------------------------------------------------------------
+
+describe("parseRemoteHistoryAckRequired", function () {
+  var valid = {
+    detail: {
+      code: "remote_history_ack_required",
+      message: "please confirm",
+    },
+  };
+
+  it("parses the exact structure", function () {
+    assert.deepStrictEqual(
+      parseRemoteHistoryAckRequired(valid),
+      { code: "remote_history_ack_required", message: "please confirm" },
+    );
+  });
+
+  it("ignores extra fields on both levels", function () {
+    assert.deepStrictEqual(
+      parseRemoteHistoryAckRequired({
+        request_id: "abc",
+        detail: {
+          code: "remote_history_ack_required",
+          message: "please confirm",
+          metadata: { x: 1 },
+        },
+      }),
+      { code: "remote_history_ack_required", message: "please confirm" },
+    );
+  });
+
+  it("returns null for malformed shapes", function () {
+    var cases = [
+      null,
+      undefined,
+      [],
+      "text",
+      {},
+      { detail: "string detail" },
+      { detail: null },
+      { detail: [] },
+      { detail: { code: "wrong_code", message: "x" } },
+      { detail: { code: "remote_history_ack_required" } },
+      { detail: { code: "remote_history_ack_required", message: "" } },
+      { detail: { code: "remote_history_ack_required", message: "   " } },
+      { detail: { code: "remote_history_ack_required", message: 42 } },
+    ];
+    cases.forEach(function (c) {
+      assert.equal(parseRemoteHistoryAckRequired(c), null);
+    });
+  });
+});
+
+// -----------------------------------------------------------------------
+// Message snapshot rules (triple)
+// -----------------------------------------------------------------------
+
+describe("isValidMessageResponse snapshot triple", function () {
+  it("accepts legacy explicit nulls", function () {
+    assert.equal(isValidMessageResponse(makeMessage()), true);
+  });
+
+  it("accepts tracked triples for every kind", function () {
+    ["api", "local", "fake"].forEach(function (kind) {
+      assert.equal(
+        isValidMessageResponse(makeTrackedMessage(kind, "m")),
+        true,
+        kind,
+      );
+    });
+  });
+
+  it("rejects partial nulls", function () {
+    assert.equal(
+      isValidMessageResponse(makeMessage({
+        llm_profile_id_snapshot: "default",
+      })),
+      false,
+    );
+    assert.equal(
+      isValidMessageResponse(makeMessage({
+        llm_profile_id_snapshot: "default",
+        llm_profile_kind_snapshot: "api",
+      })),
+      false,
+    );
+    assert.equal(
+      isValidMessageResponse(makeMessage({
+        llm_profile_kind_snapshot: "api",
+      })),
+      false,
+    );
+  });
+
+  it("rejects missing fields", function () {
+    var m = makeMessage();
+    delete m.llm_profile_id_snapshot;
+    assert.equal(isValidMessageResponse(m), false);
+
+    var m2 = makeMessage();
+    delete m2.llm_profile_kind_snapshot;
+    assert.equal(isValidMessageResponse(m2), false);
+
+    var m3 = makeMessage();
+    delete m3.llm_model_snapshot;
+    assert.equal(isValidMessageResponse(m3), false);
+  });
+
+  it("rejects inherited (prototype) snapshot fields", function () {
+    var proto = {
+      llm_profile_id_snapshot: null,
+      llm_profile_kind_snapshot: null,
+      llm_model_snapshot: null,
+    };
+    var m = makeMessage({});
+    delete m.llm_profile_id_snapshot;
+    delete m.llm_profile_kind_snapshot;
+    delete m.llm_model_snapshot;
+    Object.setPrototypeOf(m, proto);
+    assert.equal(isValidMessageResponse(m), false);
+  });
+
+  it("rejects blank, over-long and invalid-kind values", function () {
+    assert.equal(
+      isValidMessageResponse(makeTrackedMessage("api", "   ")),
+      false,
+    );
+    assert.equal(
+      isValidMessageResponse(makeTrackedMessage("quantum", "m")),
+      false,
+    );
+    assert.equal(
+      isValidMessageResponse(makeMessage({
+        llm_profile_id_snapshot: "a".repeat(51),
+        llm_profile_kind_snapshot: "api",
+        llm_model_snapshot: "m",
+      })),
+      false,
+    );
+    assert.equal(
+      isValidMessageResponse(makeMessage({
+        llm_profile_id_snapshot: "default",
+        llm_profile_kind_snapshot: "api",
+        llm_model_snapshot: "m".repeat(256),
+      })),
+      false,
+    );
+    assert.equal(
+      isValidMessageResponse(makeMessage({
+        llm_profile_id_snapshot: "",
+        llm_profile_kind_snapshot: "api",
+        llm_model_snapshot: "m",
+      })),
+      false,
+    );
+    assert.equal(
+      isValidMessageResponse(makeMessage({
+        llm_profile_id_snapshot: 42,
+        llm_profile_kind_snapshot: "api",
+        llm_model_snapshot: "m",
+      })),
+      false,
+    );
+  });
+
+  it("does not mutate the message", function () {
+    var m = makeTrackedMessage("api", "m1");
+    var snapshot = JSON.stringify(m);
+    isValidMessageResponse(m);
+    messageProvenanceLabel(m);
+    assert.equal(JSON.stringify(m), snapshot);
+  });
+});
+
+// -----------------------------------------------------------------------
+// messageProvenanceLabel
+// -----------------------------------------------------------------------
+
+describe("messageProvenanceLabel", function () {
+  it("labels the three kinds from the message's own snapshot", function () {
+    assert.equal(messageProvenanceLabel(makeTrackedMessage("api", "m1")), "API · m1");
+    assert.equal(messageProvenanceLabel(makeTrackedMessage("local", "qwen")), "Local · qwen");
+    assert.equal(messageProvenanceLabel(makeTrackedMessage("fake", "fake")), "Fake · fake");
+  });
+
+  it("legacy and invalid messages yield null", function () {
+    assert.equal(messageProvenanceLabel(makeMessage()), null);
+    assert.equal(
+      messageProvenanceLabel(makeMessage({ llm_profile_id_snapshot: "x" })),
+      null,
+    );
+    assert.equal(messageProvenanceLabel(null), null);
+    assert.equal(messageProvenanceLabel("msg"), null);
+  });
+
+  it("does not depend on the current registry or session", function () {
+    var msg = makeTrackedMessage("api", "old-model");
+    // Any registry / session state is irrelevant — label comes from the
+    // message itself.
+    assert.equal(messageProvenanceLabel(msg), "API · old-model");
+  });
+});
+
+// -----------------------------------------------------------------------
+// canApplySwitchResponse
+// -----------------------------------------------------------------------
+
+describe("canApplySwitchResponse", function () {
+  var validResponse = makeSession({ llm_model_snapshot: "qwen" });
+
+  it("trustworthy response on the current session", function () {
+    assert.deepStrictEqual(
+      canApplySwitchResponse({
+        requestedSessionId: 1,
+        currentSessionId: 1,
+        response: validResponse,
+      }),
+      { validForCache: true, stillCurrent: true },
+    );
+  });
+
+  it("trustworthy response after the user switched away", function () {
+    assert.deepStrictEqual(
+      canApplySwitchResponse({
+        requestedSessionId: 1,
+        currentSessionId: 2,
+        response: validResponse,
+      }),
+      { validForCache: true, stillCurrent: false },
+    );
+  });
+
+  it("stillCurrent is false for invalid current ids", function () {
+    [null, undefined, "1", -1, 0, 1.5].forEach(function (bad) {
+      var r = canApplySwitchResponse({
+        requestedSessionId: 1,
+        currentSessionId: bad,
+        response: validResponse,
+      });
+      assert.equal(r.validForCache, true);
+      assert.equal(r.stillCurrent, false, "current " + bad);
+    });
+  });
+
+  it("id mismatch or malformed response is not cacheable", function () {
+    assert.deepStrictEqual(
+      canApplySwitchResponse({
+        requestedSessionId: 1,
+        currentSessionId: 1,
+        response: makeSession({ id: 2 }),
+      }),
+      { validForCache: false, stillCurrent: false },
+    );
+    assert.deepStrictEqual(
+      canApplySwitchResponse({
+        requestedSessionId: 1,
+        currentSessionId: 1,
+        response: null,
+      }),
+      { validForCache: false, stillCurrent: false },
+    );
+    assert.deepStrictEqual(
+      canApplySwitchResponse({
+        requestedSessionId: "1",
+        currentSessionId: 1,
+        response: validResponse,
+      }),
+      { validForCache: false, stillCurrent: false },
+    );
+    assert.deepStrictEqual(
+      canApplySwitchResponse({
+        requestedSessionId: 1.5,
+        currentSessionId: 1,
+        response: validResponse,
+      }),
+      { validForCache: false, stillCurrent: false },
+    );
+  });
+
+  it("null / undefined / array / string options never throw", function () {
+    [null, undefined, [], "x", 42].forEach(function (bad) {
+      assert.deepStrictEqual(
+        canApplySwitchResponse(bad),
+        { validForCache: false, stillCurrent: false },
+      );
+    });
+  });
+});
+
+// -----------------------------------------------------------------------
+// inputs never mutated (new public functions)
+// -----------------------------------------------------------------------
+
+describe("new switch helpers do not mutate inputs", function () {
+  var registry = analyzeProfileRegistry([
+    makeProfile("default", { is_default: true, kind: "api", model: "m1" }),
+    makeProfile("local", { kind: "local", model: "qwen" }),
+  ]);
+
+  it("resolveSessionProfileDraft / canApplySessionProfile", function () {
+    var session = makeSession({ llm_model_snapshot: "m1" });
+    var sessionJson = JSON.stringify(session);
+    var registryJson = JSON.stringify(registry);
+
+    resolveSessionProfileDraft(session, registry);
+    canApplySessionProfile({
+      session: session, registry: registry,
+      draftProfileId: "local", isSwitching: false,
+    });
+    needsRemoteHistoryConfirmation({
+      session: session, registry: registry,
+      targetProfileId: "local", historyState: "present",
+    });
+
+    assert.equal(JSON.stringify(session), sessionJson);
+    assert.equal(JSON.stringify(registry), registryJson);
+  });
+
+  it("parseRemoteHistoryAckRequired leaves the body untouched", function () {
+    var body = {
+      detail: { code: "remote_history_ack_required", message: "x" },
+    };
+    var json = JSON.stringify(body);
+    parseRemoteHistoryAckRequired(body);
+    assert.equal(JSON.stringify(body), json);
+  });
+});
+
+// -----------------------------------------------------------------------
+// 4A review follow-ups — five direct behaviour tests
+// -----------------------------------------------------------------------
+
+describe("4A review follow-ups", function () {
+  it("fake target never needs the remote-history confirmation", function () {
+    var registry = analyzeProfileRegistry([
+      makeProfile("default", { is_default: true, kind: "api", model: "m1" }),
+      makeProfile("fake", { kind: "fake", model: "fake" }),
+    ]);
+    var session = makeSession({ llm_model_snapshot: "m1" });
+    var sessionJson = JSON.stringify(session);
+    var registryJson = JSON.stringify(registry);
+
+    var result = needsRemoteHistoryConfirmation({
+      session: session,
+      registry: registry,
+      targetProfileId: "fake",
+      historyState: "present",
+    });
+
+    assert.equal(result, false);
+    assert.equal(JSON.stringify(session), sessionJson);
+    assert.equal(JSON.stringify(registry), registryJson);
+  });
+
+  it("provenance label works from the snapshot triple alone", function () {
+    // Deliberately no id / session_id / role / content / created_at —
+    // the label must depend only on the three snapshot fields.
+    var bareSnapshot = {
+      llm_profile_id_snapshot: "local",
+      llm_profile_kind_snapshot: "local",
+      llm_model_snapshot: "qwen3.5:4b",
+    };
+    assert.equal(
+      messageProvenanceLabel(bareSnapshot),
+      "Local · qwen3.5:4b",
+    );
+  });
+
+  it("409 message is returned verbatim (trim only for blank check)", function () {
+    var body = {
+      detail: {
+        code: "remote_history_ack_required",
+        message: "  keep original spacing  ",
+      },
+    };
+    var parsed = parseRemoteHistoryAckRequired(body);
+    assert.deepStrictEqual(parsed, {
+      code: "remote_history_ack_required",
+      message: "  keep original spacing  ",
+    });
+  });
+
+  it("internal snapshot helpers are not exported", function () {
+    var selectionModule = require(
+      path.resolve(__dirname, "..", "frontend", "model-selection.js"),
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(selectionModule, "analyzeMessageSnapshot"),
+      false,
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(selectionModule, "profileFromRegistry"),
+      false,
+    );
+  });
+
+  it("canApplySwitchResponse does not mutate options or response", function () {
+    var response = makeSession({ llm_model_snapshot: "qwen" });
+    var options = {
+      requestedSessionId: 1,
+      currentSessionId: 2,
+      response: response,
+    };
+    var optionsJson = JSON.stringify(options);
+    var responseJson = JSON.stringify(response);
+
+    var result = canApplySwitchResponse(options);
+
+    assert.deepStrictEqual(result, { validForCache: true, stillCurrent: false });
+    assert.equal(JSON.stringify(options), optionsJson);
+    assert.equal(JSON.stringify(response), responseJson);
   });
 });
