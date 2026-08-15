@@ -371,6 +371,14 @@ function classifyUncertainRefresh(options) {
  * (``uncertainRecord``) built from the operation so the caller never
  * has to reassemble domain state.
  *
+ * ``showStatus`` is TARGET-SCOPED: it describes the status the target
+ * session should store, so it does NOT depend on ``stillCurrent``.
+ * Only ``focus`` and ``syncVisibleUI`` are visible effects gated by
+ * ``stillCurrent``.  ``switched`` and ``cancelled`` carry no
+ * ``showStatus`` — the executor clears the target's ordinary status
+ * itself.  ``uncertain`` carries ``showStatus: null``: the persistent
+ * re-apply hint is rendered exclusively from the uncertain record.
+ *
  * Never throws; never mutates.
  *
  * @param {*} options
@@ -443,9 +451,6 @@ function planSwitchOutcomeEffects(options) {
       if (stillCurrent) {
         plan.syncVisibleUI = true;
         plan.focus = hasTarget ? "input" : null;
-        if (!hasTarget) {
-          plan.showStatus = "The conversation no longer exists.";
-        }
       }
       break;
     }
@@ -459,12 +464,13 @@ function planSwitchOutcomeEffects(options) {
       }
       plan.clearBlock = true;
       plan.clearUncertain = true;
+      // target-scoped message, independent of visibility
+      plan.showStatus =
+        "The model switch did not complete. Your conversation still " +
+        "uses its previous model.";
       if (stillCurrent) {
         plan.syncVisibleUI = true;
         plan.focus = "apply";
-        plan.showStatus =
-          "The model switch did not complete. Your conversation still " +
-          "uses its previous model.";
       }
       break;
     }
@@ -479,24 +485,25 @@ function planSwitchOutcomeEffects(options) {
       plan.removeSession = true;
       plan.clearBlock = true;
       plan.clearUncertain = true;
-      if (stillCurrent) {
-        plan.showStatus = "The conversation no longer exists.";
-      }
       break;
 
     case "validation_error":
       plan.reloadProfiles = true;
+      if (typeof outcome.message === "string" &&
+          outcome.message.trim() !== "") {
+        plan.showStatus = outcome.message;      // raw message, unchanged
+      }
       if (stillCurrent) {
-        plan.showStatus =
-          typeof outcome.message === "string" ? outcome.message : null;
         plan.focus = "apply";
       }
       break;
 
     case "failed":
+      if (typeof outcome.message === "string" &&
+          outcome.message.trim() !== "") {
+        plan.showStatus = outcome.message;      // raw message, unchanged
+      }
       if (stillCurrent) {
-        plan.showStatus =
-          typeof outcome.message === "string" ? outcome.message : null;
         plan.focus = "apply";
       }
       break;
@@ -521,9 +528,9 @@ function planSwitchOutcomeEffects(options) {
         originalProfileId: operation.originalProfileId,
         originalModelSnapshot: operation.originalModelSnapshot,
       };
+      // showStatus stays null — the persistent re-apply hint is
+      // rendered exclusively from the uncertain record.
       if (stillCurrent) {
-        plan.showStatus =
-          typeof outcome.message === "string" ? outcome.message : null;
         plan.focus = "apply";
       }
       break;

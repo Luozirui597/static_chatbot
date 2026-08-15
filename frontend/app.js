@@ -20,6 +20,14 @@
   const sessionModelBadgeEl = document.getElementById("sessionModelBadge");
   const sessionCompatibilityNoticeEl =
     document.getElementById("sessionCompatibilityNotice");
+  const currentProfileBarEl = document.getElementById("currentProfileBar");
+  const currentProfileSelectEl =
+    document.getElementById("currentProfileSelect");
+  const applyProfileBtn = document.getElementById("applyProfileBtn");
+  const currentProfileStatusEl =
+    document.getElementById("currentProfileStatus");
+  const profileSwitchDialogEl =
+    document.getElementById("profileSwitchDialog");
   const messagesEl = document.getElementById("messages");
   const statusEl = document.getElementById("status");
   const inputEl = document.getElementById("messageInput");
@@ -40,7 +48,7 @@
 
   // Model selector state
   let profiles = [];               // raw profile list from the server
-  let selectedProfileId = null;    // string | null
+  let selectedProfileId = null;    // string | null (new chats only)
   let profilesLoadState = "loading"; // "loading" | "ready" | "error"
   let profilesLoadError = null;    // persistent — #profileSelectorStatus
 
@@ -52,6 +60,27 @@
   // Temporary per-session send blocks set after 409/503 responses.
   // sessionId -> "conflict" | "profile_unavailable"
   let sessionSendBlocks = {};
+
+  // Current-session model switcher state (fully independent from the
+  // new-chat selector above).
+  let currentProfileDraftId = null;   // string | null (current chat only)
+  let isProfileSwitching = false;     // busy — covers outcome application
+  let isDeletingSession = false;      // delete busy (programmatic guard)
+  let deletingSessionId = null;
+  let profileSwitchGeneration = 0;    // monotonic token / generation
+
+  // Per-session records.  Keys are positive safe integer ids.
+  const sessionHasMessages = Object.create(null);      // true | false | undefined
+  const sessionSwitchUncertain = Object.create(null);  // uncertain records
+  const profileSwitchStatusBySession = Object.create(null); // {text, isError}
+
+  // Controller + confirmer, initialised once in init().
+  let switchController = null;
+  let profileSwitchInitializationError = null;   // string | null
+
+  const UNCERTAIN_REAPPLY_TEXT =
+    "The previous model switch could not be confirmed. Apply again to " +
+    "check the current binding before retrying.";
 
   /* ---- Derived helpers --------------------------------------------- */
 
@@ -74,11 +103,14 @@
     return profilesLoadState === "ready" && registry().status === "valid";
   }
 
-  /** Whether the current session (or none) can accept a message. */
+  /** Whether the current session (or none) can accept a message.
+   *  An uncertain-switch record for the current session always blocks
+   *  sending — even when the cached llm_profile_status is "ready". */
   function currentSessionWritable() {
     return isSessionWritable(
       currentSession(),
       sessionSendBlocks[currentSessionId] || null,
+      sessionSwitchUncertain[currentSessionId],
     );
   }
 
@@ -87,13 +119,113 @@
     return profileKindFromRegistry(registry(), profileId);
   }
 
+  /** Find a session in the local list by id (no insertion). */
+  function findSessionInList(sessionId) {
+    if (!Number.isSafeInteger(sessionId)) return null;
+    for (let i = 0; i < sessions.length; i++) {
+      if (sessions[i].id === sessionId) return sessions[i];
+    }
+    return null;
+  }
+
+  /** Per-session record keys must be positive safe integers. */
+  function isValidSessionIdKey(id) {
+    return Number.isSafeInteger(id) && id >= 1;
+  }
+
+  /** Set the ordinary switch status for ONE session (target-scoped). */
+  function setProfileSwitchStatus(sessionId, text, isError) {
+    if (!isValidSessionIdKey(sessionId)) return;
+    profileSwitchStatusBySession[sessionId] = {
+      text: typeof text === "string" ? text : "",
+      isError: isError === true,
+    };
+    renderCurrentProfileStatus();
+  }
+
+  /** Clear the ordinary switch status for ONE session. */
+  function clearProfileSwitchStatus(sessionId) {
+    if (!isValidSessionIdKey(sessionId)) return;
+    delete profileSwitchStatusBySession[sessionId];
+    renderCurrentProfileStatus();
+  }
+
+  /** Render the status area for the CURRENT session only.  The
+   * uncertain record has the highest display priority; ordinary
+   * per-session status comes second; otherwise the DOM is cleared. */
+  function renderCurrentProfileStatus() {
+    let text = "";
+    let isError = false;
+
+    if (profileSwitchInitializationError !== null &&
+        currentSessionId !== null) {
+      text = profileSwitchInitializationError;
+      isError = true;
+    } else if (currentSessionId !== null &&
+               sessionSwitchUncertain[currentSessionId] !== undefined) {
+      text = UNCERTAIN_REAPPLY_TEXT;
+      isError = true;
+    } else if (currentSessionId !== null &&
+               profileSwitchStatusBySession[currentSessionId] !== undefined) {
+      text = profileSwitchStatusBySession[currentSessionId].text;
+      isError = profileSwitchStatusBySession[currentSessionId].isError;
+    }
+
+    currentProfileStatusEl.textContent = text;
+    currentProfileStatusEl.className =
+      "current-profile-status" + (isError ? " error" : "");
+  }
+
+  /** Apply the outcome's ordinary-status effect to the TARGET session
+   * only — independent of which session is currently visible. */
+  function applyTargetProfileSwitchStatus(targetSessionId, outcome, plan) {
+    if (!isValidSessionIdKey(targetSessionId)) return;
+    switch (outcome.status) {
+      case "switched":
+      case "cancelled":
+        clearProfileSwitchStatus(targetSessionId);
+        break;
+      case "not_changed":
+      case "validation_error":
+      case "failed":
+        if (typeof plan.showStatus === "string" &&
+            plan.showStatus.trim() !== "") {
+          setProfileSwitchStatus(targetSessionId, plan.showStatus, true);
+        }
+        break;
+      case "uncertain":
+        // The uncertain record lives in sessionSwitchUncertain; the
+        // persistent hint is rendered from it (single source).
+        break;
+      case "busy":
+      default:
+        break;
+    }
+  }
+
+  /** Raw history state → enum for needsRemoteHistoryConfirmation. */
+  function historyStateFor(sessionId) {
+    return historyStateFromValue(sessionHasMessages[sessionId]);
+  }
+
+  /** Write the has-messages state for a session (undefined = unknown). */
+  function setHistoryState(sessionId, state) {
+    if (!isValidSessionIdKey(sessionId)) return;
+    if (state === undefined) {
+      delete sessionHasMessages[sessionId];
+    } else {
+      sessionHasMessages[sessionId] = state === true;
+    }
+  }
+
   /* ---- Custom error ------------------------------------------------ */
 
   class ApiError extends Error {
-    constructor(message, status = 0) {
+    constructor(message, status = 0, code = null) {
       super(message);
       this.name = "ApiError";
       this.status = status;
+      this.code = code;
     }
   }
 
@@ -118,10 +250,23 @@
 
     if (!response.ok) {
       let detail = "Something went wrong. Please try again.";
+      let code = null;
       try {
         const body = await response.json();
         if (typeof body.detail === "string") {
           detail = body.detail;
+        } else if (
+          body !== null && typeof body === "object" &&
+          !Array.isArray(body) &&
+          typeof body.detail === "object" && body.detail !== null &&
+          !Array.isArray(body.detail) &&
+          typeof body.detail.code === "string" &&
+          typeof body.detail.message === "string"
+        ) {
+          // Structured error body (e.g. the model-switch 409) — the
+          // stable code is preserved; callers never match on text.
+          code = body.detail.code;
+          detail = body.detail.message;
         } else if (
           Array.isArray(body.detail) &&
           body.detail.length > 0 &&
@@ -132,7 +277,7 @@
       } catch (_) {
         /* non-JSON body — use default detail */
       }
-      throw new ApiError(detail, response.status);
+      throw new ApiError(detail, response.status, code);
     }
 
     return response;
@@ -199,6 +344,113 @@
     return resp.json();
   }
 
+  /* ---- Model switch API wrappers ----------------------------------- */
+
+  /** PATCH the switch endpoint.  Success returns parsed JSON (validated
+   * by the controller); failures throw normalised error objects with
+   * failureKind "http" | "network" | "response_parse". */
+  async function switchProfileRequest(sessionId, profileId, ack) {
+    let response;
+    try {
+      response = await fetch("/api/sessions/" + sessionId + "/llm-profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildSwitchSessionProfilePayload(profileId, ack)),
+      });
+    } catch (_) {
+      throw {
+        failureKind: "network", status: 0, code: null,
+        message: "Network error. Please check your connection.",
+      };
+    }
+
+    if (!response.ok) {
+      let code = null;
+      let message = "Something went wrong. Please try again.";
+      let body = null;
+      try { body = await response.json(); } catch (_) { body = null; }
+      const structured = parseRemoteHistoryAckRequired(body);
+      if (structured !== null) {
+        code = structured.code;
+        message = structured.message;
+      } else if (body !== null && typeof body === "object" &&
+                 !Array.isArray(body) && typeof body.detail === "string") {
+        message = body.detail;
+      } else if (body !== null && typeof body === "object" &&
+                 !Array.isArray(body) && Array.isArray(body.detail) &&
+                 body.detail.length > 0 && body.detail[0] &&
+                 typeof body.detail[0].msg === "string") {
+        message = body.detail[0].msg;
+      }
+      throw {
+        failureKind: "http", status: response.status, code: code,
+        message: message,
+      };
+    }
+
+    try {
+      return await response.json();
+    } catch (_) {
+      throw {
+        failureKind: "response_parse", status: 0, code: null,
+        message: "The server returned an unreadable response.",
+      };
+    }
+  }
+
+  /** GET a single session as parsed JSON; errors follow the same
+   * normalised contract as switchProfileRequest. */
+  async function fetchOneSessionRaw(sessionId) {
+    let response;
+    try {
+      response = await fetch("/api/sessions/" + sessionId);
+    } catch (_) {
+      throw {
+        failureKind: "network", status: 0, code: null,
+        message: "Network error. Please check your connection.",
+      };
+    }
+    if (!response.ok) {
+      let body = null;
+      try { body = await response.json(); } catch (_) { body = null; }
+      let message = "Something went wrong. Please try again.";
+      if (body !== null && typeof body === "object" && !Array.isArray(body) &&
+          typeof body.detail === "string") {
+        message = body.detail;
+      }
+      throw {
+        failureKind: "http", status: response.status, code: null,
+        message: message,
+      };
+    }
+    try {
+      return await response.json();
+    } catch (_) {
+      throw {
+        failureKind: "response_parse", status: 0, code: null,
+        message: "The server returned an unreadable response.",
+      };
+    }
+  }
+
+  /** Structured single-session fetch with NO cache side effects. */
+  async function fetchAndValidateOneSession(sessionId) {
+    let raw;
+    try {
+      raw = await fetchOneSessionRaw(sessionId);
+    } catch (err) {
+      if (err && typeof err === "object" && err.failureKind === "http" &&
+          err.status === 404) {
+        return { status: "not_found" };
+      }
+      return { status: "failed", message: err && err.message ? err.message : "" };
+    }
+    if (!isValidSessionResponse(raw) || raw.id !== sessionId) {
+      return { status: "invalid_response", message: "Invalid session response." };
+    }
+    return { status: "ok", session: raw };
+  }
+
   /* ---- Rendering: profile selector ---------------------------------- */
 
   /**
@@ -209,6 +461,15 @@
    * synchronisation — rebuilding options would churn the DOM and drop
    * the select's focus.
    */
+  function appendPlaceholderOption(selectEl) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.disabled = true;
+    option.selected = true;
+    option.textContent = "Select a model";
+    selectEl.appendChild(option);
+  }
+
   function renderProfileSelectorContent() {
     const hadFocus = document.activeElement === profileSelectEl;
     const reg = registry();
@@ -224,6 +485,11 @@
       }
       if (selectedProfileId !== null) {
         profileSelectEl.value = selectedProfileId;
+      } else {
+        // Explicit placeholder — never silently fall back to the
+        // first profile.
+        appendPlaceholderOption(profileSelectEl);
+        profileSelectEl.value = "";
       }
     } else {
       const option = document.createElement("option");
@@ -371,21 +637,32 @@
   function updateControlStates() {
     const blockBase = isInitializing || isRenaming || isRenameSaving;
     const blockSessionSelection = blockBase || isCreatingSession;
-    const blockSessionActions = blockBase || isCreatingSession || isSending;
+    const blockSessionActions =
+      blockBase || isCreatingSession || isSending ||
+      isProfileSwitching || isDeletingSession;
     const usable = registryUsable();
     const writable = currentSessionWritable();
 
-    const blockCreate = blockSessionActions || !usable;
+    const blockCreate =
+      blockSessionActions || !usable || selectedProfileId === null;
     const blockProfileSelect =
       blockSessionActions || !usable || profiles.length <= 1;
     const blockSend =
-      blockBase || isCreatingSession || isSending || !writable ||
+      blockBase || isCreatingSession || isSending ||
+      isProfileSwitching || isDeletingSession || !writable ||
       (currentSessionId === null && !usable);
+
+    const switchInitialized =
+      switchController !== null && profileSwitchInitializationError === null;
+    const blockCurrentProfile = blockSessionActions || !usable ||
+      !switchInitialized || currentSessionId === null;
 
     sendBtn.disabled = blockSend;
     inputEl.disabled = blockSend;
     newChatBtn.disabled = blockCreate;
     profileSelectEl.disabled = blockProfileSelect;
+    currentProfileSelectEl.disabled = blockCurrentProfile;
+    applyProfileBtn.disabled = blockCurrentProfile || !applyEnabled();
 
     if (blockSend && currentSessionId !== null && !writable) {
       inputEl.placeholder =
@@ -429,6 +706,26 @@
   function syncCurrentSessionUI() {
     renderCurrentSessionMeta();
     updateControlStates();
+  }
+
+  /**
+   * Apply a profile-draft plan to the current-session model controls.
+   *
+   * ``plan`` comes from ``planProfileDraftForSelection``.  An
+   * unchanged selection keeps the draft untouched and never rebuilds
+   * the dropdown (no option churn, no focus loss); a changed
+   * selection re-renders the bar — the ONLY place that shows or hides
+   * it — which also re-renders the status area.  With no current
+   * session the bar hides and the status text clears, while the
+   * per-session records of other sessions stay untouched.
+   */
+  function applySelectionDraftPlan(plan) {
+    currentProfileDraftId = plan.draftId;
+    if (plan.selectionChanged) {
+      renderCurrentProfileBar();
+    } else {
+      renderCurrentProfileStatus();
+    }
   }
 
   function setSendingState(on) {
@@ -830,7 +1127,8 @@
     sessionsEverLoaded = true;
     sessionsLoadError = null;
 
-    // Server list is authoritative for temporary blocks.
+    // Server list is authoritative for temporary blocks and other
+    // per-session records.
     const presentIds = {};
     for (const s of sessions) {
       presentIds[s.id] = true;
@@ -839,10 +1137,20 @@
     for (const sid of Object.keys(sessionSendBlocks)) {
       if (!presentIds[sid]) delete sessionSendBlocks[sid];
     }
+    for (const sid of Object.keys(sessionSwitchUncertain)) {
+      if (!presentIds[sid]) delete sessionSwitchUncertain[sid];
+    }
+    for (const sid of Object.keys(sessionHasMessages)) {
+      if (!presentIds[sid]) delete sessionHasMessages[sid];
+    }
+    for (const sid of Object.keys(profileSwitchStatusBySession)) {
+      if (!presentIds[sid]) delete profileSwitchStatusBySession[sid];
+    }
 
     // Decide the final selection BEFORE rendering the list so the
     // highlight, title, badge and message area all point at the same
     // session.
+    const previousSelectionId = currentSessionId;
     const next = resolveNextSelectionId(
       sessions,
       currentSessionId,
@@ -850,6 +1158,20 @@
     );
     const selectionChanged = next.changed;
     currentSessionId = next.selectionId;
+
+    // The model controls must follow the selection: a changed
+    // selection re-derives the draft from the NEW session's server
+    // binding (an old session's un-applied draft is never inherited),
+    // while an unchanged selection keeps any un-applied draft — an
+    // ordinary refresh never overwrites a user choice and never
+    // rebuilds the dropdown.
+    applySelectionDraftPlan(planProfileDraftForSelection({
+      sessions: sessions,
+      previousSessionId: previousSelectionId,
+      nextSessionId: currentSessionId,
+      previousDraftId: currentProfileDraftId,
+      registry: registry(),
+    }));
 
     // Only the null-selection case bumps the request guard manually:
     // it must invalidate an in-flight load without starting a new one.
@@ -883,31 +1205,30 @@
    * and the read-only notice.  Never touches sessionsLoadState.
    */
   async function refreshOneSessionCompatibility(sessionId) {
-    let fresh;
-    try {
-      fresh = await fetchSession(sessionId);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        removeSessionLocally(sessionId);
-        return false;
-      }
+    // Side-effect-free structured fetch first; the cache is only ever
+    // replaced when the session still exists locally — a deleted
+    // session is never re-inserted (no ghost sessions).
+    const result = await fetchAndValidateOneSession(sessionId);
+    if (result.status === "not_found") {
+      removeSessionLocally(sessionId);
+      return false;
+    }
+    if (result.status !== "ok") {
+      // failed / invalid_response — keep the block and the cached
+      // session, never overwrite anything.
       return false;
     }
 
-    if (!isValidSessionResponse(fresh) || fresh.id !== sessionId) {
-      // Invalid or mismatched response — keep the block and the
-      // cached session, never overwrite anything.
-      return false;
-    }
-
-    const idx = sessions.findIndex(function (s) {
-      return s.id === sessionId;
+    const cachePlan = planSessionCacheUpdate({
+      sessions: sessions,
+      requestedSessionId: sessionId,
+      fresh: result.session,
     });
-    if (idx >= 0) {
-      sessions[idx] = fresh;
-    } else {
-      sessions.unshift(fresh);
+    if (cachePlan.kind !== "replace") {
+      return false;
     }
+    sessions = cachePlan.sessions;
+
     delete sessionSendBlocks[sessionId];
     renderSessionListOrError();
     syncCurrentSessionUI();
@@ -922,19 +1243,34 @@
     sessions = sessions.filter(function (s) { return s.id !== sessionId; });
     delete sessionLastMessageId[sessionId];
     delete sessionSendBlocks[sessionId];
+    delete sessionSwitchUncertain[sessionId];
+    delete sessionHasMessages[sessionId];
+    delete profileSwitchStatusBySession[sessionId];
 
     if (sessionId === currentSessionId) {
       sessionLoadRequestId++;
       clearMessages();
       clearStatus();
 
-      if (sessions.length > 0) {
-        currentSessionId = sessions[0].id;
-        syncCurrentSessionUI();
+      // The model controls follow the new selection — the deleted
+      // session's draft is never inherited; with no session left the
+      // bar hides and the status text clears.  Deleting a NON-current
+      // session never reaches this branch, so its draft and focus
+      // stay untouched.
+      const previousSelectionId = currentSessionId;
+      currentSessionId = sessions.length > 0 ? sessions[0].id : null;
+      applySelectionDraftPlan(planProfileDraftForSelection({
+        sessions: sessions,
+        previousSessionId: previousSelectionId,
+        nextSessionId: currentSessionId,
+        previousDraftId: currentProfileDraftId,
+        registry: registry(),
+      }));
+      syncCurrentSessionUI();
+
+      if (currentSessionId !== null) {
         loadMessages(currentSessionId);
       } else {
-        currentSessionId = null;
-        syncCurrentSessionUI();
         renderWelcome();
       }
     }
@@ -981,6 +1317,7 @@
       return;
     }
 
+    setHistoryState(sessionId, data.length > 0);
     if (data.length === 0) {
       renderEmptyChat();
     } else {
@@ -1003,8 +1340,16 @@
     if (sessionId === currentSessionId) return;
 
     currentSessionId = sessionId;
+    // Recompute the draft from the server binding of the newly visible
+    // session; never carry over another session's un-applied draft.
+    const session = findSessionInList(sessionId);
+    currentProfileDraftId = session !== null
+      ? resolveSessionProfileDraft(session, registry())
+      : null;
     renderSessionListOrError();
     syncCurrentSessionUI();
+    renderCurrentProfileBar();
+    renderCurrentProfileStatus();
     loadMessages(sessionId);
 
     if (isMobile()) {
@@ -1013,6 +1358,7 @@
       const writable = isSessionWritable(
         session,
         sessionSendBlocks[sessionId] || null,
+        sessionSwitchUncertain[sessionId],
       );
       if (session !== null && writable) {
         inputEl.focus();
@@ -1049,7 +1395,7 @@
    * while loading; on failure keeps the persistent selector error and
    * disables creation.
    */
-  async function reloadProfiles() {
+  async function reloadProfiles({ allowDefaultFallback = true } = {}) {
     profilesLoadState = "loading";
     profilesLoadError = null;
     updateControlStates();
@@ -1062,20 +1408,54 @@
     } catch (err) {
       profiles = [];
       profilesLoadState = "error";
-      profilesLoadError = err.message;
+      profilesLoadError = err && err.message ? err.message : "Failed to load models.";
+      // On failure keep BOTH selectors' current values; the controls
+      // are disabled via profilesLoadState === "error".
+      renderProfileSelectorContent();
+      renderCurrentProfileBar();
+      renderCurrentProfileStatus();
+      syncCurrentSessionUI();
+      return;
     }
 
-    selectedProfileId = resolveSelectedProfileId(
-      registry(),
-      selectedProfileId,
-    );
+    // Read the truly visible state AFTER the await — never capture
+    // drafts before the request.
+    const visibleSessionIdAtApply = currentSessionId;
+    const visibleDraftIdAtApply = currentProfileDraftId;
+    const newRegistry = registry();
+
+    if (allowDefaultFallback) {
+      selectedProfileId = resolveSelectedProfileId(
+        newRegistry, selectedProfileId,
+      );
+    } else {
+      selectedProfileId = preserveSelectedProfileWithoutFallback(
+        newRegistry, selectedProfileId,
+      );
+    }
+
+    const draftStillValid =
+      typeof visibleDraftIdAtApply === "string" &&
+      captureRequestedProfile(newRegistry, visibleDraftIdAtApply) !== null;
+    if (!draftStillValid) {
+      const visibleAtApply = findSessionInList(visibleSessionIdAtApply);
+      currentProfileDraftId = visibleAtApply !== null
+        ? resolveSessionProfileDraft(visibleAtApply, newRegistry)
+        : null;
+    }
+    // draftStillValid → keep the visible draft untouched (e.g. an
+    // un-applied choice made on another session while reloading).
+
     renderProfileSelectorContent();
+    renderCurrentProfileBar();
+    renderCurrentProfileStatus();
     syncCurrentSessionUI();
   }
 
   /** Create a new session (called by "New Chat" button). */
   async function newChat() {
-    if (isCreatingSession || isSending || isInitializing) return;
+    if (isCreatingSession || isSending || isInitializing ||
+        isProfileSwitching || isDeletingSession) return;
 
     // Capture the profile id at request start so async changes cannot
     // make the UI and the request disagree.
@@ -1115,9 +1495,12 @@
       sessions.unshift(session);
       currentSessionId = session.id;
       sessionLastMessageId[session.id] = 0;
+      setHistoryState(session.id, false);        // brand-new session
+      currentProfileDraftId = session.llm_profile_id;
       sessionLoadRequestId++;
       renderSessionListOrError();
       syncCurrentSessionUI();
+      renderCurrentProfileBar();
       renderEmptyChat();
       clearStatus();
       inputEl.value = "";
@@ -1155,7 +1538,8 @@
   async function ensureSession() {
     if (currentSessionId !== null) return true;
 
-    if (isCreatingSession || isSending || isInitializing) return false;
+    if (isCreatingSession || isSending || isInitializing ||
+        isProfileSwitching || isDeletingSession) return false;
 
     const profileId = selectedProfileId;
     if (profileId === null) {
@@ -1185,9 +1569,12 @@
       sessions.unshift(session);
       currentSessionId = session.id;
       sessionLastMessageId[session.id] = 0;
+      setHistoryState(session.id, false);
+      currentProfileDraftId = session.llm_profile_id;
       sessionLoadRequestId++;
       renderSessionListOrError();
       syncCurrentSessionUI();
+      renderCurrentProfileBar();
       clearStatus();
       return true;
     } catch (err) {
@@ -1201,30 +1588,44 @@
 
   async function handleDeleteSession(sessionId, event) {
     event.stopPropagation();
-    if (isSending) return;
+    if (isSending || isProfileSwitching || isDeletingSession ||
+        isCreatingSession) return;
 
     if (!confirm("Delete this conversation?")) return;
 
+    // Enter the delete busy state after confirmation and BEFORE the
+    // first await — double clicks can only produce one DELETE.
+    isDeletingSession = true;
+    deletingSessionId = sessionId;
+    updateControlStates();
+
     try {
-      await deleteSessionRequest(sessionId);
-    } catch (err) {
-      // 404 → session already gone on server, remove locally
-      if (err instanceof ApiError && err.status === 404) {
-        removeSessionLocally(sessionId);
+      try {
+        await deleteSessionRequest(sessionId);
+      } catch (err) {
+        // 404 → session already gone on server, remove locally
+        if (err instanceof ApiError && err.status === 404) {
+          removeSessionLocally(sessionId);
+          return;
+        }
+        // Other errors — keep list, show error
+        showStatus(err.message, true);
         return;
       }
-      // Other errors — keep list, show error
-      showStatus(err.message, true);
-      return;
-    }
 
-    removeSessionLocally(sessionId);
+      removeSessionLocally(sessionId);
+    } finally {
+      isDeletingSession = false;
+      deletingSessionId = null;
+      updateControlStates();
+    }
   }
 
   /* ---- Rename session ---------------------------------------------- */
 
   function startRename(sessionId) {
-    if (isSending || isRenaming || isInitializing) return;
+    if (isSending || isRenaming || isInitializing ||
+        isProfileSwitching || isDeletingSession) return;
 
     isRenaming = true;
     renamingSessionId = sessionId;
@@ -1234,6 +1635,7 @@
 
   async function saveRename(sessionId, renameInputEl) {
     if (isRenameSaving) return;  // prevent double-submit
+    if (isProfileSwitching || isDeletingSession) return;
 
     var rawTitle = renameInputEl.value;
     if (!rawTitle.trim()) {
@@ -1302,7 +1704,8 @@
   /* ---- Send message ------------------------------------------------ */
 
   async function sendMessage(text) {
-    if (isSending || isInitializing || isCreatingSession) return;
+    if (isSending || isInitializing || isCreatingSession ||
+        isProfileSwitching || isDeletingSession) return;
 
     // Auto-create session on first send
     if (currentSessionId === null) {
@@ -1347,6 +1750,7 @@
       }
 
       sessionLastMessageId[sendingSessionId] = data.assistant_message.id;
+      setHistoryState(sendingSessionId, true);   // a user message is saved
 
       // Refresh session list (sending session moves to top).  On
       // failure the rendered messages stay and a stale warning shows.
@@ -1437,6 +1841,7 @@
     );
 
     if (outcome.status === "succeeded") {
+      setHistoryState(sendingSessionId, true);
       if (currentSessionId === sendingSessionId) {
         renderMessages(outcome.messages);
         scrollMessagesToBottom();
@@ -1452,6 +1857,7 @@
     }
 
     if (outcome.status === "user_saved") {
+      setHistoryState(sendingSessionId, true);
       sessionLastMessageId[sendingSessionId] = outcome.userMessageId;
       inputEl.value = "";
       inputEl.style.height = "";
@@ -1551,6 +1957,7 @@
     // --- Act based on save status -------------------------------------
     if (currentSessionId === sendingSessionId) {
       if (isSaved) {
+        setHistoryState(sendingSessionId, true);
         showStatus(
           "Your message was saved, but the assistant could not respond.",
           true,
@@ -1597,6 +2004,341 @@
         true,
       );
     }
+  }
+
+  /* ---- Current-session model switcher ------------------------------ */
+
+  /** Render the options and draft of the current-session control bar. */
+  function renderCurrentProfileBar() {
+    const reg = registry();
+
+    if (currentSessionId === null) {
+      currentProfileBarEl.hidden = true;
+      // Clear the status area too — the null-selection render must
+      // leave no stale visible text or error class behind.  The
+      // shared renderer only reads the per-session maps, so other
+      // sessions' records stay untouched and the next selection
+      // restores the right hint from them.
+      renderCurrentProfileStatus();
+      return;
+    }
+    currentProfileBarEl.hidden = false;
+
+    currentProfileSelectEl.replaceChildren();
+    if (reg.status === "valid") {
+      for (const p of reg.profiles) {
+        const option = document.createElement("option");
+        option.value = p.id;
+        option.textContent = p.label;
+        currentProfileSelectEl.appendChild(option);
+      }
+      if (currentProfileDraftId !== null) {
+        currentProfileSelectEl.value = currentProfileDraftId;
+      } else {
+        // Explicit placeholder — no silent fallback to the first
+        // profile for a missing/unavailable binding.
+        appendPlaceholderOption(currentProfileSelectEl);
+        currentProfileSelectEl.value = "";
+      }
+    } else {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No models available";
+      currentProfileSelectEl.appendChild(option);
+      currentProfileSelectEl.value = "";
+    }
+
+    renderCurrentProfileStatus();
+  }
+
+  /** Whether Apply is available for the current session/draft.  An
+   *  uncertain-switch record keeps Apply available for convergence
+   *  even when the draft equals the cached binding. */
+  function applyEnabled() {
+    if (switchController === null ||
+        profileSwitchInitializationError !== null) return false;
+    if (isProfileSwitching || isDeletingSession || isSending ||
+        isCreatingSession || isRenaming || isRenameSaving ||
+        isInitializing) return false;
+    if (registry().status !== "valid") return false;
+    const session = currentSession();
+    if (session === null) return false;
+    return canApplySessionProfileWithUncertain({
+      session: session,
+      registry: registry(),
+      draftProfileId: currentProfileDraftId,
+      uncertain: sessionSwitchUncertain[session.id] !== undefined,
+    });
+  }
+
+  /** Real <dialog> adapter matching createRemoteHistoryConfirmer. */
+  function createProfileSwitchDialogAdapter() {
+    const dlg = profileSwitchDialogEl;
+    const cancelBtn = document.getElementById("psd-cancel");
+    const continueBtn = document.getElementById("psd-continue");
+    const bodyEl = document.getElementById("psd-body");
+
+    function on(target, event, cb) {
+      function handler(e) {
+        if (event === "cancel") e.preventDefault();
+        cb();
+      }
+      target.addEventListener(event, handler);
+      return function () { target.removeEventListener(event, handler); };
+    }
+
+    return {
+      showModal: function () { dlg.showModal(); },
+      close: function () { if (dlg.open) dlg.close(); },
+      setMessage: function (text) { bodyEl.textContent = text; },
+      focusInitial: function () { cancelBtn.focus(); },
+      isConnected: function () { return dlg.isConnected; },
+      onDialogCancel: function (cb) { return on(dlg, "cancel", cb); },
+      onCancelClick: function (cb) { return on(cancelBtn, "click", cb); },
+      onContinueClick: function (cb) { return on(continueBtn, "click", cb); },
+    };
+  }
+
+  /** One-time, fail-closed controller/confirmer initialisation. */
+  function initializeProfileSwitching() {
+    try {
+      const dialogAdapter = createProfileSwitchDialogAdapter();
+      const historyConfirmer = createRemoteHistoryConfirmer(dialogAdapter);
+      switchController = createSessionProfileSwitchController({
+        patchSwitch: switchProfileRequest,
+        fetchOneSession: fetchOneSessionRaw,
+        confirmRemoteHistory: historyConfirmer.confirm,
+        validateSessionResponse: isValidSessionResponse,
+      });
+      profileSwitchInitializationError = null;
+      return true;
+    } catch (_) {
+      switchController = null;
+      profileSwitchInitializationError = "模型切换功能暂不可用。";
+      return false;
+    }
+  }
+
+  /** Apply the current draft to the current session. */
+  async function applyProfileSwitch() {
+    if (switchController === null) {
+      if (currentSessionId !== null) {
+        setProfileSwitchStatus(
+          currentSessionId,
+          profileSwitchInitializationError || "模型切换功能暂不可用。",
+          true,
+        );
+      }
+      return;
+    }
+    if (isInitializing || isSending || isCreatingSession || isRenaming ||
+        isRenameSaving || isDeletingSession || isProfileSwitching) return;
+    if (currentSessionId === null) return;
+    if (!applyEnabled()) return;
+
+    const targetSessionId = currentSessionId;
+    const requestedDraftId = currentProfileDraftId;
+    const generation = ++profileSwitchGeneration;
+    isProfileSwitching = true;
+    updateControlStates();
+
+    let focusIntent = null;
+    try {
+      let effectiveSession = findSessionInList(targetSessionId);
+      if (effectiveSession === null) {
+        setProfileSwitchStatus(targetSessionId,
+          "The conversation no longer exists.", true);
+        return;
+      }
+
+      // -- uncertain convergence: refresh the authoritative session
+      //    BEFORE building any operation.
+      if (sessionSwitchUncertain[targetSessionId] !== undefined) {
+        const result = await fetchAndValidateOneSession(targetSessionId);
+        if (result.status === "ok") {
+          const cachePlan = planSessionCacheUpdate({
+            sessions: sessions,
+            requestedSessionId: targetSessionId,
+            fresh: result.session,
+          });
+          if (cachePlan.kind !== "replace") {
+            setProfileSwitchStatus(targetSessionId,
+              "The conversation could not be refreshed.", true);
+            return;
+          }
+          sessions = cachePlan.sessions;
+          renderSessionListOrError();
+          effectiveSession = findSessionInList(targetSessionId);
+          if (effectiveSession === null) {
+            setProfileSwitchStatus(targetSessionId,
+              "The conversation no longer exists.", true);
+            return;
+          }
+          const classified = classifyUncertainRefresh({
+            targetSessionId: targetSessionId,
+            uncertainRecord: sessionSwitchUncertain[targetSessionId],
+            fresh: result.session,
+          });
+          if (classified.status === "invalid") {
+            setProfileSwitchStatus(targetSessionId, UNCERTAIN_REAPPLY_TEXT, true);
+            return;
+          }
+          if (classified.status === "confirmed_target") {
+            delete sessionSendBlocks[targetSessionId];
+            delete sessionSwitchUncertain[targetSessionId];
+            clearProfileSwitchStatus(targetSessionId);
+            if (effectiveSession.llm_profile_id === requestedDraftId) {
+              if (currentSessionId === targetSessionId) {
+                currentProfileDraftId = requestedDraftId;
+                renderCurrentProfileBar();
+                syncCurrentSessionUI();
+              }
+              return;
+            }
+            // Draft differs — continue with a fresh switch below.
+          }
+          // different_binding → keep uncertain, continue with a fresh
+          // PATCH for the current draft (same lock on the server
+          // serialises the new request after the old one).
+        } else if (result.status === "not_found") {
+          removeSessionLocally(targetSessionId);
+          return;
+        } else {
+          setProfileSwitchStatus(targetSessionId, UNCERTAIN_REAPPLY_TEXT, true);
+          return;
+        }
+      }
+
+      const requestedProfile = captureRequestedProfile(
+        registry(), requestedDraftId,
+      );
+      if (requestedProfile === null) {
+        setProfileSwitchStatus(targetSessionId,
+          "Choose an available model first.", true);
+        focusIntent = "apply";
+        return;
+      }
+
+      const operation = {
+        generation: generation,
+        targetSessionId: targetSessionId,
+        originalProfileId: effectiveSession.llm_profile_id,
+        originalModelSnapshot: effectiveSession.llm_model_snapshot,
+        requestedProfile: requestedProfile,
+        needsConfirmHint: needsRemoteHistoryConfirmation({
+          session: effectiveSession,
+          registry: registry(),
+          targetProfileId: requestedDraftId,
+          historyState: historyStateFor(targetSessionId),
+        }),
+      };
+
+      let outcome;
+      try {
+        outcome = await switchController.apply(operation);
+      } catch (_) {
+        outcome = { status: "failed", message: "Unexpected error." };
+      }
+
+      const plan = planSwitchOutcomeEffects({
+        outcome: outcome,
+        operation: operation,
+        targetSessionId: targetSessionId,
+        currentSessionId: currentSessionId,
+        hasTarget: findSessionInList(targetSessionId) !== null,
+      });
+
+      focusIntent = await executeSwitchEffects(plan, outcome, operation);
+    } finally {
+      isProfileSwitching = false;
+      updateControlStates();
+      applyFocusIntent(focusIntent, targetSessionId, generation);
+    }
+  }
+
+  /** Execute the effect plan.  Target-scoped state is always applied;
+   * visible effects require the target to still be the current
+   * session after every await. */
+  async function executeSwitchEffects(plan, outcome, operation) {
+    const targetSessionId = operation.targetSessionId;
+
+    if (plan.kind === "ignore") return null;
+    if (plan.removeSession) { removeSessionLocally(targetSessionId); return null; }
+
+    // 1) cache: only a successful replace may unlock protective state
+    if (plan.updateCache) {
+      const cachePlan = planSessionCacheUpdate({
+        sessions: sessions,
+        requestedSessionId: targetSessionId,
+        fresh: plan.session,
+      });
+      if (cachePlan.kind !== "replace") {
+        setProfileSwitchStatus(targetSessionId,
+          "The conversation could not be updated safely.", true);
+        return null;
+      }
+      sessions = cachePlan.sessions;
+    }
+
+    // 2) protective state (target-scoped)
+    if (plan.clearBlock) delete sessionSendBlocks[targetSessionId];
+    if (plan.clearUncertain) delete sessionSwitchUncertain[targetSessionId];
+    if (plan.uncertainRecord !== null) {
+      sessionSwitchUncertain[targetSessionId] = plan.uncertainRecord;
+    }
+
+    // 3) ordinary target status BEFORE any await / visibility check
+    applyTargetProfileSwitchStatus(targetSessionId, outcome, plan);
+
+    // 4) profiles reload
+    if (plan.reloadProfiles) {
+      await reloadProfiles({ allowDefaultFallback: false });
+    }
+
+    // 5) re-read visibility after awaits
+    renderSessionListOrError();
+    if (currentSessionId !== targetSessionId) {
+      renderCurrentProfileStatus();
+      return null;
+    }
+
+    // 6) visible effects — target is still current
+    switch (outcome.status) {
+      case "switched":
+        currentProfileDraftId = plan.session.llm_profile_id;
+        break;
+      case "not_changed":
+        currentProfileDraftId = plan.session.llm_profile_id;
+        break;
+      case "cancelled":
+      case "failed":
+      case "validation_error": {
+        const current = findSessionInList(targetSessionId);
+        currentProfileDraftId = current !== null
+          ? resolveSessionProfileDraft(current, registry())
+          : null;
+        break;
+      }
+      case "uncertain":
+        // keep the user's draft; the record holds the persistent hint
+        break;
+      default:
+        break;
+    }
+
+    renderCurrentProfileBar();
+    renderCurrentProfileStatus();
+    if (plan.syncVisibleUI) syncCurrentSessionUI();
+    return plan.focus;
+  }
+
+  /** Focus application — triple-checked, never steals focus. */
+  function applyFocusIntent(intent, targetSessionId, generation) {
+    if (intent === null || intent === undefined) return;
+    if (generation !== profileSwitchGeneration) return;
+    if (currentSessionId !== targetSessionId) return;
+    const el = intent === "input" ? inputEl : applyProfileBtn;
+    if (el && el.isConnected && !el.disabled && !el.hidden) el.focus();
   }
 
   /* ---- Mobile sidebar ---------------------------------------------- */
@@ -1653,6 +2395,17 @@
     selectedProfileId = profileSelectEl.value;
   });
 
+  // Current-session selector: records the draft only — Apply is the
+  // only action that sends a request.
+  currentProfileSelectEl.addEventListener("change", function () {
+    currentProfileDraftId = currentProfileSelectEl.value;
+    updateControlStates();
+  });
+
+  applyProfileBtn.addEventListener("click", function () {
+    applyProfileSwitch();
+  });
+
   // Mobile sidebar toggle
   sidebarToggleEl.addEventListener("click", function () {
     toggleSidebar();
@@ -1703,6 +2456,11 @@
     renderSessionListOrError();
     renderWelcome();
     showStatus("Loading...", false);
+
+    // One-time, fail-closed switch controller/confirmer setup — runs
+    // synchronously before the first await.  On failure the rest of
+    // the app keeps working; only the model switch bar is disabled.
+    initializeProfileSwitching();
 
     // Load profiles and sessions in parallel — results are handled
     // independently so one failure never blocks the other.
@@ -1759,7 +2517,13 @@
 
     if (sessionsLoadState === "ready") {
       if (sessions.length > 0) {
+        const first = findSessionInList(currentSessionId);
+        currentProfileDraftId = first !== null
+          ? resolveSessionProfileDraft(first, registry())
+          : null;
         syncCurrentSessionUI();
+        renderCurrentProfileBar();
+        renderCurrentProfileStatus();
         await loadMessages(currentSessionId);
       } else {
         renderWelcome();
@@ -1769,6 +2533,9 @@
       renderWelcome();
       if (sessionsLoadError) showStatus(sessionsLoadError, true);
     }
+
+    renderCurrentProfileBar();
+    renderCurrentProfileStatus();
 
     isInitializing = false;
     updateControlStates();

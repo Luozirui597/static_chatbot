@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Static Chatbot</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260813-mobile-toggle-alignment">
+  <link rel="stylesheet" href="/static/style.css?v=20260815-session-switch">
 </head>
 <body>
   <div class="app-layout">
@@ -67,6 +67,20 @@
         hidden
       ></div>
 
+      <div id="currentProfileBar" class="current-profile-bar" hidden>
+        <label for="currentProfileSelect">Model for this chat</label>
+        <div class="current-profile-row">
+          <select id="currentProfileSelect"></select>
+          <button id="applyProfileBtn" type="button">Apply</button>
+        </div>
+        <div
+          class="current-profile-status"
+          id="currentProfileStatus"
+          role="status"
+          aria-live="polite"
+        ></div>
+      </div>
+
       <div
         class="chat-messages"
         id="messages"
@@ -102,10 +116,24 @@
 
   </div>
 
-  <script src="/static/network-recovery.js?v=20260813-model-profile-selector" defer></script>
-  <script src="/static/clipboard.js?v=20260813-model-profile-selector" defer></script>
-  <script src="/static/copy-controller.js?v=20260813-model-profile-selector" defer></script>
-  <script src="/static/model-selection.js?v=20260813-model-profile-selector" defer></script>
-  <script src="/static/app.js?v=20260813-mobile-sidebar-transition" defer></script>
+  <dialog
+    id="profileSwitchDialog"
+    aria-labelledby="psd-title"
+    aria-describedby="psd-body"
+  >
+    <h2 id="psd-title">Send chat history to a remote API service?</h2>
+    <p id="psd-body"></p>
+    <div class="dialog-actions">
+      <button id="psd-cancel" type="button">Cancel</button>
+      <button id="psd-continue" type="button">Continue</button>
+    </div>
+  </dialog>
+
+  <script src="/static/network-recovery.js?v=20260815-session-switch" defer></script>
+  <script src="/static/clipboard.js?v=20260815-session-switch" defer></script>
+  <script src="/static/copy-controller.js?v=20260815-session-switch" defer></script>
+  <script src="/static/model-selection.js?v=20260815-session-switch" defer></script>
+  <script src="/static/session-profile-switch.js?v=20260815-session-switch" defer></script>
+  <script src="/static/app.js?v=20260815-session-switch" defer></script>
 </body>
 </html>

@@ -27,7 +27,9 @@ const {
   resolveNextSelectionId,
   findSessionButton,
   resolveSessionProfileDraft,
+  planProfileDraftForSelection,
   canApplySessionProfile,
+  canApplySessionProfileWithUncertain,
   buildSwitchSessionProfilePayload,
   needsRemoteHistoryConfirmation,
   parseRemoteHistoryAckRequired,
@@ -265,6 +267,61 @@ describe("isSessionWritable", function () {
     assert.equal(
       isSessionWritable({ llm_profile_status: "ready" }, "profile_unavailable"),
       false,
+    );
+  });
+
+  it("a present uncertain record blocks even a ready session", function () {
+    assert.equal(
+      isSessionWritable(
+        { llm_profile_status: "ready" },
+        null,
+        { generation: 1 },
+      ),
+      false,
+    );
+  });
+
+  it("no uncertain record leaves a ready session writable", function () {
+    assert.equal(
+      isSessionWritable({ llm_profile_status: "ready" }, null, undefined),
+      true,
+    );
+    assert.equal(
+      isSessionWritable({ llm_profile_status: "ready" }, null, null),
+      true,
+    );
+  });
+
+  it("the uncertain record only blocks its own session", function () {
+    // The record is per-session state: with no record for THIS
+    // session the answer is writable, and it flips as soon as the
+    // record appears — other sessions' records never leak in.
+    assert.equal(
+      isSessionWritable({ llm_profile_status: "ready" }, null, undefined),
+      true,
+    );
+    assert.equal(
+      isSessionWritable(
+        { llm_profile_status: "ready" }, null, { generation: 1 },
+      ),
+      false,
+    );
+  });
+
+  it("writability returns once the uncertain argument is absent", function () {
+    // Pure argument contract only: the same ready session flips from
+    // blocked to writable when the third argument goes away.  Deleting
+    // the per-session record is the app executor's job and is not
+    // exercised here.
+    assert.equal(
+      isSessionWritable(
+        { llm_profile_status: "ready" }, null, { generation: 1 },
+      ),
+      false,
+    );
+    assert.equal(
+      isSessionWritable({ llm_profile_status: "ready" }, null, undefined),
+      true,
     );
   });
 });
@@ -1104,6 +1161,485 @@ describe("resolveSessionProfileDraft", function () {
 });
 
 // -----------------------------------------------------------------------
+// planProfileDraftForSelection
+// -----------------------------------------------------------------------
+
+describe("planProfileDraftForSelection", function () {
+  var registry = analyzeProfileRegistry([
+    makeProfile("default", { is_default: true, kind: "api", model: "m1" }),
+    makeProfile("local", { kind: "local", model: "qwen" }),
+  ]);
+
+  function twoSessions() {
+    return [
+      makeSession({ id: 1, llm_profile_id: "default" }),
+      makeSession({ id: 2, llm_profile_id: "default" }),
+    ];
+  }
+
+  it("A → B derives the draft from B and never inherits A's draft", function () {
+    // A (id 1) is bound to "default" but the user picked "local"
+    // without applying; after the programmatic switch the draft must
+    // come from B's server binding, not from A's un-applied choice.
+    var plan = planProfileDraftForSelection({
+      sessions: twoSessions(),
+      previousSessionId: 1,
+      nextSessionId: 2,
+      previousDraftId: "local",
+      registry: registry,
+    });
+    assert.equal(plan.selectionChanged, true);
+    assert.equal(plan.draftId, "default");
+    assert.equal(plan.draftChanged, true);
+  });
+
+  it("A → B resolves B's own binding id", function () {
+    var plan = planProfileDraftForSelection({
+      sessions: [
+        makeSession({ id: 1, llm_profile_id: "default" }),
+        makeSession({ id: 2, llm_profile_id: "local",
+          llm_model_snapshot: "qwen" }),
+      ],
+      previousSessionId: 1,
+      nextSessionId: 2,
+      previousDraftId: "default",
+      registry: registry,
+    });
+    assert.equal(plan.selectionChanged, true);
+    assert.equal(plan.draftId, "local");
+  });
+
+  it("A → null clears the draft and reports the change", function () {
+    var plan = planProfileDraftForSelection({
+      sessions: [],
+      previousSessionId: 1,
+      nextSessionId: null,
+      previousDraftId: "local",
+      registry: registry,
+    });
+    assert.equal(plan.selectionChanged, true);
+    assert.equal(plan.draftId, null);
+    assert.equal(plan.draftChanged, true);
+  });
+
+  it("an unchanged selection keeps the un-applied draft", function () {
+    var plan = planProfileDraftForSelection({
+      sessions: [makeSession({ id: 1, llm_profile_id: "default" })],
+      previousSessionId: 1,
+      nextSessionId: 1,
+      previousDraftId: "local",
+      registry: registry,
+    });
+    assert.equal(plan.selectionChanged, false);
+    assert.equal(plan.draftChanged, false);
+    assert.equal(plan.draftId, "local");
+  });
+
+  it("an unchanged selection keeps the draft even when the server binding differs", function () {
+    // An ordinary list refresh must never overwrite the user's
+    // un-applied choice, even if the fresh SessionResponse carries a
+    // different binding.
+    var plan = planProfileDraftForSelection({
+      sessions: [makeSession({ id: 1, llm_profile_id: "default" })],
+      previousSessionId: 1,
+      nextSessionId: 1,
+      previousDraftId: "local",
+      registry: registry,
+    });
+    assert.equal(plan.draftId, "local");
+  });
+
+  it("deleting a NON-current session leaves the current draft alone", function () {
+    // removeSessionLocally re-plans only when the deleted session was
+    // current; the unchanged-selection rule keeps A's draft intact.
+    var plan = planProfileDraftForSelection({
+      sessions: [makeSession({ id: 1, llm_profile_id: "default" })],
+      previousSessionId: 1,
+      nextSessionId: 1,
+      previousDraftId: "local",
+      registry: registry,
+    });
+    assert.equal(plan.selectionChanged, false);
+    assert.equal(plan.draftId, "local");
+  });
+
+  it("deleting the current session re-derives the draft from the first remaining session", function () {
+    var plan = planProfileDraftForSelection({
+      sessions: [
+        makeSession({ id: 2, llm_profile_id: "local", llm_model_snapshot: "qwen" }),
+        makeSession({ id: 3, llm_profile_id: "default" }),
+      ],
+      previousSessionId: 1,      // deleted
+      nextSessionId: 2,          // first remaining
+      previousDraftId: "default",// deleted session's draft
+      registry: registry,
+    });
+    assert.equal(plan.selectionChanged, true);
+    assert.equal(plan.draftId, "local");
+  });
+
+  it("a next id absent from the list fails closed to null", function () {
+    var plan = planProfileDraftForSelection({
+      sessions: twoSessions(),
+      previousSessionId: 1,
+      nextSessionId: 99,
+      previousDraftId: "default",
+      registry: registry,
+    });
+    assert.equal(plan.selectionChanged, true);
+    assert.equal(plan.draftId, null);
+  });
+
+  it("malformed options fail closed without throwing", function () {
+    var failClosed = {
+      draftId: null, selectionChanged: false, draftChanged: false,
+    };
+    var cases = [
+      null,
+      undefined,
+      "x",
+      42,
+      [],
+      {},                       // plain object with no fields at all
+      { previousSessionId: 1 }, // missing nextSessionId / previousDraftId
+      { nextSessionId: 1 },
+      { previousSessionId: 1, nextSessionId: 2 }, // missing draft
+    ];
+    cases.forEach(function (bad) {
+      assert.deepStrictEqual(
+        planProfileDraftForSelection(bad),
+        failClosed,
+        JSON.stringify(bad),
+      );
+    });
+  });
+
+  it("two invalid but equal ids never reach the unchanged branch", function () {
+    // "1" === "1" would take the keep-the-draft branch without
+    // validation; invalid ids must fail closed first.  Every other
+    // field is complete and valid so the id check is what fires.
+    var failClosed = {
+      draftId: null, selectionChanged: false, draftChanged: false,
+    };
+    ["1", 0, -1, 1.5, true].forEach(function (badId) {
+      assert.deepStrictEqual(
+        planProfileDraftForSelection({
+          sessions: [],
+          registry: registry,
+          previousSessionId: badId,
+          nextSessionId: badId,
+          previousDraftId: "local",
+        }),
+        failClosed,
+        "id " + String(badId),
+      );
+    });
+  });
+
+  it("an invalid previousDraftId fails closed", function () {
+    var failClosed = {
+      draftId: null, selectionChanged: false, draftChanged: false,
+    };
+    ["", 42, true, {}, []].forEach(function (badDraft) {
+      assert.deepStrictEqual(
+        planProfileDraftForSelection({
+          sessions: [],
+          registry: registry,
+          previousSessionId: 1,
+          nextSessionId: 1,
+          previousDraftId: badDraft,
+        }),
+        failClosed,
+        "draft " + JSON.stringify(badDraft),
+      );
+    });
+  });
+
+  it("missing sessions fails closed even with valid equal ids", function () {
+    // The buggy shape: both ids valid and equal would take the
+    // keep-the-draft branch — the missing own sessions field must
+    // fail closed first.
+    assert.deepStrictEqual(
+      planProfileDraftForSelection({
+        registry: registry,
+        previousSessionId: 1,
+        nextSessionId: 1,
+        previousDraftId: "local",
+      }),
+      { draftId: null, selectionChanged: false, draftChanged: false },
+    );
+  });
+
+  it("non-array sessions fails closed", function () {
+    var failClosed = {
+      draftId: null, selectionChanged: false, draftChanged: false,
+    };
+    [null, {}, "x", 42].forEach(function (badSessions) {
+      assert.deepStrictEqual(
+        planProfileDraftForSelection({
+          sessions: badSessions,
+          registry: registry,
+          previousSessionId: 1,
+          nextSessionId: 1,
+          previousDraftId: "local",
+        }),
+        failClosed,
+        "sessions " + JSON.stringify(badSessions),
+      );
+    });
+  });
+
+  it("missing registry fails closed even when the rest is valid", function () {
+    assert.deepStrictEqual(
+      planProfileDraftForSelection({
+        sessions: [],
+        previousSessionId: 1,
+        nextSessionId: 1,
+        previousDraftId: "local",
+      }),
+      { draftId: null, selectionChanged: false, draftChanged: false },
+    );
+  });
+
+  it("required fields inherited from the prototype are rejected", function () {
+    // ``in`` would find each inherited field; only own properties may
+    // satisfy the contract.
+    var failClosed = {
+      draftId: null, selectionChanged: false, draftChanged: false,
+    };
+    var base = {
+      sessions: [],
+      registry: registry,
+      previousSessionId: 1,
+      nextSessionId: 1,
+      previousDraftId: "local",
+    };
+    Object.keys(base).forEach(function (field) {
+      var proto = {};
+      proto[field] = base[field];
+      var options = Object.create(proto);
+      Object.keys(base).forEach(function (k) {
+        if (k !== field) options[k] = base[k];
+      });
+      assert.deepStrictEqual(
+        planProfileDraftForSelection(options),
+        failClosed,
+        "inherited field " + field,
+      );
+    });
+  });
+
+  it("whitespace-only previousDraftId fails closed", function () {
+    var failClosed = {
+      draftId: null, selectionChanged: false, draftChanged: false,
+    };
+    [" ", "\t", "\n", " \t\n "].forEach(function (blankDraft) {
+      assert.deepStrictEqual(
+        planProfileDraftForSelection({
+          sessions: [],
+          registry: registry,
+          previousSessionId: 1,
+          nextSessionId: 1,
+          previousDraftId: blankDraft,
+        }),
+        failClosed,
+        "draft " + JSON.stringify(blankDraft),
+      );
+    });
+  });
+
+  it("a draft with surrounding whitespace is valid and kept verbatim", function () {
+    // Non-blank after trim: the unchanged branch returns the draft
+    // exactly as given — the function never trims or rewrites it.
+    var plan = planProfileDraftForSelection({
+      sessions: [],
+      registry: registry,
+      previousSessionId: 1,
+      nextSessionId: 1,
+      previousDraftId: "  local  ",
+    });
+    assert.deepStrictEqual(plan, {
+      draftId: "  local  ",
+      selectionChanged: false,
+      draftChanged: false,
+    });
+  });
+
+  it("does not mutate the options object on the fail-closed paths", function () {
+    var cases = [
+      {
+        previousSessionId: "1",
+        nextSessionId: "1",
+        previousDraftId: "local",
+      },
+      {
+        sessions: [],
+        registry: registry,
+        previousSessionId: 1,
+        nextSessionId: 1,
+        previousDraftId: "   ",
+      },
+    ];
+    cases.forEach(function (options) {
+      var json = JSON.stringify(options);
+      planProfileDraftForSelection(options);
+      assert.equal(JSON.stringify(options), json, JSON.stringify(options));
+    });
+  });
+
+  it("does not mutate the sessions array or its elements", function () {
+    var sessions = twoSessions();
+    var json = JSON.stringify(sessions);
+    planProfileDraftForSelection({
+      sessions: sessions,
+      previousSessionId: 1,
+      nextSessionId: 2,
+      previousDraftId: "local",
+      registry: registry,
+    });
+    assert.equal(JSON.stringify(sessions), json);
+  });
+
+  it("a throwing getter on any required field fails closed without throwing", function () {
+    var failClosed = {
+      draftId: null, selectionChanged: false, draftChanged: false,
+    };
+    var base = {
+      sessions: [],
+      registry: registry,
+      previousSessionId: 1,
+      nextSessionId: 1,
+      previousDraftId: "local",
+    };
+    Object.keys(base).forEach(function (field) {
+      var options = {};
+      Object.keys(base).forEach(function (k) {
+        if (k === field) {
+          Object.defineProperty(options, k, {
+            enumerable: true,
+            configurable: true,
+            get: function () { throw new Error("getter boom"); },
+          });
+        } else {
+          options[k] = base[k];
+        }
+      });
+      assert.deepStrictEqual(
+        planProfileDraftForSelection(options),
+        failClosed,
+        "field " + field,
+      );
+    });
+  });
+
+  it("a session element with a throwing id getter fails closed without throwing", function () {
+    var hostileSession = {};
+    Object.defineProperty(hostileSession, "id", {
+      enumerable: true,
+      configurable: true,
+      get: function () { throw new Error("id getter boom"); },
+    });
+    assert.deepStrictEqual(
+      planProfileDraftForSelection({
+        sessions: [hostileSession],
+        registry: registry,
+        previousSessionId: 1,
+        nextSessionId: 2,
+        previousDraftId: "local",
+      }),
+      { draftId: null, selectionChanged: false, draftChanged: false },
+    );
+  });
+
+  it("a hostile session inside resolveSessionProfileDraft fails closed without throwing", function () {
+    // The id matches the target, so resolveSessionProfileDraft runs
+    // and its field reads throw — the wrapper must still fail closed.
+    var hostile = makeSession({ id: 2 });
+    Object.defineProperty(hostile, "llm_profile_id", {
+      enumerable: true,
+      configurable: true,
+      get: function () { throw new Error("profile getter boom"); },
+    });
+    assert.deepStrictEqual(
+      planProfileDraftForSelection({
+        sessions: [hostile],
+        registry: registry,
+        previousSessionId: 1,
+        nextSessionId: 2,
+        previousDraftId: "local",
+      }),
+      { draftId: null, selectionChanged: false, draftChanged: false },
+    );
+  });
+
+  it("a hostile registry Proxy inside resolveSessionProfileDraft fails closed without throwing", function () {
+    var registryProxy = new Proxy({}, {
+      get: function () { throw new Error("registry trap boom"); },
+    });
+    assert.deepStrictEqual(
+      planProfileDraftForSelection({
+        sessions: [makeSession({ id: 2 })],
+        registry: registryProxy,
+        previousSessionId: 1,
+        nextSessionId: 2,
+        previousDraftId: "local",
+      }),
+      { draftId: null, selectionChanged: false, draftChanged: false },
+    );
+  });
+
+  it("a Proxy options whose getOwnPropertyDescriptor trap throws fails closed", function () {
+    var proxy = new Proxy({}, {
+      getOwnPropertyDescriptor: function () {
+        throw new Error("descriptor trap boom");
+      },
+    });
+    assert.deepStrictEqual(
+      planProfileDraftForSelection(proxy),
+      { draftId: null, selectionChanged: false, draftChanged: false },
+    );
+  });
+
+  it("a Proxy options whose field-read get trap throws fails closed", function () {
+    // All five own fields exist on the target so the own-property
+    // checks pass; the first field READ then hits the throwing trap.
+    var target = {
+      sessions: [],
+      registry: registry,
+      previousSessionId: 1,
+      nextSessionId: 1,
+      previousDraftId: "local",
+    };
+    var proxy = new Proxy(target, {
+      get: function (t, prop) {
+        if (prop === "sessions") { throw new Error("get trap boom"); }
+        return t[prop];
+      },
+    });
+    assert.deepStrictEqual(
+      planProfileDraftForSelection(proxy),
+      { draftId: null, selectionChanged: false, draftChanged: false },
+    );
+  });
+
+  it("a Proxy sessions array with a throwing get trap fails closed", function () {
+    var sessionsProxy = new Proxy([], {
+      get: function () { throw new Error("sessions trap boom"); },
+    });
+    assert.deepStrictEqual(
+      planProfileDraftForSelection({
+        sessions: sessionsProxy,
+        registry: registry,
+        previousSessionId: 1,
+        nextSessionId: 2,
+        previousDraftId: "local",
+      }),
+      { draftId: null, selectionChanged: false, draftChanged: false },
+    );
+  });
+});
+
+// -----------------------------------------------------------------------
 // canApplySessionProfile
 // -----------------------------------------------------------------------
 
@@ -1176,6 +1712,96 @@ describe("canApplySessionProfile", function () {
     [null, undefined, [], "x", 42].forEach(function (bad) {
       assert.equal(canApplySessionProfile(bad), false);
     });
+  });
+});
+
+// -----------------------------------------------------------------------
+// canApplySessionProfileWithUncertain
+// -----------------------------------------------------------------------
+
+describe("canApplySessionProfileWithUncertain", function () {
+  var registry = analyzeProfileRegistry([
+    makeProfile("default", { is_default: true, kind: "api", model: "m1" }),
+    makeProfile("local", { kind: "local", model: "qwen" }),
+  ]);
+
+  function opts(overrides) {
+    var base = {
+      session: makeSession({ llm_model_snapshot: "m1" }),
+      registry: registry,
+      draftProfileId: "default",
+      uncertain: false,
+    };
+    if (overrides) {
+      Object.keys(overrides).forEach(function (k) { base[k] = overrides[k]; });
+    }
+    return base;
+  }
+
+  it("ready + same draft + uncertain record keeps Apply available", function () {
+    // The ordinary contract rejects the idempotent same-binding case,
+    // but the convergence re-apply must stay possible.
+    assert.equal(
+      canApplySessionProfileWithUncertain(opts({ uncertain: true })),
+      true,
+    );
+  });
+
+  it("ready + same draft without the record stays idempotent", function () {
+    assert.equal(canApplySessionProfileWithUncertain(opts()), false);
+  });
+
+  it("uncertain with a draft outside the registry is false", function () {
+    assert.equal(
+      canApplySessionProfileWithUncertain(
+        opts({ uncertain: true, draftProfileId: "gone" }),
+      ),
+      false,
+    );
+  });
+
+  it("uncertain with an invalid session fails closed", function () {
+    assert.equal(
+      canApplySessionProfileWithUncertain(opts({ uncertain: true, session: null })),
+      false,
+    );
+  });
+
+  it("the ordinary rule is untouched when uncertain is false", function () {
+    assert.equal(
+      canApplySessionProfileWithUncertain(opts({ draftProfileId: "local" })),
+      true,
+    );
+  });
+
+  it("uncertain must be exactly true", function () {
+    ["yes", 1, null, undefined].forEach(function (bad) {
+      assert.equal(
+        canApplySessionProfileWithUncertain(opts({ uncertain: bad })),
+        false,
+        "uncertain " + bad,
+      );
+    });
+  });
+
+  it("null / undefined / array / string options never throw", function () {
+    [null, undefined, [], "x", 42].forEach(function (bad) {
+      assert.equal(canApplySessionProfileWithUncertain(bad), false);
+    });
+  });
+
+  it("does not mutate the session or registry", function () {
+    var session = makeSession({ llm_model_snapshot: "m1" });
+    var sessionJson = JSON.stringify(session);
+    var registryJson = JSON.stringify(registry);
+    canApplySessionProfileWithUncertain({
+      session: session,
+      registry: registry,
+      draftProfileId: "default",
+      uncertain: true,
+    });
+    assert.equal(JSON.stringify(session), sessionJson);
+    assert.equal(JSON.stringify(registry), registryJson);
   });
 });
 

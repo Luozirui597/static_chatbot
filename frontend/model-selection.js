@@ -180,23 +180,32 @@ function resolveSelectedProfileId(registry, current) {
  * Whether the given session can accept new messages.
  *
  * A temporary send block (set immediately after a 409/503 response)
- * always wins over a stale ``"ready"`` status.
+ * always wins over a stale ``"ready"`` status.  Likewise a present
+ * per-session uncertain-switch record keeps the session blocked even
+ * when the cached status says ``"ready"`` — the switch outcome must
+ * be confirmed (or the record cleared) before sending is possible.
  *
  * @param {object|null|undefined} session
  *   The current session (a ``SessionResponse``) or null when none.
  * @param {string|null|undefined} block
  *   The temporary block value for this session
  *   (``"conflict"`` / ``"profile_unavailable"``) or null.
+ * @param {*} uncertain
+ *   The per-session uncertain-switch record (any truthy value counts
+ *   as present), or undefined/null when the session has none.
  * @returns {boolean}
  *   ``true`` when there is no session (typing triggers auto-create) or
- *   when the session is ``ready`` and not blocked.  Unknown statuses
- *   fail closed (``false``).
+ *   when the session is ``ready`` and neither blocked nor uncertain.
+ *   Unknown statuses fail closed (``false``).
  */
-function isSessionWritable(session, block) {
+function isSessionWritable(session, block, uncertain) {
   if (session === null || session === undefined) {
     return true;
   }
   if (block) {
+    return false;
+  }
+  if (uncertain) {
     return false;
   }
   return session.llm_profile_status === "ready";
@@ -800,6 +809,153 @@ function resolveSessionProfileDraft(session, registry) {
 }
 
 /**
+ * Resolve the current-session model draft after the session selection
+ * changed — or stayed the same.
+ *
+ * ``options`` must carry ALL FIVE fields as own properties (checked
+ * with ``Object.prototype.hasOwnProperty.call`` — never ``in``, so
+ * prototype-chain fields are rejected): ``sessions``,
+ * ``previousSessionId``, ``nextSessionId``, ``previousDraftId`` and
+ * ``registry``.
+ *
+ * - ``sessions`` must be an array.  Elements are not re-validated
+ *   here — the target session found by id is still checked by
+ *   ``resolveSessionProfileDraft``.
+ * - Both session selections must be ``null`` or a positive safe
+ *   integer.
+ * - ``previousDraftId`` must be ``null`` or a string that is non-empty
+ *   both before and after ``trim()``.
+ * - ``registry`` must exist as an own field but its VALUE is not
+ *   validated here: on a changed selection an invalid registry simply
+ *   makes ``resolveSessionProfileDraft`` return ``null``.
+ *
+ * Any violation — a plain ``{}``, a missing or inherited field, a
+ * non-array list, an invalid id or a blank draft — fails closed with
+ * ``{draftId: null, selectionChanged: false, draftChanged: false}``
+ * before any selection rule runs.  The stricter profile-id pattern is
+ * already enforced where draft ids are produced (trusted-registry
+ * membership and selector options), so it is deliberately not
+ * duplicated here.
+ *
+ * - Selection unchanged (``nextSessionId === previousSessionId``) —
+ *   ``previousDraftId`` is returned untouched: an ordinary list
+ *   refresh must never overwrite an un-applied user choice.
+ * - ``nextSessionId === null`` — no session is selected, so the draft
+ *   is ``null``.
+ * - Otherwise the draft is re-derived from the freshly selected
+ *   session's server binding via ``resolveSessionProfileDraft`` — a
+ *   draft from the previous session is NEVER inherited.
+ *
+ * Returns ``{ draftId, selectionChanged, draftChanged }``.
+ * ``selectionChanged`` gates the caller's re-render of the visible
+ * model controls (the only place that shows/hides the bar);
+ * ``draftChanged`` reports whether the dropdown value actually moved,
+ * so option rebuilds can be avoided when it did not.
+ *
+ * Never throws; never mutates the inputs.  A throwing getter, Proxy
+ * trap or exotic object anywhere along the inspection and resolution
+ * path — the options fields themselves, the sessions list, a session
+ * element or the registry — is caught and mapped to the same
+ * fail-closed result.
+ *
+ * @param {*} options
+ * @returns {{draftId: (string|null), selectionChanged: boolean,
+ *            draftChanged: boolean}}
+ */
+function planProfileDraftForSelection(options) {
+  try {
+    return _planProfileDraftForSelection(options);
+  } catch (_) {
+    // Hostile getters, throwing Proxies or exotic objects must never
+    // escape — "never throws" is part of the contract, so any throw
+    // maps to the standard fail-closed result.
+    return { draftId: null, selectionChanged: false, draftChanged: false };
+  }
+}
+
+/**
+ * Unprotected implementation behind ``planProfileDraftForSelection``.
+ *
+ * Every read of options, sessions, session fields or the registry can
+ * throw for getter- or Proxy-hostile inputs; the public wrapper above
+ * converts any throw into the standard fail-closed result.  Internal —
+ * never exported.
+ */
+function _planProfileDraftForSelection(options) {
+  var fail = { draftId: null, selectionChanged: false, draftChanged: false };
+  if (options === null || typeof options !== "object" ||
+      Array.isArray(options)) {
+    return fail;
+  }
+
+  // -- every required field must be an OWN property of options -------
+  // Inherited fields never count: hasOwnProperty, never ``in``.
+  var requiredFields = [
+    "sessions",
+    "previousSessionId",
+    "nextSessionId",
+    "previousDraftId",
+    "registry",
+  ];
+  for (var f = 0; f < requiredFields.length; f++) {
+    if (!Object.prototype.hasOwnProperty.call(options, requiredFields[f])) {
+      return fail;
+    }
+  }
+
+  var sessions = options.sessions;
+  var previousSessionId = options.previousSessionId;
+  var nextSessionId = options.nextSessionId;
+  var previousDraftId = options.previousDraftId;
+  var registry = options.registry;
+
+  // -- validate the list, selection and draft BEFORE any rule --------
+  if (!Array.isArray(sessions)) {
+    return fail;
+  }
+  if ((previousSessionId !== null &&
+       (!Number.isSafeInteger(previousSessionId) || previousSessionId < 1)) ||
+      (nextSessionId !== null &&
+       (!Number.isSafeInteger(nextSessionId) || nextSessionId < 1))) {
+    return fail;
+  }
+  if (previousDraftId !== null &&
+      (typeof previousDraftId !== "string" ||
+       previousDraftId === "" || previousDraftId.trim() === "")) {
+    return fail;
+  }
+  // The registry VALUE is deliberately not validated here — the
+  // changed path lets resolveSessionProfileDraft fail closed on an
+  // invalid registry.
+
+  if (nextSessionId === previousSessionId) {
+    // The selection did not move: keep whatever draft the user has,
+    // applied or not.
+    return {
+      draftId: previousDraftId,
+      selectionChanged: false,
+      draftChanged: false,
+    };
+  }
+
+  var draftId = null;
+  for (var i = 0; i < sessions.length; i++) {
+    var s = sessions[i];
+    if (s !== null && typeof s === "object" && !Array.isArray(s) &&
+        s.id === nextSessionId) {
+      draftId = resolveSessionProfileDraft(s, registry);
+      break;
+    }
+  }
+
+  return {
+    draftId: draftId,
+    selectionChanged: true,
+    draftChanged: draftId !== previousDraftId,
+  };
+}
+
+/**
  * Whether the Apply action of the current-session model switcher is
  * available.
  *
@@ -851,6 +1007,50 @@ function canApplySessionProfile(options) {
     return true;
   }
   return false;
+}
+
+/**
+ * Whether Apply is available when the session may carry a per-session
+ * uncertain-switch record.
+ *
+ * ``options`` = { session, registry, draftProfileId, uncertain }.
+ * ``uncertain`` is a strict boolean presence flag for the record.
+ *
+ * Apply is available when the ordinary ``canApplySessionProfile``
+ * contract holds, OR when the record is present, the session itself
+ * is valid and the draft id still belongs to the trusted registry —
+ * the convergence re-apply is allowed even when the draft equals the
+ * cached binding (which the ordinary contract rejects as idempotent).
+ *
+ * Never throws; never mutates the inputs.
+ *
+ * @param {*} options
+ * @returns {boolean}
+ */
+function canApplySessionProfileWithUncertain(options) {
+  if (options === null || typeof options !== "object" ||
+      Array.isArray(options)) {
+    return false;
+  }
+  var session = options.session;
+  var registry = options.registry;
+  var draftProfileId = options.draftProfileId;
+
+  if (canApplySessionProfile({
+    session: session,
+    registry: registry,
+    draftProfileId: draftProfileId,
+    isSwitching: false,
+  })) {
+    return true;
+  }
+  if (options.uncertain !== true) {
+    return false;
+  }
+  if (!isValidSessionResponse(session)) {
+    return false;
+  }
+  return profileFromRegistry(registry, draftProfileId) !== null;
 }
 
 /**
@@ -1066,7 +1266,9 @@ if (typeof module !== "undefined" && module.exports) {
     resolveNextSelectionId: resolveNextSelectionId,
     findSessionButton: findSessionButton,
     resolveSessionProfileDraft: resolveSessionProfileDraft,
+    planProfileDraftForSelection: planProfileDraftForSelection,
     canApplySessionProfile: canApplySessionProfile,
+    canApplySessionProfileWithUncertain: canApplySessionProfileWithUncertain,
     buildSwitchSessionProfilePayload: buildSwitchSessionProfilePayload,
     needsRemoteHistoryConfirmation: needsRemoteHistoryConfirmation,
     parseRemoteHistoryAckRequired: parseRemoteHistoryAckRequired,

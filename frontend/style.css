@@ -528,6 +528,158 @@ body {
   outline-offset: -2px;
 }
 
+/* ---- Current-session model control bar ------------------------------- */
+
+.current-profile-bar {
+  padding: 8px 20px;
+  border-bottom: 1px solid #e5e5e5;
+  background: #ffffff;
+}
+
+.current-profile-bar > label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #636366;
+  margin-bottom: 4px;
+}
+
+.current-profile-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.current-profile-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 320px;
+  padding: 6px 8px;
+  border: 1px solid #d1d1d6;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1a1a1a;
+  font-size: 0.875rem;
+  font-family: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.current-profile-row select:focus-visible {
+  outline: 2px solid #007aff;
+  outline-offset: 1px;
+}
+
+.current-profile-row select:disabled {
+  background: #f5f5f5;
+  color: #8e8e93;
+  cursor: not-allowed;
+}
+
+#applyProfileBtn {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #007aff;
+  color: #ffffff;
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+#applyProfileBtn:hover {
+  background: #0066d6;
+}
+
+#applyProfileBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.current-profile-status {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: #8e8e93;
+  word-break: break-word;
+}
+
+.current-profile-status.error {
+  color: #ff3b30;
+}
+
+.current-profile-status:empty {
+  display: none;
+}
+
+/* ---- Model switch dialog ---------------------------------------------- */
+
+#profileSwitchDialog {
+  max-width: calc(100vw - 32px);
+  width: 400px;
+  padding: 20px;
+  border: 1px solid #d1d1d6;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1a1a1a;
+}
+
+#profileSwitchDialog h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+#profileSwitchDialog p {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  margin-bottom: 16px;
+  word-break: break-word;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog-actions button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+#psd-cancel {
+  background: #f0f0f2;
+  color: #1a1a1a;
+}
+
+#psd-cancel:hover {
+  background: #e5e5e5;
+}
+
+#psd-continue {
+  background: #007aff;
+  color: #ffffff;
+}
+
+#psd-continue:hover {
+  background: #0066d6;
+}
+
+.dialog-actions button:focus-visible {
+  outline: 2px solid #007aff;
+  outline-offset: 1px;
+}
+
 /* ---- Messages area ------------------------------------------------- */
 
 .chat-messages {
@@ -772,6 +924,10 @@ body {
   }
 
   .session-compatibility-notice {
+    padding: 8px 12px 8px 52px;  /* room for toggle button */
+  }
+
+  .current-profile-bar {
     padding: 8px 12px 8px 52px;  /* room for toggle button */
   }
 

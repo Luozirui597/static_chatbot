@@ -16,20 +16,22 @@ OpenAI-compatible chat-completions API.
 - Multiple isolated sessions — create, switch, rename, and delete
 - Auto-generated session titles from the first user message
 - Selectable LLM model for new chats (API / local / fake profiles)
-  — the model is fixed when a session is created; existing sessions
-  cannot be switched to another model, and there is no automatic
-  fallback between models
+  plus per-conversation model switching — the model is chosen when a
+  session is created and can be re-bound at any time via the
+  **Model for this chat** control; there is no automatic fallback
+  between models
 - Non-ready legacy sessions (model removed, model configuration
   changed, or created before model tracking) remain readable but are
   read-only
 - Responsive layout with a collapsible sidebar on mobile
 - Loading, empty, and error states in the UI
 - Input validation (blank and over-length messages are rejected)
-- 297 automated Python tests covering APIs, models, business logic,
+- 387 automated Python tests covering APIs, models, business logic,
   LLM client behaviour, session isolation, concurrency, auto-title
   generation, session rename, schema migration, and error handling
 - Frontend unit tests for clipboard logic, copy button state machine,
-  network-error recovery, and model-selection logic (Node `node:test`)
+  network-error recovery, model-selection logic, and session
+  model-switching logic (Node `node:test`)
 
 ## Project structure
 
@@ -43,7 +45,7 @@ backend/
   config.py            Environment configuration
   database.py          SQLAlchemy engine, session factory, get_db
   models.py            ORM models — ChatSession, Message
-  exceptions.py        LLMError, LLMInvalidResponseError
+  exceptions.py        Service-level exception types
   system_prompt.py     Fixed system prompt
 frontend/
   index.html           Multi-session chat page
@@ -52,6 +54,8 @@ frontend/
   clipboard.js         Clipboard API + execCommand fallback
   copy-controller.js   Per-button copy state machine
   model-selection.js   Pure helpers for the model selector
+  session-profile-switch.js  Session model-switch controller,
+                       confirmer, and outcome planners
   app.js               Frontend logic (vanilla JS)
 tests/
   conftest.py          Forces LLM_MODE=fake for all tests
@@ -63,8 +67,10 @@ tests/
   test_chat_service.py ChatService business logic & transactions
   test_sessions.py     Session CRUD API
   test_session_chat.py Session message send API, concurrency, lock safety
+  test_clipboard.test.js         Frontend clipboard helper tests
   test_network_recovery.test.js  Frontend send-failure recovery tests
   test_model_selection.test.js   Frontend model-selection helper tests
+  test_session_profile_switch.test.js  Frontend session model-switch tests
 .env.example           Documented environment variables
 requirements.txt       Python dependencies
 ```
@@ -218,6 +224,7 @@ Interactive API documentation (Swagger UI) is available at:
 | `GET` | `/api/sessions/{id}/messages` | Get messages for a session |
 | `POST` | `/api/sessions/{id}/messages` | Send a message within a session |
 | `PATCH` | `/api/sessions/{id}` | Rename a session |
+| `PATCH` | `/api/sessions/{id}/llm-profile` | Switch the session's LLM profile |
 | `DELETE` | `/api/sessions/{id}` | Delete a session and its messages |
 
 The web interface is served at:
@@ -308,10 +315,10 @@ by the current UI.
   `updated_at` descending on the server).
 - **+ New Chat** creates a session immediately and selects it.
 - A **Model for new chats** selector next to the button chooses which
-  LLM profile the *next* new session uses.  Switching the selector
-  never changes the current session — to use another model, choose it
-  and start a new chat.  There is no automatic fallback between
-  models.
+  LLM profile the *next* new session uses.  Changing it never changes
+  the current session — to use another model with an existing chat,
+  use the **Model for this chat** bar described below.  There is no
+  automatic fallback between models.
 - The chat header shows the current session's actual model label
   (with an API / Local / Fake badge when known).
 - Sessions whose model is no longer available, whose model
@@ -329,6 +336,27 @@ by the current UI.
   default profile.
 - The sidebar collapses on narrow screens (≤ 767 px); tap the toggle
   button (☰) to open or close it.
+- Each conversation shows a **Model for this chat** bar with an Apply
+  button.  The model is chosen when the conversation is created, but
+  existing conversations can be re-bound to another available model
+  at any time; switching never deletes or rewrites history, so one
+  conversation may contain a mix of models.  Messages created after
+  model tracking was introduced record their own model provenance;
+  messages from before that migration keep null snapshot fields and
+  are never back-filled with a guessed model.
+- Switching a conversation with history to a remote API model asks
+  for confirmation first — the most recent chat history will be sent
+  to the remote API service on the next message.  Local models are
+  used without any such confirmation, and there is no automatic
+  fallback between models.
+- If a switch result cannot be confirmed (for example a network
+  interruption), the conversation shows a persistent notice; press
+  **Apply** again to check the current binding before retrying.
+- If the local Ollama service is stopped, sending fails with the
+  usual saved-message recovery.  Restart the local service and send
+  the message again to continue — Apply does not start or repair the
+  Ollama service, and re-applying the same profile on a ready binding
+  is idempotent, so Apply stays disabled there.
 - If an upstream API error occurs, the user message may still be
   saved (it is committed before the LLM is called).  The frontend
   re-synchronises message history after such errors to reflect the
@@ -404,10 +432,13 @@ Press `Ctrl+C` in the terminal where `start-local-ollama.sh` is running.
 node --test \
   tests/test_clipboard.test.js \
   tests/test_network_recovery.test.js \
-  tests/test_model_selection.test.js
+  tests/test_model_selection.test.js \
+  tests/test_session_profile_switch.test.js
 ```
 
-Current suite: **297 Python tests**, **142 frontend tests** (all passing).
+Current suite: **387 Python tests**, **323 frontend tests** (all passing):
+37 clipboard, 5 network recovery, 185 model selection,
+96 session profile switch.
 
 - `conftest.py` forces `LLM_MODE=fake` and `DATABASE_URL=sqlite:///:memory:`
   before any test module is imported — no test ever touches a real

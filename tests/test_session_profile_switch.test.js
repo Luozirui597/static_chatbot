@@ -25,6 +25,8 @@ const {
 const {
   analyzeProfileRegistry,
   isValidSessionResponse,
+  isSessionWritable,
+  canApplySessionProfileWithUncertain,
 } = require(
   path.resolve(__dirname, "..", "frontend", "model-selection.js"),
 );
@@ -710,10 +712,95 @@ describe("planSwitchOutcomeEffects", function () {
   });
 
   it("hasTarget=false forbids cache writes", function () {
+    // switched with a missing target: no cache write; the executor
+    // surfaces the missing-conversation message itself, so the plan
+    // carries no showStatus.
     var plan = planSwitchOutcomeEffects(opts({ hasTarget: false }));
     assert.equal(plan.updateCache, false);
     assert.equal(plan.focus, null);
-    assert.equal(plan.showStatus, "The conversation no longer exists.");
+    assert.equal(plan.showStatus, null);
+  });
+
+  it("not_changed is target-scoped even when another session is visible", function () {
+    var plan = planSwitchOutcomeEffects(opts({
+      outcome: { status: "not_changed", session: makeSession({ id: 1 }) },
+      currentSessionId: 2,
+    }));
+    assert.equal(typeof plan.showStatus, "string");
+    assert.ok(plan.showStatus.trim() !== "");
+    assert.equal(plan.focus, null);
+    assert.equal(plan.syncVisibleUI, false);
+  });
+
+  it("failed keeps the raw error text for a non-visible target", function () {
+    var plan = planSwitchOutcomeEffects(opts({
+      outcome: { status: "failed", message: "  keep original spacing  " },
+      currentSessionId: 2,
+    }));
+    assert.equal(plan.showStatus, "  keep original spacing  ");
+    assert.equal(plan.focus, null);
+    assert.equal(plan.syncVisibleUI, false);
+  });
+
+  it("validation_error keeps the raw error text and reload for a non-visible target", function () {
+    var plan = planSwitchOutcomeEffects(opts({
+      outcome: { status: "validation_error", message: "raw message" },
+      currentSessionId: 2,
+    }));
+    assert.equal(plan.showStatus, "raw message");
+    assert.equal(plan.reloadProfiles, true);
+    assert.equal(plan.focus, null);
+    assert.equal(plan.syncVisibleUI, false);
+  });
+
+  it("switched/cancelled carry no showStatus; uncertain records the hint externally", function () {
+    var sw = planSwitchOutcomeEffects(opts({
+      currentSessionId: 2,
+    }));
+    assert.equal(sw.showStatus, null);
+
+    var c = planSwitchOutcomeEffects(opts({
+      outcome: { status: "cancelled" },
+      currentSessionId: 2,
+    }));
+    assert.equal(c.showStatus, null);
+
+    var u = planSwitchOutcomeEffects(opts({
+      operation: makeOperation(),
+      outcome: {
+        status: "uncertain", message: "raw hint",
+        requestedProfile: { id: "local", kind: "local", model: "qwen" },
+      },
+      currentSessionId: 2,
+    }));
+    assert.equal(u.showStatus, null);             // hint comes from the record
+    assert.notEqual(u.uncertainRecord, null);
+    assert.equal(u.focus, null);
+    assert.equal(u.syncVisibleUI, false);
+  });
+
+  it("late outcomes never produce visible effects for another session", function () {
+    var plan = planSwitchOutcomeEffects(opts({
+      outcome: { status: "failed", message: "boom" },
+      currentSessionId: 9,
+    }));
+    assert.equal(plan.focus, null);
+    assert.equal(plan.syncVisibleUI, false);
+  });
+
+  it("the planner does not mutate any input", function () {
+    var session = makeSession({ id: 1, llm_profile_id: "local",
+      llm_model_snapshot: "qwen" });
+    var outcome = { status: "not_changed", session: session };
+    var operation = makeOperation();
+    var outcomeJson = JSON.stringify(outcome);
+    var operationJson = JSON.stringify(operation);
+    planSwitchOutcomeEffects({
+      outcome: outcome, operation: operation,
+      targetSessionId: 1, currentSessionId: 2, hasTarget: true,
+    });
+    assert.equal(JSON.stringify(outcome), outcomeJson);
+    assert.equal(JSON.stringify(operation), operationJson);
   });
 
   it("unknown statuses and malformed inputs fail closed", function () {
@@ -1466,5 +1553,115 @@ describe("createRemoteHistoryConfirmer", function () {
     var result = await confirmer.confirm("a");
     assert.equal(result, false);
     assert.equal(adapter.listenerCount(), 0);
+  });
+});
+
+// -----------------------------------------------------------------------
+// 4B-2 review follow-ups — uncertain send block and convergence
+// -----------------------------------------------------------------------
+
+describe("4B-2 uncertain protection follow-ups", function () {
+  var registry = analyzeProfileRegistry([
+    makeProfile("default", { is_default: true, kind: "api", model: "m1" }),
+    makeProfile("local", { kind: "local", model: "qwen" }),
+  ]);
+
+  function uncertainRecord() {
+    return {
+      generation: 1,
+      requestedProfile: { id: "local", kind: "local", model: "qwen" },
+      originalProfileId: "default",
+      originalModelSnapshot: "m1",
+    };
+  }
+
+  it("a ready session with an uncertain record cannot send", function () {
+    assert.equal(
+      isSessionWritable(makeSession(), null, uncertainRecord()),
+      false,
+    );
+  });
+
+  it("the same ready session without a record can still send", function () {
+    assert.equal(
+      isSessionWritable(makeSession(), null, undefined),
+      true,
+    );
+  });
+
+  it("uncertain state only affects its target session", function () {
+    var target = makeSession({ id: 1 });
+    var other = makeSession({ id: 2 });
+    assert.equal(isSessionWritable(target, null, uncertainRecord()), false);
+    assert.equal(isSessionWritable(other, null, undefined), true);
+  });
+
+  it("Apply stays available on an uncertain session for convergence", function () {
+    // Ready session, draft equal to the cached binding — the ordinary
+    // contract is idempotent, but the uncertain record must keep
+    // Apply available so the user can re-apply and converge.
+    assert.equal(
+      canApplySessionProfileWithUncertain({
+        session: makeSession({ llm_model_snapshot: "m1" }),
+        registry: registry,
+        draftProfileId: "default",
+        uncertain: true,
+      }),
+      true,
+    );
+  });
+
+  it("classifyUncertainRefresh reports confirmed_target for the requested binding", function () {
+    // Pure contract for the convergence decision: when the fresh
+    // target session is bound to the requested profile id AND model
+    // and is ready, the classifier says confirmed_target.
+    var fresh = makeSession({
+      llm_profile_id: "local",
+      llm_model_snapshot: "qwen",
+      llm_profile_status: "ready",
+    });
+    assert.equal(
+      classifyUncertainRefresh({
+        targetSessionId: 1,
+        uncertainRecord: uncertainRecord(),
+        fresh: fresh,
+      }).status,
+      "confirmed_target",
+    );
+  });
+
+  it("isSessionWritable is true once the uncertain argument is absent", function () {
+    // Pure contract for the writability gate.  On confirmed_target
+    // the app executor deletes sessionSwitchUncertain[targetSessionId]
+    // and the gate then receives undefined; this test asserts exactly
+    // that input/output pair — it does NOT drive the app executor,
+    // whose wiring is verified by code review and browser acceptance.
+    var fresh = makeSession({
+      llm_profile_id: "local",
+      llm_model_snapshot: "qwen",
+      llm_profile_status: "ready",
+    });
+    assert.equal(isSessionWritable(fresh, null, undefined), true);
+    assert.equal(isSessionWritable(fresh, null, uncertainRecord()), false);
+  });
+
+  it("the planned uncertain record itself blocks sending", function () {
+    // The writability gate consumes exactly the record the planner
+    // produces — one source of truth, no second mirrored state.
+    var plan = planSwitchOutcomeEffects({
+      outcome: {
+        status: "uncertain", message: "m",
+        requestedProfile: { id: "local", kind: "local", model: "qwen" },
+      },
+      operation: makeOperation(),
+      targetSessionId: 1,
+      currentSessionId: 1,
+      hasTarget: true,
+    });
+    assert.notEqual(plan.uncertainRecord, null);
+    assert.equal(
+      isSessionWritable(makeSession(), null, plan.uncertainRecord),
+      false,
+    );
   });
 });
