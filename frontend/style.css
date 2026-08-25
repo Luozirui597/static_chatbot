@@ -891,6 +891,11 @@ body {
        it starts at 60px, leaving an 8px gap without narrowing the New
        Chat button or model selector. */
     padding-left: 44px;
+    /* The menu button strip is 48px tall; without extra room the
+       12px base margin puts the New Chat button's top edge at ~47px,
+       under the strip's bottom edge.  16px clears it by a few px
+       while the title itself stays in place. */
+    margin-bottom: 16px;
   }
 
   .sidebar {
