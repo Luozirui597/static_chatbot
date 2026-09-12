@@ -273,6 +273,9 @@ def run_migrations(bind: Engine) -> None:
                 )
             )
 
+        _run_interaction_mode_migration(conn)
+        _run_interaction_mode_constraints_migration(conn)
+
 
 # ---------------------------------------------------------------------------
 # Module-level singletons
@@ -332,3 +335,161 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+def _run_interaction_mode_migration(conn) -> None:
+    """Apply interaction_mode_v1 idempotently."""
+    from sqlalchemy import text as sa_text
+
+    row = conn.execute(
+        sa_text(
+            "SELECT version FROM schema_migrations "
+            "WHERE version = 'interaction_mode_v1'"
+        )
+    ).fetchone()
+    if row is not None:
+        return
+
+    conn.execute(
+        sa_text(
+            "CREATE TABLE IF NOT EXISTS mode_switch_events ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  session_id INTEGER NOT NULL,"
+            "  from_mode VARCHAR(30) NOT NULL,"
+            "  to_mode VARCHAR(30) NOT NULL,"
+            "  created_at DATETIME NOT NULL,"
+            "  CONSTRAINT fk_mode_switch_events_session_id "
+            "      FOREIGN KEY(session_id) "
+            "      REFERENCES chat_sessions(id) ON DELETE CASCADE,"
+            "  CONSTRAINT ck_mode_switch_events_from_mode "
+            "      CHECK (from_mode IN ('receive_teaching', 'corrective')),"
+            "  CONSTRAINT ck_mode_switch_events_to_mode "
+            "      CHECK (to_mode IN ('receive_teaching', 'corrective'))"
+            ")"
+        )
+    )
+
+    session_cols = [
+        r[1]
+        for r in conn.execute(
+            sa_text("PRAGMA table_info('chat_sessions')")
+        ).fetchall()
+    ]
+    if "interaction_mode" not in session_cols:
+        conn.execute(
+            sa_text(
+                "ALTER TABLE chat_sessions "
+                "ADD COLUMN interaction_mode VARCHAR(30) "
+                "NOT NULL DEFAULT 'receive_teaching'"
+            )
+        )
+
+    message_cols = [
+        r[1]
+        for r in conn.execute(
+            sa_text("PRAGMA table_info('messages')")
+        ).fetchall()
+    ]
+    if "interaction_mode_snapshot" not in message_cols:
+        conn.execute(
+            sa_text(
+                "ALTER TABLE messages "
+                "ADD COLUMN interaction_mode_snapshot VARCHAR(30)"
+            )
+        )
+
+    if "prompt_version_snapshot" not in message_cols:
+        conn.execute(
+            sa_text(
+                "ALTER TABLE messages "
+                "ADD COLUMN prompt_version_snapshot VARCHAR(50)"
+            )
+        )
+
+    conn.execute(
+        sa_text(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('interaction_mode_v1')"
+        )
+    )
+
+
+def _run_interaction_mode_constraints_migration(conn) -> None:
+    """Add idempotent trigger guards for migrated SQLite databases.
+
+    SQLite cannot add CHECK constraints to existing tables without a
+    table rebuild.  These triggers provide the same rejection semantics
+    for pre-existing databases while remaining safe and idempotent.
+    """
+    from sqlalchemy import text as sa_text
+
+    row = conn.execute(
+        sa_text(
+            "SELECT version FROM schema_migrations "
+            "WHERE version = 'interaction_mode_constraints_v1'"
+        )
+    ).fetchone()
+    if row is not None:
+        return
+
+    conn.execute(
+        sa_text(
+            "CREATE TRIGGER IF NOT EXISTS "
+            "trg_chat_sessions_interaction_mode_insert "
+            "BEFORE INSERT ON chat_sessions "
+            "FOR EACH ROW "
+            "WHEN NEW.interaction_mode NOT IN "
+            "('receive_teaching', 'corrective') "
+            "BEGIN "
+            "  SELECT RAISE(ABORT, 'invalid interaction_mode'); "
+            "END"
+        )
+    )
+    conn.execute(
+        sa_text(
+            "CREATE TRIGGER IF NOT EXISTS "
+            "trg_chat_sessions_interaction_mode_update "
+            "BEFORE UPDATE OF interaction_mode ON chat_sessions "
+            "FOR EACH ROW "
+            "WHEN NEW.interaction_mode NOT IN "
+            "('receive_teaching', 'corrective') "
+            "BEGIN "
+            "  SELECT RAISE(ABORT, 'invalid interaction_mode'); "
+            "END"
+        )
+    )
+    conn.execute(
+        sa_text(
+            "CREATE TRIGGER IF NOT EXISTS "
+            "trg_messages_interaction_mode_snapshot_insert "
+            "BEFORE INSERT ON messages "
+            "FOR EACH ROW "
+            "WHEN NEW.interaction_mode_snapshot IS NOT NULL "
+            "  AND NEW.interaction_mode_snapshot NOT IN "
+            "('receive_teaching', 'corrective') "
+            "BEGIN "
+            "  SELECT RAISE(ABORT, 'invalid interaction_mode_snapshot'); "
+            "END"
+        )
+    )
+    conn.execute(
+        sa_text(
+            "CREATE TRIGGER IF NOT EXISTS "
+            "trg_messages_interaction_mode_snapshot_update "
+            "BEFORE UPDATE OF interaction_mode_snapshot ON messages "
+            "FOR EACH ROW "
+            "WHEN NEW.interaction_mode_snapshot IS NOT NULL "
+            "  AND NEW.interaction_mode_snapshot NOT IN "
+            "('receive_teaching', 'corrective') "
+            "BEGIN "
+            "  SELECT RAISE(ABORT, 'invalid interaction_mode_snapshot'); "
+            "END"
+        )
+    )
+
+    conn.execute(
+        sa_text(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('interaction_mode_constraints_v1')"
+        )
+    )

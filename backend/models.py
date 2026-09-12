@@ -49,6 +49,12 @@ class Base(DeclarativeBase):
 
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "interaction_mode IN ('receive_teaching', 'corrective')",
+            name="ck_chat_sessions_interaction_mode",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True
@@ -83,11 +89,24 @@ class ChatSession(Base):
         default=None,
     )
 
+    interaction_mode: Mapped[str] = mapped_column(
+        String(30),
+        default="receive_teaching",
+        server_default="receive_teaching",
+        nullable=False,
+    )
+
     messages: Mapped[List["Message"]] = relationship(
         "Message",
         back_populates="session",
         cascade="all, delete-orphan",
         order_by="Message.id",
+    )
+    mode_switch_events: Mapped[List["ModeSwitchEvent"]] = relationship(
+        "ModeSwitchEvent",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="ModeSwitchEvent.id",
     )
 
     def __repr__(self) -> str:
@@ -118,6 +137,12 @@ class Message(Base):
                 ")) > 0"
             ),
             name="ck_messages_content_not_blank",
+        ),
+        CheckConstraint(
+            "interaction_mode_snapshot IS NULL OR "
+            "interaction_mode_snapshot IN "
+            "('receive_teaching', 'corrective')",
+            name="ck_messages_interaction_mode_snapshot",
         ),
     )
 
@@ -151,6 +176,12 @@ class Message(Base):
     llm_model_snapshot: Mapped[str | None] = mapped_column(
         String(255), nullable=True, default=None
     )
+    interaction_mode_snapshot: Mapped[str | None] = mapped_column(
+        String(30), nullable=True, default=None
+    )
+    prompt_version_snapshot: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, default=None
+    )
 
     session: Mapped["ChatSession"] = relationship(
         "ChatSession", back_populates="messages"
@@ -179,3 +210,43 @@ class SchemaMigration(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# ModeSwitchEvent — interaction-mode transition log
+# ---------------------------------------------------------------------------
+
+
+class ModeSwitchEvent(Base):
+    __tablename__ = "mode_switch_events"
+    __table_args__ = (
+        CheckConstraint(
+            "from_mode IN ('receive_teaching', 'corrective')",
+            name="ck_mode_switch_events_from_mode",
+        ),
+        CheckConstraint(
+            "to_mode IN ('receive_teaching', 'corrective')",
+            name="ck_mode_switch_events_to_mode",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    session_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    from_mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    to_mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        default=utc_now, nullable=False
+    )
+
+    session: Mapped["ChatSession"] = relationship(
+        "ChatSession", back_populates="mode_switch_events"
+    )
+
+    def __repr__(self) -> str:
+        return "<ModeSwitchEvent session_id=" + str(self.session_id) + ">"

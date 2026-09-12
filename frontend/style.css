@@ -512,6 +512,67 @@ body {
   min-width: 0;
 }
 
+/* ---- Interaction mode badge and control bar ------------------------- */
+
+.interaction-mode-badge {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: #5856d6;
+}
+
+.interaction-mode-badge.uncertain {
+  background: #b00020;
+}
+
+.interaction-mode-bar {
+  padding: 8px 20px;
+  border-bottom: 1px solid #e5e5e5;
+  background: #ffffff;
+}
+
+.interaction-mode-bar > label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #636366;
+  margin-bottom: 4px;
+}
+
+.interaction-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.interaction-mode-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 320px;
+  padding: 6px 8px;
+  border: 1px solid #d1d1d6;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1c1c1e;
+}
+
+.interaction-mode-status {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: #636366;
+  min-height: 1em;
+}
+
+.interaction-mode-status.error {
+  color: #b00020;
+}
+
 /* ---- Session compatibility notice (persistent read-only state) ------ */
 
 .session-compatibility-notice {

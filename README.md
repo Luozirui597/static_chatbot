@@ -5,6 +5,15 @@ and a vanilla HTML/CSS/JavaScript frontend.  Supports local development
 with a fake echo mode or integration with a configured
 OpenAI-compatible chat-completions API.
 
+## Development version
+
+- `static-baseline-v1` freezes the original Static Chatbot baseline.
+- The current `feature/teachable-agent` branch is the Teachable Agent
+  development version.
+- Iteration 1 adds two switchable interaction modes.  It does **not**
+  implement history audit; Iteration 2 will add the switch-time history
+  summary and correction report.
+
 ## Features
 
 - FastAPI backend with async LLM client
@@ -26,12 +35,20 @@ OpenAI-compatible chat-completions API.
 - Responsive layout with a collapsible sidebar on mobile
 - Loading, empty, and error states in the UI
 - Input validation (blank and over-length messages are rejected)
-- 387 automated Python tests covering APIs, models, business logic,
+- 417 automated Python tests covering APIs, models, business logic,
   LLM client behaviour, session isolation, concurrency, auto-title
   generation, session rename, schema migration, and error handling
 - Frontend unit tests for clipboard logic, copy button state machine,
   network-error recovery, model-selection logic, and session
   model-switching logic (Node `node:test`)
+- Two per-session interaction modes:
+  `receive_teaching` (non-corrective teaching) and `corrective`
+  (active correction for future turns)
+- Interaction mode is independent of the LLM profile/model: switching
+  mode never changes `llm_profile_id`, the model snapshot, or the
+  **Model for this chat** control
+- Per-message interaction-mode and prompt-version snapshots plus a
+  persisted `mode_switch_events` log
 
 ## Project structure
 
@@ -46,13 +63,15 @@ backend/
   database.py          SQLAlchemy engine, session factory, get_db
   models.py            ORM models — ChatSession, Message
   exceptions.py        Service-level exception types
-  system_prompt.py     Fixed system prompt
+  system_prompt.py     Fixed legacy chat prompt
+  interaction_modes.py Interaction modes, prompt versions, prompts
 frontend/
   index.html           Multi-session chat page
   style.css            Responsive styles
   network-recovery.js  Pure helper for send-failure recovery
   clipboard.js         Clipboard API + execCommand fallback
   copy-controller.js   Per-button copy state machine
+  interaction-mode.js  Pure helpers for the interaction-mode control
   model-selection.js   Pure helpers for the model selector
   session-profile-switch.js  Session model-switch controller,
                        confirmer, and outcome planners
@@ -67,8 +86,10 @@ tests/
   test_chat_service.py ChatService business logic & transactions
   test_sessions.py     Session CRUD API
   test_session_chat.py Session message send API, concurrency, lock safety
+  test_interaction_mode.py    Interaction-mode API, prompts, snapshots, migration
   test_clipboard.test.js         Frontend clipboard helper tests
   test_network_recovery.test.js  Frontend send-failure recovery tests
+  test_interaction_mode.test.js  Frontend interaction-mode helper tests
   test_model_selection.test.js   Frontend model-selection helper tests
   test_session_profile_switch.test.js  Frontend session model-switch tests
 .env.example           Documented environment variables
@@ -225,6 +246,7 @@ Interactive API documentation (Swagger UI) is available at:
 | `POST` | `/api/sessions/{id}/messages` | Send a message within a session |
 | `PATCH` | `/api/sessions/{id}` | Rename a session |
 | `PATCH` | `/api/sessions/{id}/llm-profile` | Switch the session's LLM profile |
+| `PATCH` | `/api/sessions/{id}/interaction-mode` | Switch between `receive_teaching` and `corrective` |
 | `DELETE` | `/api/sessions/{id}` | Delete a session and its messages |
 
 The web interface is served at:
@@ -252,6 +274,7 @@ The web interface is served at:
 {
   "id": 1,
   "title": "New Chat",
+  "interaction_mode": "receive_teaching",
   "created_at": "2026-08-06T12:00:00",
   "updated_at": "2026-08-06T12:00:00"
 }
@@ -310,6 +333,14 @@ The web interface is served at:
 The frontend uses the session API for all chat interactions.  The
 legacy `POST /api/chat` endpoint remains available but is **not used**
 by the current UI.
+
+- Every session has an **Interaction mode for this chat** control with
+  `receive_teaching` and `corrective`; switching mode never changes the
+  session model profile.
+- `receive_teaching` is the default for new sessions.
+- Iteration 1 `corrective` mode only changes how subsequent messages
+  are handled.  It does **not** review or summarise prior history;
+  history audit is planned for Iteration 2.
 
 - The sidebar lists all sessions, newest first (ordered by
   `updated_at` descending on the server).
@@ -433,12 +464,13 @@ node --test \
   tests/test_clipboard.test.js \
   tests/test_network_recovery.test.js \
   tests/test_model_selection.test.js \
-  tests/test_session_profile_switch.test.js
+  tests/test_session_profile_switch.test.js \
+  tests/test_interaction_mode.test.js
 ```
 
-Current suite: **387 Python tests**, **323 frontend tests** (all passing):
+Current suite: **417 Python tests**, **360 frontend tests** (all passing):
 37 clipboard, 5 network recovery, 185 model selection,
-96 session profile switch.
+96 session profile switch, 37 interaction mode.
 
 - `conftest.py` forces `LLM_MODE=fake` and `DATABASE_URL=sqlite:///:memory:`
   before any test module is imported — no test ever touches a real
@@ -526,3 +558,6 @@ These are tracked but not treated as release blockers.
 Future versions may extend this baseline into a learning-by-teaching
 chatbot with an explicit knowledge state and an adaptive learner
 model.
+Iteration 2 will add the switch-time audit: when a session switches
+to `corrective`, the agent will summarise the prior teaching history
+and produce a correction report.

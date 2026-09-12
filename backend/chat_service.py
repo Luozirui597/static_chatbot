@@ -22,8 +22,13 @@ from backend.llm_profiles import (
     LLMProfileRegistry,
     SessionProfileStatus,
 )
-from backend.models import ChatSession, Message, utc_now
+from backend.models import ChatSession, Message, ModeSwitchEvent, utc_now
 from backend.session_titles import derive_auto_title
+from backend.interaction_modes import (
+    get_prompt_version_for_mode,
+    get_system_prompt_for_mode,
+    is_valid_interaction_mode,
+)
 from backend.system_prompt import SYSTEM_PROMPT
 
 # ---------------------------------------------------------------------------
@@ -185,6 +190,7 @@ class ChatService:
         return {
             "id": session.id,
             "title": session.title,
+            "interaction_mode": session.interaction_mode,
             "created_at": session.created_at,
             "updated_at": session.updated_at,
             "llm_profile_id": session.llm_profile_id,
@@ -371,6 +377,13 @@ class ChatService:
             profile = self.resolve_session_profile(chat_session)
             llm_client = profile.client
 
+            # -- Capture this turn's interaction policy -------------------
+            # Both messages below share this mode and prompt version, and
+            # both also share the already-resolved model snapshot triple.
+            interaction_mode = chat_session.interaction_mode
+            system_prompt = get_system_prompt_for_mode(interaction_mode)
+            prompt_version = get_prompt_version_for_mode(interaction_mode)
+
             # -- Determine whether this is the first user message --------
             existing_user_msg_count = db.execute(
                 select(func.count()).select_from(Message).where(
@@ -389,6 +402,8 @@ class ChatService:
                 llm_profile_id_snapshot=profile.id,
                 llm_profile_kind_snapshot=profile.kind,
                 llm_model_snapshot=profile.model,
+                interaction_mode_snapshot=interaction_mode,
+                prompt_version_snapshot=prompt_version,
             )
             db.add(user_message)
             chat_session.updated_at = utc_now()
@@ -420,7 +435,7 @@ class ChatService:
 
                 # Build LLM messages
                 llm_messages: list[LLMMessage] = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                 ]
                 for msg in history_rows:
                     llm_messages.append({
@@ -451,6 +466,8 @@ class ChatService:
                     llm_profile_id_snapshot=profile.id,
                     llm_profile_kind_snapshot=profile.kind,
                     llm_model_snapshot=profile.model,
+                    interaction_mode_snapshot=interaction_mode,
+                    prompt_version_snapshot=prompt_version,
                 )
                 db.add(assistant_message)
                 chat_session.updated_at = utc_now()
@@ -461,6 +478,49 @@ class ChatService:
             except Exception:
                 db.rollback()
                 raise
+
+    async def switch_interaction_mode(
+        self,
+        session_id: int,
+        interaction_mode: str,
+        db: Session,
+    ) -> tuple[ChatSession, ModeSwitchEvent | None]:
+        """Switch a session's interaction mode.
+
+        Uses the same per-session lock as message sending, so a mode
+        switch can never interleave with a user/assistant round and tear
+        the mode snapshot.  Switching to the current mode is an
+        idempotent no-op: no event row and no updated_at change.
+        """
+        if is_valid_interaction_mode(interaction_mode) is False:
+            raise ValueError("Unknown interaction mode")
+
+        async with self._lock_registry.session_lock(session_id):
+            chat_session = db.get(ChatSession, session_id)
+            if chat_session is None:
+                raise SessionNotFoundError(session_id)
+
+            if chat_session.interaction_mode == interaction_mode:
+                return chat_session, None
+
+            event = ModeSwitchEvent(
+                session_id=chat_session.id,
+                from_mode=chat_session.interaction_mode,
+                to_mode=interaction_mode,
+            )
+            chat_session.interaction_mode = interaction_mode
+            chat_session.updated_at = utc_now()
+            db.add(event)
+            try:
+                db.flush()
+                db.refresh(chat_session)
+                db.commit()
+                db.refresh(event)
+            except Exception:
+                db.rollback()
+                raise
+
+            return chat_session, event
 
     async def delete_session(self, session_id: int, db: Session) -> None:
         """Delete a session and all of its messages.

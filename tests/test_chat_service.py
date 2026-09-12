@@ -18,6 +18,7 @@ from backend.chat_service import (
     SessionLockRegistry,
     SessionNotFoundError,
 )
+from backend.interaction_modes import RECEIVE_TEACHING_PROMPT
 from backend.database import create_database_engine, create_tables
 from backend.exceptions import (
     LLMError,
@@ -235,7 +236,7 @@ class TestHandleSessionMessageBasic:
 
         assert spy_llm.calls[0][0] == {
             "role": "system",
-            "content": SYSTEM_PROMPT,
+            "content": RECEIVE_TEACHING_PROMPT,
         }
 
     @pytest.mark.anyio
@@ -288,7 +289,7 @@ class TestMultiTurnHistory:
         roles = [m["role"] for m in msgs]
         contents = [m["content"] for m in msgs]
         assert roles == ["system", "user", "assistant", "user"]
-        assert contents == [SYSTEM_PROMPT, "q1", "test reply", "q2"]
+        assert contents == [RECEIVE_TEACHING_PROMPT, "q1", "test reply", "q2"]
 
     @pytest.mark.anyio
     async def test_history_ordered_by_id_asc(self, db_session, spy_llm):
@@ -393,7 +394,7 @@ class TestMultiTurnHistory:
         roles = [m["role"] for m in msgs]
         contents = [m["content"] for m in msgs]
         assert roles == ["system", "user"]
-        assert contents == [SYSTEM_PROMPT, "qb1"]
+        assert contents == [RECEIVE_TEACHING_PROMPT, "qb1"]
 
 
 # ============================================================================
@@ -1820,7 +1821,7 @@ class TestSwitchHistoryBoundary:
 
         # The new client saw: system + exactly 20 history + new user.
         msgs = new_spy.calls[0]
-        assert msgs[0] == {"role": "system", "content": SYSTEM_PROMPT}
+        assert msgs[0] == {"role": "system", "content": RECEIVE_TEACHING_PROMPT}
         history = msgs[1:-1]
         assert len(history) == MAX_HISTORY_MESSAGES
 

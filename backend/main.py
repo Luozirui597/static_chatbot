@@ -33,6 +33,8 @@ from backend.schemas import (
     RenameSessionRequest,
     SendMessageResponse,
     SessionResponse,
+    SwitchInteractionModeRequest,
+    SwitchInteractionModeResponse,
     SwitchSessionProfileRequest,
 )
 
@@ -348,6 +350,33 @@ async def rename_session(
             status_code=404, detail="Session not found"
         ) from None
     return chat_service.build_session_response(session)
+
+
+@app.patch(
+    "/api/sessions/{session_id}/interaction-mode",
+    response_model=SwitchInteractionModeResponse,
+)
+async def switch_interaction_mode(
+    session_id: int,
+    request: SwitchInteractionModeRequest,
+    db: Session = Depends(get_db),
+):
+    """Switch a session between receive_teaching and corrective."""
+    try:
+        session, event = await chat_service.switch_interaction_mode(
+            session_id=session_id,
+            interaction_mode=request.interaction_mode,
+            db=db,
+        )
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=404, detail="Session not found"
+        ) from None
+
+    return SwitchInteractionModeResponse(
+        session=chat_service.build_session_response(session),
+        switch_event=event,
+    )
 
 
 @app.patch(

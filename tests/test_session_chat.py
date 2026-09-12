@@ -24,9 +24,9 @@ from backend.database import (
 )
 from backend.exceptions import LLMError
 from backend.llm_client import LLMMessage
+from backend.interaction_modes import RECEIVE_TEACHING_PROMPT
 from backend.main import app
 from backend.models import ChatSession, Message
-from backend.system_prompt import SYSTEM_PROMPT
 
 # ---------------------------------------------------------------------------
 # Spy LLM Client
@@ -299,7 +299,7 @@ class TestSendMessageSuccess:
         contents = [m["content"] for m in msgs]
         assert roles == ["system", "user", "assistant", "user"]
         assert contents == [
-            SYSTEM_PROMPT,
+            RECEIVE_TEACHING_PROMPT,
             "first question",
             "test reply",
             "second question",
@@ -316,7 +316,7 @@ class TestSendMessageSuccess:
 
         assert spy_llm.calls[0][0] == {
             "role": "system",
-            "content": SYSTEM_PROMPT,
+            "content": RECEIVE_TEACHING_PROMPT,
         }
 
     def test_current_user_is_last_llm_message(self, client, spy_llm):
@@ -653,7 +653,7 @@ class TestSessionIsolation:
         msgs = spy_llm.calls[1]
         contents = [m["content"] for m in msgs]
         assert "msg A" not in contents
-        assert contents == [SYSTEM_PROMPT, "msg B"]
+        assert contents == [RECEIVE_TEACHING_PROMPT, "msg B"]
 
 
 # ============================================================================

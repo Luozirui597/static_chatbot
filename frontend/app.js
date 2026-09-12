@@ -18,6 +18,8 @@
   const sessionHeaderEl = document.getElementById("sessionHeader");
   const sessionTitleEl = document.getElementById("sessionTitle");
   const sessionModelBadgeEl = document.getElementById("sessionModelBadge");
+  const interactionModeBadgeEl =
+    document.getElementById("interactionModeBadge");
   const sessionCompatibilityNoticeEl =
     document.getElementById("sessionCompatibilityNotice");
   const currentProfileBarEl = document.getElementById("currentProfileBar");
@@ -26,6 +28,14 @@
   const applyProfileBtn = document.getElementById("applyProfileBtn");
   const currentProfileStatusEl =
     document.getElementById("currentProfileStatus");
+  const interactionModeBarEl =
+    document.getElementById("interactionModeBar");
+  const interactionModeSelectEl =
+    document.getElementById("interactionModeSelect");
+  const applyInteractionModeBtn =
+    document.getElementById("applyInteractionModeBtn");
+  const interactionModeStatusEl =
+    document.getElementById("interactionModeStatus");
   const profileSwitchDialogEl =
     document.getElementById("profileSwitchDialog");
   const messagesEl = document.getElementById("messages");
@@ -69,10 +79,20 @@
   let deletingSessionId = null;
   let profileSwitchGeneration = 0;    // monotonic token / generation
 
+  // Current-session interaction-mode state (fully independent from the
+  // model profile controls above).
+  let currentInteractionModeDraft = RECEIVE_TEACHING_MODE;
+  let isInteractionModeSwitching = false;
+  let interactionModeSwitchGeneration = 0;
+  let interactionModeController = null;
+  let interactionModeInitializationError = null;
+  const interactionModeUncertainBySession = Object.create(null);
+
   // Per-session records.  Keys are positive safe integer ids.
   const sessionHasMessages = Object.create(null);      // true | false | undefined
   const sessionSwitchUncertain = Object.create(null);  // uncertain records
   const profileSwitchStatusBySession = Object.create(null); // {text, isError}
+  const interactionModeStatusBySession = Object.create(null); // {text, isError}
 
   // Controller + confirmer, initialised once in init().
   let switchController = null;
@@ -107,11 +127,42 @@
    *  An uncertain-switch record for the current session always blocks
    *  sending — even when the cached llm_profile_status is "ready". */
   function currentSessionWritable() {
+    if (hasInteractionModeUncertain(
+      interactionModeUncertainBySession, currentSessionId,
+    )) {
+      return false;
+    }
     return isSessionWritable(
       currentSession(),
       sessionSendBlocks[currentSessionId] || null,
       sessionSwitchUncertain[currentSessionId],
     );
+  }
+
+  /** The current session authoritative interaction mode, or null when unknown. */
+  function currentSessionInteractionMode() {
+    return interactionModeAuthoritativeMode(currentSession());
+  }
+
+  /** Whether the current mode draft can be applied/rechecked right now. */
+  function interactionModeApplyEnabled() {
+    if (interactionModeController === null ||
+        interactionModeInitializationError !== null ||
+        isInitializing || isSending || isCreatingSession || isRenaming ||
+        isRenameSaving || isDeletingSession || isProfileSwitching ||
+        isInteractionModeSwitching) {
+      return false;
+    }
+    const session = currentSession();
+    if (session === null) return false;
+    return canApplyInteractionMode({
+      session: session,
+      draftMode: currentInteractionModeDraft,
+      isSwitching: isInteractionModeSwitching,
+      hasUncertain: hasInteractionModeUncertain(
+        interactionModeUncertainBySession, session.id,
+      ),
+    });
   }
 
   /** kind of a profile — only from a structurally valid registry. */
@@ -342,6 +393,61 @@
       },
     );
     return resp.json();
+  }
+
+  async function switchInteractionModeRequest(sessionId, mode) {
+    const payload = buildSwitchInteractionModePayload(mode);
+    if (payload === null) {
+      throw {
+        failureKind: "validation", status: 0,
+        message: "Choose a valid interaction mode.",
+      };
+    }
+    let response;
+    try {
+      response = await fetch(
+        "/api/sessions/" + sessionId + "/interaction-mode",
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+    } catch (_) {
+      throw {
+        failureKind: "network", status: 0,
+        message: "Network error. Please check your connection.",
+      };
+    }
+    if (response.ok === false) {
+      let message = "Something went wrong. Please try again.";
+      try {
+        const body = await response.json();
+        if (body !== null && typeof body === "object" &&
+            !Array.isArray(body) && typeof body.detail === "string") {
+          message = body.detail;
+        } else if (body !== null && typeof body === "object" &&
+                   !Array.isArray(body) && Array.isArray(body.detail) &&
+                   body.detail.length > 0 && body.detail[0] &&
+                   typeof body.detail[0].msg === "string") {
+          message = body.detail[0].msg;
+        }
+      } catch (_) {
+        // keep default message
+      }
+      throw {
+        failureKind: "http", status: response.status,
+        message: message,
+      };
+    }
+    try {
+      return await response.json();
+    } catch (_) {
+      throw {
+        failureKind: "response_parse", status: 0,
+        message: "The server returned an unreadable response.",
+      };
+    }
   }
 
   /* ---- Model switch API wrappers ----------------------------------- */
@@ -575,6 +681,9 @@
       sessionTitleEl.textContent = "";
       sessionModelBadgeEl.replaceChildren();
       sessionModelBadgeEl.hidden = true;
+      interactionModeBadgeEl.replaceChildren();
+      interactionModeBadgeEl.className = "interaction-mode-badge";
+      interactionModeBadgeEl.hidden = true;
       sessionCompatibilityNoticeEl.textContent = "";
       sessionCompatibilityNoticeEl.hidden = true;
       return;
@@ -599,6 +708,22 @@
     labelSpan.textContent = session.llm_profile_label || "";
     sessionModelBadgeEl.appendChild(labelSpan);
     sessionModelBadgeEl.hidden = false;
+
+    interactionModeBadgeEl.replaceChildren();
+    if (hasInteractionModeUncertain(
+      interactionModeUncertainBySession, session.id,
+    )) {
+      interactionModeBadgeEl.textContent = "Mode uncertain";
+      interactionModeBadgeEl.className =
+        "interaction-mode-badge uncertain";
+    } else {
+      const authoritativeMode = currentSessionInteractionMode();
+      const modeBadgeText = interactionModeBadgeText(authoritativeMode);
+      interactionModeBadgeEl.textContent =
+        modeBadgeText || "Mode unavailable";
+      interactionModeBadgeEl.className = "interaction-mode-badge";
+    }
+    interactionModeBadgeEl.hidden = false;
 
     // -- compatibility notice: temporary block first, then server status
     const block = sessionSendBlocks[session.id] || null;
@@ -639,7 +764,8 @@
     const blockSessionSelection = blockBase || isCreatingSession;
     const blockSessionActions =
       blockBase || isCreatingSession || isSending ||
-      isProfileSwitching || isDeletingSession;
+      isProfileSwitching || isDeletingSession ||
+      isInteractionModeSwitching;
     const usable = registryUsable();
     const writable = currentSessionWritable();
 
@@ -649,13 +775,22 @@
       blockSessionActions || !usable || profiles.length <= 1;
     const blockSend =
       blockBase || isCreatingSession || isSending ||
-      isProfileSwitching || isDeletingSession || !writable ||
+      isProfileSwitching || isDeletingSession ||
+      isInteractionModeSwitching || !writable ||
       (currentSessionId === null && !usable);
 
     const switchInitialized =
       switchController !== null && profileSwitchInitializationError === null;
+    const interactionModeUncertain = hasInteractionModeUncertain(
+      interactionModeUncertainBySession, currentSessionId,
+    );
+    const authoritativeInteractionMode =
+      currentSessionInteractionMode();
     const blockCurrentProfile = blockSessionActions || !usable ||
-      !switchInitialized || currentSessionId === null;
+      !switchInitialized || currentSessionId === null ||
+      interactionModeUncertain;
+    const blockInteractionMode = blockSessionActions ||
+      currentSessionId === null;
 
     sendBtn.disabled = blockSend;
     inputEl.disabled = blockSend;
@@ -663,10 +798,25 @@
     profileSelectEl.disabled = blockProfileSelect;
     currentProfileSelectEl.disabled = blockCurrentProfile;
     applyProfileBtn.disabled = blockCurrentProfile || !applyEnabled();
+    interactionModeSelectEl.disabled = blockInteractionMode ||
+      interactionModeUncertain;
+    applyInteractionModeBtn.disabled = blockInteractionMode ? true :
+      (interactionModeUncertain ? false :
+        interactionModeApplyEnabled() === false);
+    applyInteractionModeBtn.textContent =
+      interactionModeUncertain ? "Recheck" : "Apply";
 
-    if (blockSend && currentSessionId !== null && !writable) {
+    if (interactionModeUncertain) {
+      inputEl.placeholder =
+        "Interaction mode uncertain. Use Recheck before sending.";
+    } else if (blockSend && currentSessionId !== null && !writable) {
       inputEl.placeholder =
         "This conversation is read-only. Start a new chat to continue.";
+    } else if (currentSessionId !== null &&
+               authoritativeInteractionMode === CORRECTIVE_MODE) {
+      inputEl.placeholder = "Continue; the agent will check your claims...";
+    } else if (currentSessionId !== null) {
+      inputEl.placeholder = "Teach your learner...";
     } else {
       inputEl.placeholder = "Type a message...";
     }
@@ -706,6 +856,21 @@
   function syncCurrentSessionUI() {
     renderCurrentSessionMeta();
     updateControlStates();
+  }
+
+  /** Set the mode draft from a session without rebuilding options. */
+  function setInteractionModeDraftForSession(session) {
+    if (session !== null && typeof session === "object" &&
+        hasInteractionModeUncertain(
+          interactionModeUncertainBySession, session.id,
+        )) {
+      currentInteractionModeDraft =
+        interactionModeUncertainBySession[String(session.id)].requestedMode;
+    } else {
+      currentInteractionModeDraft =
+        interactionModeDraftForSession(session);
+    }
+    renderCurrentInteractionModeStatus();
   }
 
   /**
@@ -1133,6 +1298,7 @@
     for (const s of sessions) {
       presentIds[s.id] = true;
       delete sessionSendBlocks[s.id];
+      delete interactionModeStatusBySession[s.id];
     }
     for (const sid of Object.keys(sessionSendBlocks)) {
       if (!presentIds[sid]) delete sessionSendBlocks[sid];
@@ -1145,6 +1311,12 @@
     }
     for (const sid of Object.keys(profileSwitchStatusBySession)) {
       if (!presentIds[sid]) delete profileSwitchStatusBySession[sid];
+    }
+    for (const sid of Object.keys(interactionModeStatusBySession)) {
+      if (!presentIds[sid]) delete interactionModeStatusBySession[sid];
+    }
+    for (const sid of Object.keys(interactionModeUncertainBySession)) {
+      if (!presentIds[sid]) delete interactionModeUncertainBySession[sid];
     }
 
     // Decide the final selection BEFORE rendering the list so the
@@ -1172,6 +1344,8 @@
       previousDraftId: currentProfileDraftId,
       registry: registry(),
     }));
+    setInteractionModeDraftForSession(findSessionInList(currentSessionId));
+    if (selectionChanged) renderInteractionModeBar();
 
     // Only the null-selection case bumps the request guard manually:
     // it must invalidate an in-flight load without starting a new one.
@@ -1184,6 +1358,7 @@
     syncCurrentSessionUI();
 
     if (next.selectionId === null) {
+      renderInteractionModeBar();
       renderWelcome();
       return true;
     }
@@ -1246,6 +1421,8 @@
     delete sessionSwitchUncertain[sessionId];
     delete sessionHasMessages[sessionId];
     delete profileSwitchStatusBySession[sessionId];
+    delete interactionModeStatusBySession[sessionId];
+    delete interactionModeUncertainBySession[sessionId];
 
     if (sessionId === currentSessionId) {
       sessionLoadRequestId++;
@@ -1266,6 +1443,8 @@
         previousDraftId: currentProfileDraftId,
         registry: registry(),
       }));
+      setInteractionModeDraftForSession(findSessionInList(currentSessionId));
+      renderInteractionModeBar();
       syncCurrentSessionUI();
 
       if (currentSessionId !== null) {
@@ -1346,10 +1525,12 @@
     currentProfileDraftId = session !== null
       ? resolveSessionProfileDraft(session, registry())
       : null;
+    setInteractionModeDraftForSession(session);
     renderSessionListOrError();
     syncCurrentSessionUI();
     renderCurrentProfileBar();
     renderCurrentProfileStatus();
+    renderInteractionModeBar();
     loadMessages(sessionId);
 
     if (isMobile()) {
@@ -1455,7 +1636,8 @@
   /** Create a new session (called by "New Chat" button). */
   async function newChat() {
     if (isCreatingSession || isSending || isInitializing ||
-        isProfileSwitching || isDeletingSession) return;
+        isProfileSwitching || isDeletingSession ||
+        isInteractionModeSwitching) return;
 
     // Capture the profile id at request start so async changes cannot
     // make the UI and the request disagree.
@@ -1497,10 +1679,12 @@
       sessionLastMessageId[session.id] = 0;
       setHistoryState(session.id, false);        // brand-new session
       currentProfileDraftId = session.llm_profile_id;
+      setInteractionModeDraftForSession(session);
       sessionLoadRequestId++;
       renderSessionListOrError();
       syncCurrentSessionUI();
       renderCurrentProfileBar();
+      renderInteractionModeBar();
       renderEmptyChat();
       clearStatus();
       inputEl.value = "";
@@ -1539,7 +1723,8 @@
     if (currentSessionId !== null) return true;
 
     if (isCreatingSession || isSending || isInitializing ||
-        isProfileSwitching || isDeletingSession) return false;
+        isProfileSwitching || isDeletingSession ||
+        isInteractionModeSwitching) return false;
 
     const profileId = selectedProfileId;
     if (profileId === null) {
@@ -1571,10 +1756,12 @@
       sessionLastMessageId[session.id] = 0;
       setHistoryState(session.id, false);
       currentProfileDraftId = session.llm_profile_id;
+      setInteractionModeDraftForSession(session);
       sessionLoadRequestId++;
       renderSessionListOrError();
       syncCurrentSessionUI();
       renderCurrentProfileBar();
+      renderInteractionModeBar();
       clearStatus();
       return true;
     } catch (err) {
@@ -1589,7 +1776,7 @@
   async function handleDeleteSession(sessionId, event) {
     event.stopPropagation();
     if (isSending || isProfileSwitching || isDeletingSession ||
-        isCreatingSession) return;
+        isCreatingSession || isInteractionModeSwitching) return;
 
     if (!confirm("Delete this conversation?")) return;
 
@@ -1625,7 +1812,8 @@
 
   function startRename(sessionId) {
     if (isSending || isRenaming || isInitializing ||
-        isProfileSwitching || isDeletingSession) return;
+        isProfileSwitching || isDeletingSession ||
+        isInteractionModeSwitching) return;
 
     isRenaming = true;
     renamingSessionId = sessionId;
@@ -1635,7 +1823,8 @@
 
   async function saveRename(sessionId, renameInputEl) {
     if (isRenameSaving) return;  // prevent double-submit
-    if (isProfileSwitching || isDeletingSession) return;
+    if (isProfileSwitching || isDeletingSession ||
+        isInteractionModeSwitching) return;
 
     var rawTitle = renameInputEl.value;
     if (!rawTitle.trim()) {
@@ -1705,7 +1894,8 @@
 
   async function sendMessage(text) {
     if (isSending || isInitializing || isCreatingSession ||
-        isProfileSwitching || isDeletingSession) return;
+        isProfileSwitching || isDeletingSession ||
+        isInteractionModeSwitching) return;
 
     // Auto-create session on first send
     if (currentSessionId === null) {
@@ -2006,6 +2196,245 @@
     }
   }
 
+  /* ---- Current-session interaction-mode switcher ------------------- */
+
+  function setInteractionModeStatus(sessionId, text, isError) {
+    if (isValidSessionIdKey(sessionId) === false) return;
+    interactionModeStatusBySession[sessionId] = {
+      text: typeof text === "string" ? text : "",
+      isError: isError === true,
+    };
+    renderCurrentInteractionModeStatus();
+  }
+
+  function clearInteractionModeStatus(sessionId) {
+    if (isValidSessionIdKey(sessionId) === false) return;
+    delete interactionModeStatusBySession[sessionId];
+    renderCurrentInteractionModeStatus();
+  }
+
+  function renderCurrentInteractionModeStatus() {
+    let text = "";
+    let isError = false;
+    if (currentSessionId !== null &&
+        interactionModeStatusBySession[currentSessionId] !== undefined) {
+      text = interactionModeStatusBySession[currentSessionId].text;
+      isError = interactionModeStatusBySession[currentSessionId].isError;
+    } else if (currentSessionId !== null &&
+               hasInteractionModeUncertain(
+                 interactionModeUncertainBySession, currentSessionId,
+               )) {
+      text = interactionModeUncertainText();
+      isError = true;
+    } else if (currentSessionId !== null) {
+      const authoritativeMode = currentSessionInteractionMode();
+      if (authoritativeMode !== null &&
+          currentInteractionModeDraft !== authoritativeMode) {
+        text = "Click Apply to switch to " +
+          interactionModeLabel(currentInteractionModeDraft) + ".";
+      } else if (authoritativeMode !== null) {
+        text = interactionModeHintText(authoritativeMode);
+      }
+    }
+    interactionModeStatusEl.textContent = text;
+    interactionModeStatusEl.className =
+      "interaction-mode-status" + (isError ? " error" : "");
+  }
+
+  function renderInteractionModeBar() {
+    if (currentSessionId === null) {
+      interactionModeBarEl.hidden = true;
+      renderCurrentInteractionModeStatus();
+      return;
+    }
+    interactionModeBarEl.hidden = false;
+    interactionModeSelectEl.replaceChildren();
+    for (let i = 0; i < VALID_INTERACTION_MODES.length; i++) {
+      const mode = VALID_INTERACTION_MODES[i];
+      const option = document.createElement("option");
+      option.value = mode;
+      option.textContent = interactionModeLabel(mode);
+      interactionModeSelectEl.appendChild(option);
+    }
+    if (currentInteractionModeDraft !== null) {
+      interactionModeSelectEl.value = currentInteractionModeDraft;
+    }
+    renderCurrentInteractionModeStatus();
+  }
+
+  function updateInteractionModeSessionCache(fresh) {
+    const cachePlan = planSessionCacheUpdate({
+      sessions: sessions,
+      requestedSessionId: fresh.id,
+      fresh: fresh,
+    });
+    if (cachePlan.kind === "replace") {
+      sessions = cachePlan.sessions;
+      renderSessionListOrError();
+    }
+  }
+
+  function applyInteractionModeOutcome(outcome, operation) {
+    const targetSessionId = operation.targetSessionId;
+
+    if (outcome.status === "not_found") {
+      removeSessionLocally(targetSessionId);
+      return;
+    }
+
+    if (outcome.session) {
+      updateInteractionModeSessionCache(outcome.session);
+    }
+
+    const visible = currentSessionId === targetSessionId;
+
+    if (outcome.status === "switched") {
+      delete interactionModeUncertainBySession[targetSessionId];
+      clearInteractionModeStatus(targetSessionId);
+      if (visible) {
+        currentInteractionModeDraft = outcome.session !== null &&
+          outcome.session !== undefined
+          ? outcome.session.interaction_mode
+          : operation.requestedMode;
+        renderInteractionModeBar();
+        syncCurrentSessionUI();
+      } else {
+        renderCurrentInteractionModeStatus();
+      }
+      return;
+    }
+
+    if (outcome.status === "not_changed") {
+      delete interactionModeUncertainBySession[targetSessionId];
+      if (visible) {
+        currentInteractionModeDraft = operation.requestedMode;
+        setInteractionModeStatus(
+          targetSessionId,
+          "Server still uses " + interactionModeLabel(operation.originalMode) +
+            ". Click Apply to try again.",
+          false,
+        );
+        renderInteractionModeBar();
+        syncCurrentSessionUI();
+      } else {
+        clearInteractionModeStatus(targetSessionId);
+      }
+      return;
+    }
+
+    if (outcome.status === "uncertain") {
+      delete interactionModeStatusBySession[targetSessionId];
+      interactionModeUncertainBySession[targetSessionId] = {
+        requestedMode: operation.requestedMode,
+        originalMode: operation.originalMode,
+      };
+      if (visible) {
+        currentInteractionModeDraft = operation.requestedMode;
+        renderInteractionModeBar();
+        syncCurrentSessionUI();
+      }
+      return;
+    }
+
+    // failed / invalid_request / defensive unknown outcome
+    delete interactionModeUncertainBySession[targetSessionId];
+    if (visible) {
+      currentInteractionModeDraft = operation.requestedMode;
+      setInteractionModeStatus(
+        targetSessionId,
+        outcome.message || "Interaction mode switch failed.",
+        true,
+      );
+      renderInteractionModeBar();
+      syncCurrentSessionUI();
+    }
+  }
+
+  async function applyInteractionModeSwitch() {
+    if (interactionModeController === null) {
+      if (currentSessionId !== null) {
+        setInteractionModeStatus(
+          currentSessionId,
+          interactionModeInitializationError ||
+            "Interaction mode switching is unavailable.",
+          true,
+        );
+      }
+      return;
+    }
+    if (isInitializing || isSending || isCreatingSession || isRenaming ||
+        isRenameSaving || isDeletingSession || isProfileSwitching ||
+        isInteractionModeSwitching) return;
+    if (currentSessionId === null) return;
+
+    const targetSessionId = currentSessionId;
+    const session = findSessionInList(targetSessionId);
+    if (session === null) return;
+
+    const uncertainRecord =
+      interactionModeUncertainBySession[targetSessionId];
+    let requestedMode;
+    let originalMode;
+
+    if (uncertainRecord !== undefined &&
+        uncertainRecord !== null) {
+      requestedMode = uncertainRecord.requestedMode;
+      originalMode = uncertainRecord.originalMode;
+    } else {
+      requestedMode = currentInteractionModeDraft;
+      originalMode = interactionModeAuthoritativeMode(session);
+      if (originalMode === null ||
+          requestedMode === originalMode) return;
+    }
+
+    if (isValidInteractionMode(requestedMode) === false ||
+        isValidInteractionMode(originalMode) === false) {
+      return;
+    }
+
+    const generation = ++interactionModeSwitchGeneration;
+    isInteractionModeSwitching = true;
+    updateControlStates();
+    setInteractionModeStatus(
+      targetSessionId,
+      uncertainRecord !== undefined && uncertainRecord !== null
+        ? "Checking server interaction mode..."
+        : "Switching interaction mode...",
+      false,
+    );
+
+    try {
+      const operation = {
+        targetSessionId: targetSessionId,
+        requestedMode: requestedMode,
+        originalMode: originalMode,
+      };
+      const outcome =
+        uncertainRecord !== undefined && uncertainRecord !== null
+          ? await interactionModeController.reconcile(operation)
+          : await interactionModeController.apply(operation);
+
+      if (generation !== interactionModeSwitchGeneration) return;
+      applyInteractionModeOutcome(outcome, operation);
+    } catch (_) {
+      if (generation !== interactionModeSwitchGeneration) return;
+      delete interactionModeStatusBySession[targetSessionId];
+      interactionModeUncertainBySession[targetSessionId] = {
+        requestedMode: requestedMode,
+        originalMode: originalMode,
+      };
+      if (currentSessionId === targetSessionId) {
+        renderInteractionModeBar();
+        syncCurrentSessionUI();
+      }
+    } finally {
+      if (generation === interactionModeSwitchGeneration) {
+        isInteractionModeSwitching = false;
+        updateControlStates();
+      }
+    }
+  }
+
   /* ---- Current-session model switcher ------------------------------ */
 
   /** Render the options and draft of the current-session control bar. */
@@ -2059,10 +2488,13 @@
         profileSwitchInitializationError !== null) return false;
     if (isProfileSwitching || isDeletingSession || isSending ||
         isCreatingSession || isRenaming || isRenameSaving ||
-        isInitializing) return false;
+        isInitializing || isInteractionModeSwitching) return false;
     if (registry().status !== "valid") return false;
     const session = currentSession();
     if (session === null) return false;
+    if (hasInteractionModeUncertain(
+      interactionModeUncertainBySession, session.id,
+    )) return false;
     return canApplySessionProfileWithUncertain({
       session: session,
       registry: registry(),
@@ -2119,6 +2551,25 @@
     }
   }
 
+  /** One-time, fail-closed interaction-mode controller initialization. */
+  function initializeInteractionModeSwitching() {
+    try {
+      interactionModeController = createInteractionModeSwitchController({
+        patchSwitch: switchInteractionModeRequest,
+        fetchSession: fetchOneSessionRaw,
+        validateSession: isValidSessionResponse,
+        validateTimestamp: isValidApiTimestamp,
+      });
+      interactionModeInitializationError = null;
+      return true;
+    } catch (_) {
+      interactionModeController = null;
+      interactionModeInitializationError =
+        "Interaction mode switching is unavailable.";
+      return false;
+    }
+  }
+
   /** Apply the current draft to the current session. */
   async function applyProfileSwitch() {
     if (switchController === null) {
@@ -2132,8 +2583,12 @@
       return;
     }
     if (isInitializing || isSending || isCreatingSession || isRenaming ||
-        isRenameSaving || isDeletingSession || isProfileSwitching) return;
+        isRenameSaving || isDeletingSession || isProfileSwitching ||
+        isInteractionModeSwitching) return;
     if (currentSessionId === null) return;
+    if (hasInteractionModeUncertain(
+      interactionModeUncertainBySession, currentSessionId,
+    )) return;
     if (!applyEnabled()) return;
 
     const targetSessionId = currentSessionId;
@@ -2406,6 +2861,18 @@
     applyProfileSwitch();
   });
 
+  // Interaction mode selector: records the draft only — Apply is the
+  // only action that sends a request.
+  interactionModeSelectEl.addEventListener("change", function () {
+    currentInteractionModeDraft = interactionModeSelectEl.value;
+    updateControlStates();
+    renderCurrentInteractionModeStatus();
+  });
+
+  applyInteractionModeBtn.addEventListener("click", function () {
+    applyInteractionModeSwitch();
+  });
+
   // Mobile sidebar toggle
   sidebarToggleEl.addEventListener("click", function () {
     toggleSidebar();
@@ -2461,6 +2928,7 @@
     // synchronously before the first await.  On failure the rest of
     // the app keeps working; only the model switch bar is disabled.
     initializeProfileSwitching();
+    initializeInteractionModeSwitching();
 
     // Load profiles and sessions in parallel — results are handled
     // independently so one failure never blocks the other.
@@ -2521,9 +2989,11 @@
         currentProfileDraftId = first !== null
           ? resolveSessionProfileDraft(first, registry())
           : null;
+        setInteractionModeDraftForSession(first);
         syncCurrentSessionUI();
         renderCurrentProfileBar();
         renderCurrentProfileStatus();
+        renderInteractionModeBar();
         await loadMessages(currentSessionId);
       } else {
         renderWelcome();
@@ -2536,6 +3006,7 @@
 
     renderCurrentProfileBar();
     renderCurrentProfileStatus();
+    renderInteractionModeBar();
 
     isInitializing = false;
     updateControlStates();

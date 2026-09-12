@@ -1,5 +1,18 @@
 "use strict";
 
+var _isValidInteractionMode = null;
+if (typeof module !== "undefined" && module.exports) {
+  _isValidInteractionMode = require("./interaction-mode.js").isValidInteractionMode;
+}
+if (_isValidInteractionMode === null && typeof isValidInteractionMode === "function") {
+  _isValidInteractionMode = isValidInteractionMode;
+}
+if (_isValidInteractionMode === null) {
+  _isValidInteractionMode = function (value) {
+    return value === "receive_teaching" || value === "corrective";
+  };
+}
+
 /**
  * Pure helpers for the LLM model selector.
  *
@@ -404,6 +417,10 @@ function isValidSessionResponse(value) {
       typeof value.llm_model_snapshot !== "string") {
     return false;
   }
+  if (value.interaction_mode !== undefined &&
+      _isValidInteractionMode(value.interaction_mode) === false) {
+    return false;
+  }
   return true;
 }
 
@@ -537,6 +554,19 @@ function isValidMessageResponse(value) {
   }
   if (!isValidApiTimestamp(value.created_at)) {
     return false;
+  }
+  if (value.interaction_mode_snapshot !== undefined &&
+      value.interaction_mode_snapshot !== null &&
+      _isValidInteractionMode(value.interaction_mode_snapshot) === false) {
+    return false;
+  }
+  if (value.prompt_version_snapshot !== undefined &&
+      value.prompt_version_snapshot !== null) {
+    var pv = value.prompt_version_snapshot;
+    if (typeof pv !== "string" || pv.trim() === "" ||
+        pv.length > 50) {
+      return false;
+    }
   }
   return analyzeMessageSnapshot(value).status !== "invalid";
 }

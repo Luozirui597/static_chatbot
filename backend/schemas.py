@@ -13,10 +13,16 @@ from pydantic import (
     model_validator,
 )
 
+from backend.interaction_modes import (
+    CORRECTIVE_MODE,
+    RECEIVE_TEACHING_MODE,
+)
 from backend.llm_profiles import SessionProfileStatus
 from backend.session_titles import normalize_title_whitespace
 
 MAX_MESSAGE_LENGTH = 4000
+
+InteractionMode = Literal[RECEIVE_TEACHING_MODE, CORRECTIVE_MODE]
 
 
 class ChatRequest(BaseModel):
@@ -59,6 +65,7 @@ class SessionResponse(BaseModel):
 
     id: int
     title: str
+    interaction_mode: InteractionMode = RECEIVE_TEACHING_MODE
     created_at: datetime
     updated_at: datetime
     llm_profile_id: str
@@ -77,6 +84,10 @@ class MessageResponse(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     created_at: datetime
+    interaction_mode_snapshot: InteractionMode | None = None
+    prompt_version_snapshot: Annotated[
+        str, Field(strict=True, min_length=1, max_length=50)
+    ] | None = None
     llm_profile_id_snapshot: Annotated[
         str, Field(strict=True, min_length=1, max_length=50)
     ] | None = None
@@ -221,3 +232,28 @@ class DeleteResponse(BaseModel):
     """Confirmation that a resource was deleted."""
 
     ok: bool
+
+
+class SwitchInteractionModeRequest(BaseModel):
+    """Request body for PATCH /api/sessions/{id}/interaction-mode."""
+
+    interaction_mode: InteractionMode
+
+
+class ModeSwitchEventResponse(BaseModel):
+    """Public representation of one interaction-mode transition."""
+
+    id: int
+    session_id: int
+    from_mode: InteractionMode
+    to_mode: InteractionMode
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SwitchInteractionModeResponse(BaseModel):
+    """Response for PATCH /api/sessions/{id}/interaction-mode."""
+
+    session: SessionResponse
+    switch_event: ModeSwitchEventResponse | None = None

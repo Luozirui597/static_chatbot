@@ -56,6 +56,7 @@
       <div class="chat-session-header" id="sessionHeader">
         <span class="session-title" id="sessionTitle"></span>
         <span class="session-model-badge" id="sessionModelBadge" hidden></span>
+        <span class="interaction-mode-badge" id="interactionModeBadge" hidden></span>
       </div>
 
       <div
@@ -66,6 +67,20 @@
         tabindex="-1"
         hidden
       ></div>
+
+      <div id="interactionModeBar" class="interaction-mode-bar" hidden>
+        <label for="interactionModeSelect">Interaction mode for this chat</label>
+        <div class="interaction-mode-row">
+          <select id="interactionModeSelect"></select>
+          <button id="applyInteractionModeBtn" type="button">Apply</button>
+        </div>
+        <div
+          class="interaction-mode-status"
+          id="interactionModeStatus"
+          role="status"
+          aria-live="polite"
+        ></div>
+      </div>
 
       <div id="currentProfileBar" class="current-profile-bar" hidden>
         <label for="currentProfileSelect">Model for this chat</label>
@@ -132,6 +147,7 @@
   <script src="/static/network-recovery.js?v=20260815-session-switch" defer></script>
   <script src="/static/clipboard.js?v=20260815-session-switch" defer></script>
   <script src="/static/copy-controller.js?v=20260815-session-switch" defer></script>
+  <script src="/static/interaction-mode.js?v=20260815-interaction-mode" defer></script>
   <script src="/static/model-selection.js?v=20260815-session-switch" defer></script>
   <script src="/static/session-profile-switch.js?v=20260815-session-switch" defer></script>
   <script src="/static/app.js?v=20260815-session-switch" defer></script>
