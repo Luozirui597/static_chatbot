@@ -3,11 +3,13 @@
 import copy
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
@@ -38,6 +40,7 @@ from backend.history_review_service import (
     HistoryReviewExecutionNotFound,
     HistoryReviewService,
 )
+from backend.interaction_modes import CORRECTIVE_MODE, RECEIVE_TEACHING_MODE
 from backend.llm_profiles import LLMProfile, LLMProfileRegistry
 from backend.models import (
     ChatSession,
@@ -47,6 +50,7 @@ from backend.models import (
     ModeSwitchEvent,
     utc_now,
 )
+from backend.schemas import ModeSwitchEventResponse
 
 FAKE_MODEL = "fake"
 LOCAL_MODEL = "local-model"
@@ -877,3 +881,234 @@ def test_error_response_does_not_expose_sensitive_fields(
     response = _post_review(api_harness, 1, 1)
 
     assert not (_all_keys(response.json()) & FORBIDDEN_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# Mode-switch event discovery API
+# ---------------------------------------------------------------------------
+
+
+def _insert_event(
+    harness: ApiHarness,
+    session_id: int,
+    *,
+    from_mode=RECEIVE_TEACHING_MODE,
+    to_mode=CORRECTIVE_MODE,
+    created_at=None,
+    history_through_message_id=1,
+    history_boundary_version=HISTORY_BOUNDARY_VERSION,
+    reviewable_user_message_count=1,
+) -> int:
+    with harness.session_factory() as db:
+        event = ModeSwitchEvent(
+            session_id=session_id,
+            from_mode=from_mode,
+            to_mode=to_mode,
+            history_through_message_id=history_through_message_id,
+            history_boundary_version=history_boundary_version,
+            reviewable_user_message_count=reviewable_user_message_count,
+        )
+        if created_at is not None:
+            event.created_at = created_at
+        db.add(event)
+        db.commit()
+        return event.id
+
+
+def _get_events(harness: ApiHarness, session_id: int) -> list[dict]:
+    response = harness.client.get(
+        f"/api/sessions/{session_id}/mode-switch-events"
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_mode_switch_events_missing_session_returns_structured_404(
+    api_harness,
+):
+    response = api_harness.client.get(
+        "/api/sessions/999999/mode-switch-events"
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == (
+        "history_review_session_not_found"
+    )
+
+
+def test_mode_switch_events_empty_session_returns_empty_list(api_harness):
+    session_id = _create_session(api_harness.client)
+    assert _get_events(api_harness, session_id) == []
+
+
+def test_mode_switch_events_order_created_at_desc_then_id_desc(
+    api_harness,
+):
+    session_id = _create_session(api_harness.client)
+    first = _insert_event(
+        api_harness,
+        session_id,
+        created_at=datetime(2026, 1, 1, 12, 0, 0),
+        history_through_message_id=1,
+        reviewable_user_message_count=1,
+    )
+    second = _insert_event(
+        api_harness,
+        session_id,
+        from_mode=CORRECTIVE_MODE,
+        to_mode=RECEIVE_TEACHING_MODE,
+        created_at=datetime(2026, 1, 3, 12, 0, 0),
+        history_through_message_id=2,
+        reviewable_user_message_count=None,
+    )
+    third = _insert_event(
+        api_harness,
+        session_id,
+        created_at=datetime(2026, 1, 3, 12, 0, 0),
+        history_through_message_id=3,
+        reviewable_user_message_count=2,
+    )
+
+    rows = _get_events(api_harness, session_id)
+
+    assert [row["id"] for row in rows] == [third, second, first]
+    assert [row["review_supported"] for row in rows] == [True, False, True]
+
+
+def test_mode_switch_events_review_supported_true(api_harness):
+    session_id = _create_session(api_harness.client)
+    event_id = _insert_event(api_harness, session_id)
+
+    rows = _get_events(api_harness, session_id)
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == event_id
+    assert rows[0]["review_supported"] is True
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "from_mode": CORRECTIVE_MODE,
+            "to_mode": RECEIVE_TEACHING_MODE,
+            "reviewable_user_message_count": None,
+        },
+        {"history_boundary_version": None},
+        {"history_boundary_version": "history-boundary-v0"},
+        {"history_through_message_id": None},
+        {"reviewable_user_message_count": None},
+        {"reviewable_user_message_count": 0},
+    ],
+)
+def test_mode_switch_events_review_supported_false_variants(
+    api_harness, overrides,
+):
+    session_id = _create_session(api_harness.client)
+    event_id = _insert_event(api_harness, session_id, **overrides)
+
+    rows = _get_events(api_harness, session_id)
+
+    event = next(row for row in rows if row["id"] == event_id)
+    assert event["review_supported"] is False
+
+
+def test_patch_switch_event_includes_review_supported(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    assert event["review_supported"] is True
+
+    response = api_harness.client.patch(
+        f"/api/sessions/{session_id}/interaction-mode",
+        json={"interaction_mode": RECEIVE_TEACHING_MODE},
+    )
+    assert response.status_code == 200
+    back_event = response.json()["switch_event"]
+    assert back_event is not None
+    assert back_event["review_supported"] is False
+
+
+def test_same_mode_patch_has_no_event_and_does_not_add_row(api_harness):
+    session_id = _create_session(api_harness.client)
+    before = _get_events(api_harness, session_id)
+
+    response = api_harness.client.patch(
+        f"/api/sessions/{session_id}/interaction-mode",
+        json={"interaction_mode": RECEIVE_TEACHING_MODE},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["switch_event"] is None
+    assert _get_events(api_harness, session_id) == before == []
+
+
+def test_mode_switch_events_do_not_leak_across_sessions(api_harness):
+    session_a = _create_session(api_harness.client)
+    session_b = _create_session(api_harness.client)
+    event_a = _insert_event(api_harness, session_a)
+    event_b = _insert_event(api_harness, session_b)
+
+    rows_a = _get_events(api_harness, session_a)
+    rows_b = _get_events(api_harness, session_b)
+
+    assert [row["id"] for row in rows_a] == [event_a]
+    assert [row["id"] for row in rows_b] == [event_b]
+    assert all(row["session_id"] == session_a for row in rows_a)
+    assert all(row["session_id"] == session_b for row in rows_b)
+
+
+def test_mode_switch_events_do_not_expose_review_or_raw_fields(api_harness):
+    session_id = _create_session(api_harness.client)
+    _insert_event(api_harness, session_id)
+
+    rows = _get_events(api_harness, session_id)
+    keys = _all_keys(rows)
+
+    assert not (keys & {"review_id", "review_status", "raw_output", "findings"})
+
+
+def test_mode_switch_events_openapi_contract(api_harness):
+    schema = api_harness.client.get("/openapi.json").json()
+    operation = schema["paths"][
+        "/api/sessions/{session_id}/mode-switch-events"
+    ]["get"]
+    responses = operation["responses"]
+
+    assert {"200", "404", "422", "500"}.issubset(responses)
+    assert responses["200"]["content"]["application/json"]["schema"][
+        "items"
+    ] == {"$ref": "#/components/schemas/ModeSwitchEventResponse"}
+    assert responses["404"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/HistoryReviewErrorResponse"
+    }
+    assert responses["500"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/HistoryReviewErrorResponse"
+    }
+
+    component = schema["components"]["schemas"]["ModeSwitchEventResponse"]
+    assert "review_supported" in component["required"]
+
+
+def test_mode_switch_event_response_requires_explicit_boolean():
+    with pytest.raises(ValidationError):
+        ModeSwitchEventResponse(
+            id=1,
+            session_id=1,
+            from_mode=RECEIVE_TEACHING_MODE,
+            to_mode=CORRECTIVE_MODE,
+            created_at=datetime(2026, 1, 1, 12, 0, 0),
+            history_through_message_id=1,
+            history_boundary_version=HISTORY_BOUNDARY_VERSION,
+            reviewable_user_message_count=1,
+        )
+
+    with pytest.raises(ValidationError):
+        ModeSwitchEventResponse(
+            id=1,
+            session_id=1,
+            from_mode=RECEIVE_TEACHING_MODE,
+            to_mode=CORRECTIVE_MODE,
+            created_at=datetime(2026, 1, 1, 12, 0, 0),
+            history_through_message_id=1,
+            history_boundary_version=HISTORY_BOUNDARY_VERSION,
+            reviewable_user_message_count=1,
+            review_supported=1,
+        )

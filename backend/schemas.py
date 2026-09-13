@@ -258,6 +258,7 @@ class ModeSwitchEventResponse(BaseModel):
     reviewable_user_message_count: int | None = Field(
         default=None, ge=0, strict=True
     )
+    review_supported: bool = Field(strict=True)
 
     model_config = ConfigDict(from_attributes=True)
 

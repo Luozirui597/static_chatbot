@@ -32,18 +32,21 @@ from backend.exceptions import (
     UnknownLLMProfileError,
 )
 from backend.llm_client import create_llm_client
+from backend.history_boundary import HISTORY_BOUNDARY_VERSION
 from backend.history_review_selection import HistoryReviewSourceMessageTooLarge
 from backend.history_review_service import (
     HistoryReviewExecutionConflict,
     HistoryReviewExecutionNotFound,
     HistoryReviewService,
 )
+from backend.interaction_modes import CORRECTIVE_MODE, RECEIVE_TEACHING_MODE
 from backend.llm_profiles import LLMProfile, LLMProfileRegistry
 from backend.models import (
     ChatSession,
     HistoryReview,
     HistoryReviewFinding,
     Message,
+    ModeSwitchEvent,
 )
 from backend.schemas import (
     ChatRequest,
@@ -60,6 +63,7 @@ from backend.schemas import (
     HistoryReviewSummaryResponse,
     LLMProfilePublic,
     MessageResponse,
+    ModeSwitchEventResponse,
     RemoteHistoryAckRequiredDetail,
     RenameSessionRequest,
     ReviewIdPath,
@@ -157,6 +161,39 @@ def _build_production_registry() -> LLMProfileRegistry:
         ))
 
     return LLMProfileRegistry(profiles)
+
+
+def _is_strict_positive_int(value: object) -> bool:
+    """Whether *value* is a Python int strictly greater than zero."""
+    return type(value) is int and value > 0
+
+
+def _build_mode_switch_event_response(
+    event: ModeSwitchEvent,
+) -> ModeSwitchEventResponse:
+    """Build one public event response with its derived support flag.
+
+    ``review_supported`` describes only this event's immutable boundary
+    metadata.  It does not guarantee that a review can be executed.
+    """
+    review_supported = (
+        event.from_mode == RECEIVE_TEACHING_MODE
+        and event.to_mode == CORRECTIVE_MODE
+        and event.history_boundary_version == HISTORY_BOUNDARY_VERSION
+        and _is_strict_positive_int(event.history_through_message_id)
+        and _is_strict_positive_int(event.reviewable_user_message_count)
+    )
+    return ModeSwitchEventResponse(
+        id=event.id,
+        session_id=event.session_id,
+        from_mode=event.from_mode,
+        to_mode=event.to_mode,
+        created_at=event.created_at,
+        history_through_message_id=event.history_through_message_id,
+        history_boundary_version=event.history_boundary_version,
+        reviewable_user_message_count=event.reviewable_user_message_count,
+        review_supported=review_supported,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +457,11 @@ async def switch_interaction_mode(
 
     return SwitchInteractionModeResponse(
         session=chat_service.build_session_response(session),
-        switch_event=event,
+        switch_event=(
+            _build_mode_switch_event_response(event)
+            if event is not None
+            else None
+        ),
     )
 
 
@@ -860,6 +901,50 @@ def get_history_review(
     """Return one history review scoped to its session."""
     try:
         return _load_history_review_detail(db, session_id, review_id)
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        raise _history_review_internal_error(db) from None
+    except Exception:
+        raise _history_review_internal_error(db) from None
+
+
+@app.get(
+    "/api/sessions/{session_id}/mode-switch-events",
+    response_model=list[ModeSwitchEventResponse],
+    responses={
+        404: {
+            "model": HistoryReviewErrorResponse,
+            "description": "Session not found.",
+        },
+        500: {
+            "model": HistoryReviewErrorResponse,
+            "description": "Internal history review error.",
+        },
+    },
+)
+def list_mode_switch_events(
+    session_id: SessionIdPath,
+    db: Session = Depends(get_db),
+):
+    """Return all mode-switch events for one session, newest first."""
+    try:
+        if db.get(ChatSession, session_id) is None:
+            raise _history_review_error(
+                404, "history_review_session_not_found"
+            )
+        events = db.execute(
+            select(ModeSwitchEvent)
+            .where(ModeSwitchEvent.session_id == session_id)
+            .order_by(
+                ModeSwitchEvent.created_at.desc(),
+                ModeSwitchEvent.id.desc(),
+            )
+        ).scalars().all()
+        return [
+            _build_mode_switch_event_response(event)
+            for event in events
+        ]
     except HTTPException:
         raise
     except SQLAlchemyError:
