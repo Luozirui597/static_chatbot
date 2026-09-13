@@ -49,32 +49,119 @@ function interactionModeBadgeText(mode) {
 function interactionModeHintText(mode) {
   if (mode === CORRECTIVE_MODE) {
     return "Corrective applies to future messages only. " +
-      "History review is not available in this version.";
+      "If prior teaching history is available, you can start a " +
+      "separate History Review from the review panel.";
   }
   return "The agent receives your teaching without proactively " +
     "correcting ordinary factual mistakes.";
 }
 
 
+var MODE_SWITCH_EVENT_FIELDS = [
+  "id",
+  "session_id",
+  "from_mode",
+  "to_mode",
+  "created_at",
+  "history_through_message_id",
+  "history_boundary_version",
+  "reviewable_user_message_count",
+  "review_supported",
+];
+
+function _hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function _isPositiveSafeInteger(value) {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) && value > 0;
+}
+
+function _isNonNegativeSafeInteger(value) {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) && value >= 0;
+}
+
+function _isNullablePositiveSafeInteger(value) {
+  return value === null || _isPositiveSafeInteger(value);
+}
+
+function _isNullableNonNegativeSafeInteger(value) {
+  return value === null || _isNonNegativeSafeInteger(value);
+}
+
 function isValidModeSwitchEvent(value, validateTimestamp) {
-  if (value === null || typeof value !== "object" ||
-      Array.isArray(value)) {
+  try {
+    if (value === null || typeof value !== "object" ||
+        Array.isArray(value)) {
+      return false;
+    }
+    if (typeof validateTimestamp !== "function") {
+      return false;
+    }
+    for (var i = 0; i < MODE_SWITCH_EVENT_FIELDS.length; i++) {
+      if (_hasOwn(value, MODE_SWITCH_EVENT_FIELDS[i]) === false) {
+        return false;
+      }
+    }
+
+    var id = value.id;
+    var sessionId = value.session_id;
+    var fromMode = value.from_mode;
+    var toMode = value.to_mode;
+    var createdAt = value.created_at;
+    var throughId = value.history_through_message_id;
+    var boundaryVersion = value.history_boundary_version;
+    var reviewableCount = value.reviewable_user_message_count;
+    var reviewSupported = value.review_supported;
+
+    if (_isPositiveSafeInteger(id) === false) return false;
+    if (_isPositiveSafeInteger(sessionId) === false) return false;
+    if (isValidInteractionMode(fromMode) === false) return false;
+    if (isValidInteractionMode(toMode) === false) return false;
+    if (validateTimestamp(createdAt) === false) return false;
+    if (_isNullablePositiveSafeInteger(throughId) === false) return false;
+    if (boundaryVersion !== null) {
+      if (typeof boundaryVersion !== "string" ||
+          boundaryVersion.length < 1 ||
+          boundaryVersion.length > 50) {
+        return false;
+      }
+    }
+    if (_isNullableNonNegativeSafeInteger(reviewableCount) === false) {
+      return false;
+    }
+    if (typeof reviewSupported !== "boolean") return false;
+
+    if (reviewSupported === true) {
+      if (fromMode !== RECEIVE_TEACHING_MODE) return false;
+      if (toMode !== CORRECTIVE_MODE) return false;
+      if (_isPositiveSafeInteger(throughId) === false) return false;
+      if (typeof boundaryVersion !== "string" ||
+          boundaryVersion.length < 1) {
+        return false;
+      }
+      if (_isPositiveSafeInteger(reviewableCount) === false) return false;
+    }
+    return true;
+  } catch (_) {
     return false;
   }
-  if (Number.isSafeInteger(value.id) === false || value.id < 1) {
-    return false;
-  }
-  if (Number.isSafeInteger(value.session_id) === false ||
-      value.session_id < 1) {
-    return false;
-  }
-  if (isValidInteractionMode(value.from_mode) === false) return false;
-  if (isValidInteractionMode(value.to_mode) === false) return false;
-  if (typeof validateTimestamp !== "function" ||
-      validateTimestamp(value.created_at) === false) {
-    return false;
-  }
-  return true;
+}
+
+function copyModeSwitchEvent(value) {
+  return {
+    id: value.id,
+    session_id: value.session_id,
+    from_mode: value.from_mode,
+    to_mode: value.to_mode,
+    created_at: value.created_at,
+    history_through_message_id: value.history_through_message_id,
+    history_boundary_version: value.history_boundary_version,
+    reviewable_user_message_count: value.reviewable_user_message_count,
+    review_supported: value.review_supported,
+  };
 }
 
 
@@ -221,30 +308,60 @@ function createInteractionModeSwitchController(dependencies) {
     } catch (err) {
       var failure = _normaliseError(err);
       if (failure.status === 404) {
-        return {status: "not_found", message: failure.message};
+        return {
+          status: "not_found",
+          message: failure.message,
+          switchEvent: null,
+        };
       }
-      return {status: "uncertain", message: interactionModeUncertainText()};
+      return {
+        status: "uncertain",
+        message: interactionModeUncertainText(),
+        switchEvent: null,
+      };
     }
     if (validateSession(raw) === false || raw === null ||
         typeof raw !== "object" || raw.id !== operation.targetSessionId) {
-      return {status: "uncertain", message: interactionModeUncertainText()};
+      return {
+        status: "uncertain",
+        message: interactionModeUncertainText(),
+        switchEvent: null,
+      };
     }
     if (Object.prototype.hasOwnProperty.call(
       raw, "interaction_mode",
     ) === false) {
-      return {status: "uncertain", message: interactionModeUncertainText()};
+      return {
+        status: "uncertain",
+        message: interactionModeUncertainText(),
+        switchEvent: null,
+      };
     }
     if (typeof raw.interaction_mode === "string" &&
         isValidInteractionMode(raw.interaction_mode)) {
       var freshMode = raw.interaction_mode;
       if (freshMode === operation.requestedMode) {
-        return {status: "switched", session: raw, reconciled: true};
+        return {
+          status: "switched",
+          session: raw,
+          reconciled: true,
+          switchEvent: null,
+        };
       }
       if (freshMode === operation.originalMode) {
-        return {status: "not_changed", session: raw, reconciled: true};
+        return {
+          status: "not_changed",
+          session: raw,
+          reconciled: true,
+          switchEvent: null,
+        };
       }
     }
-    return {status: "uncertain", message: interactionModeUncertainText()};
+    return {
+      status: "uncertain",
+      message: interactionModeUncertainText(),
+      switchEvent: null,
+    };
   }
 
   async function apply(operation) {
@@ -255,7 +372,12 @@ function createInteractionModeSwitchController(dependencies) {
       };
     }
     if (operation.requestedMode === operation.originalMode) {
-      return {status: "not_changed", session: null, reconciled: false};
+      return {
+        status: "not_changed",
+        session: null,
+        reconciled: false,
+        switchEvent: null,
+      };
     }
 
     var response;
@@ -279,6 +401,7 @@ function createInteractionModeSwitchController(dependencies) {
         status: "switched",
         session: response.session,
         reconciled: false,
+        switchEvent: copyModeSwitchEvent(response.switch_event),
       };
     }
     return _reconcile(operation);
@@ -311,6 +434,7 @@ if (typeof module !== "undefined" && module.exports) {
     interactionModeBadgeText: interactionModeBadgeText,
     interactionModeHintText: interactionModeHintText,
     isValidModeSwitchEvent: isValidModeSwitchEvent,
+    copyModeSwitchEvent: copyModeSwitchEvent,
     isValidSwitchInteractionModeResponse:
       isValidSwitchInteractionModeResponse,
     interactionModeDraftForSession: interactionModeDraftForSession,

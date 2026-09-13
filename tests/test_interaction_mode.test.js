@@ -58,6 +58,10 @@ function makeSwitchEvent(overrides) {
     from_mode: RECEIVE_TEACHING_MODE,
     to_mode: CORRECTIVE_MODE,
     created_at: "2026-08-06T12:00:00",
+    history_through_message_id: 1,
+    history_boundary_version: "history-boundary-v1",
+    reviewable_user_message_count: 1,
+    review_supported: true,
   };
   if (overrides) Object.assign(event, overrides);
   return event;
@@ -114,18 +118,111 @@ describe("labels and hints", function () {
     assert.equal(interactionModeBadgeText(undefined), "");
   });
 
-  it("corrective hint says history review is unavailable", function () {
-    assert.match(interactionModeHintText(CORRECTIVE_MODE), /future messages/);
-    assert.doesNotMatch(
-      interactionModeHintText(CORRECTIVE_MODE), /reviewed/,
-    );
+  it("corrective hint describes optional separate history review", function () {
+    const hint = interactionModeHintText(CORRECTIVE_MODE);
+    assert.match(hint, /future messages/);
+    assert.match(hint, /History Review/);
+    assert.doesNotMatch(hint, /not available/i);
+    assert.doesNotMatch(hint, /automatically/i);
   });
 });
 
 describe("mode switch event validation", function () {
-  it("accepts a valid event", function () {
+  it("accepts a complete valid event", function () {
     assert.equal(
       isValidModeSwitchEvent(makeSwitchEvent(), isValidApiTimestamp), true,
+    );
+  });
+
+  it("requires every response field as an own property", function () {
+    const inherited = Object.create(makeSwitchEvent());
+    assert.equal(
+      isValidModeSwitchEvent(inherited, isValidApiTimestamp), false,
+    );
+
+    const missing = makeSwitchEvent();
+    delete missing.review_supported;
+    assert.equal(
+      isValidModeSwitchEvent(missing, isValidApiTimestamp), false,
+    );
+
+    const inheritedField = makeSwitchEvent();
+    delete inheritedField.review_supported;
+    Object.setPrototypeOf(inheritedField, { review_supported: true });
+    assert.equal(
+      isValidModeSwitchEvent(inheritedField, isValidApiTimestamp), false,
+    );
+  });
+
+  it("validates optional field types strictly", function () {
+    assert.equal(
+      isValidModeSwitchEvent(
+        makeSwitchEvent({ history_through_message_id: 0 }),
+        isValidApiTimestamp,
+      ),
+      false,
+    );
+    assert.equal(
+      isValidModeSwitchEvent(
+        makeSwitchEvent({ history_boundary_version: "" }),
+        isValidApiTimestamp,
+      ),
+      false,
+    );
+    assert.equal(
+      isValidModeSwitchEvent(
+        makeSwitchEvent({ reviewable_user_message_count: -1 }),
+        isValidApiTimestamp,
+      ),
+      false,
+    );
+    assert.equal(
+      isValidModeSwitchEvent(
+        makeSwitchEvent({ review_supported: 1 }),
+        isValidApiTimestamp,
+      ),
+      false,
+    );
+    assert.equal(
+      isValidModeSwitchEvent(
+        makeSwitchEvent({ review_supported: false }),
+        isValidApiTimestamp,
+      ),
+      true,
+    );
+  });
+
+  it("enforces consistency when review_supported is true", function () {
+    assert.equal(
+      isValidModeSwitchEvent(
+        makeSwitchEvent({
+          from_mode: CORRECTIVE_MODE,
+          review_supported: true,
+        }),
+        isValidApiTimestamp,
+      ),
+      false,
+    );
+    assert.equal(
+      isValidModeSwitchEvent(
+        makeSwitchEvent({ history_through_message_id: null }),
+        isValidApiTimestamp,
+      ),
+      false,
+    );
+    assert.equal(
+      isValidModeSwitchEvent(
+        makeSwitchEvent({ reviewable_user_message_count: 0 }),
+        isValidApiTimestamp,
+      ),
+      false,
+    );
+    assert.equal(
+      isValidModeSwitchEvent(
+        makeSwitchEvent({ history_boundary_version: null }),
+        isValidApiTimestamp,
+      ),
+      false,
     );
   });
 
@@ -363,6 +460,45 @@ function makeController(overrides) {
 }
 
 describe("interaction-mode reconciliation controller", function () {
+  it("direct PATCH carries a copied validated switch event", async function () {
+    const switchEvent = makeSwitchEvent();
+    const controller = makeController({
+      patchSwitch: async function () {
+        return {
+          session: makeSession({ interaction_mode: CORRECTIVE_MODE }),
+          switch_event: switchEvent,
+        };
+      },
+    });
+    const outcome = await controller.apply({
+      targetSessionId: 1,
+      requestedMode: CORRECTIVE_MODE,
+      originalMode: RECEIVE_TEACHING_MODE,
+    });
+
+    assert.equal(outcome.status, "switched");
+    assert.equal(outcome.reconciled, false);
+    assert.deepEqual(outcome.switchEvent, switchEvent);
+    assert.notEqual(outcome.switchEvent, switchEvent);
+  });
+
+  it("reconciled switch has no event", async function () {
+    const controller = makeController({
+      patchSwitch: async function () {
+        throw { failureKind: "network", status: 0 };
+      },
+    });
+    const outcome = await controller.apply({
+      targetSessionId: 1,
+      requestedMode: CORRECTIVE_MODE,
+      originalMode: RECEIVE_TEACHING_MODE,
+    });
+
+    assert.equal(outcome.status, "switched");
+    assert.equal(outcome.reconciled, true);
+    assert.equal(outcome.switchEvent, null);
+  });
+
   it("PATCH response lost, GET confirms requested mode", async function () {
     const controller = makeController({
       patchSwitch: async function () {
@@ -489,6 +625,7 @@ describe("interaction-mode reconciliation controller", function () {
     });
     assert.equal(patchCalls, 0);
     assert.equal(outcome.status, "not_changed");
+    assert.equal(outcome.switchEvent, null);
   });
 
   it("reconcile can be used as the Apply recheck convergence path", async function () {
