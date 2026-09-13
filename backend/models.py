@@ -10,9 +10,11 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import (
@@ -144,6 +146,9 @@ class Message(Base):
             "('receive_teaching', 'corrective')",
             name="ck_messages_interaction_mode_snapshot",
         ),
+        UniqueConstraint(
+            "id", "session_id", name="uq_messages_id_session",
+        ),
     )
 
     id: Mapped[int] = mapped_column(
@@ -233,6 +238,9 @@ class ModeSwitchEvent(Base):
             "reviewable_user_message_count >= 0",
             name="ck_mode_switch_events_reviewable_count",
         ),
+        UniqueConstraint(
+            "id", "session_id", name="uq_mode_switch_events_id_session",
+        ),
     )
 
     id: Mapped[int] = mapped_column(
@@ -264,3 +272,306 @@ class ModeSwitchEvent(Base):
 
     def __repr__(self) -> str:
         return "<ModeSwitchEvent session_id=" + str(self.session_id) + ">"
+
+
+# ---------------------------------------------------------------------------
+# HistoryReview — persisted history-review scope and reviewer snapshot
+# ---------------------------------------------------------------------------
+
+
+class HistoryReview(Base):
+    __tablename__ = "history_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "mode_switch_event_id",
+            name="uq_history_reviews_session_event",
+        ),
+        UniqueConstraint(
+            "id", "session_id", name="uq_history_reviews_id_session",
+        ),
+        ForeignKeyConstraint(
+            ["mode_switch_event_id", "session_id"],
+            ["mode_switch_events.id", "mode_switch_events.session_id"],
+            ondelete="CASCADE",
+            name="fk_history_reviews_event_session",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed')",
+            name="ck_history_reviews_status",
+        ),
+        CheckConstraint(
+            "lower_bound_kind IN ('session_start', 'corrective_switch')",
+            name="ck_history_reviews_lower_bound_kind",
+        ),
+        CheckConstraint(
+            "reviewer_llm_profile_kind_snapshot IN "
+            "('fake', 'api', 'local')",
+            name="ck_history_reviews_reviewer_kind",
+        ),
+        CheckConstraint(
+            "eligible_message_count >= 1",
+            name="ck_history_reviews_eligible_count",
+        ),
+        CheckConstraint(
+            "source_message_count >= 1",
+            name="ck_history_reviews_source_count",
+        ),
+        CheckConstraint(
+            "eligible_message_count >= source_message_count",
+            name="ck_history_reviews_count_order",
+        ),
+        CheckConstraint(
+            "eligible_char_count >= 0",
+            name="ck_history_reviews_eligible_chars",
+        ),
+        CheckConstraint(
+            "source_char_count >= 0",
+            name="ck_history_reviews_source_chars",
+        ),
+        CheckConstraint(
+            "eligible_char_count >= source_char_count",
+            name="ck_history_reviews_char_order",
+        ),
+        CheckConstraint(
+            "attempt_count >= 1",
+            name="ck_history_reviews_attempt_count",
+        ),
+        CheckConstraint(
+            "remote_history_ack_message_count IS NULL "
+            "OR remote_history_ack_message_count >= 0",
+            name="ck_history_reviews_ack_count",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    session_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    mode_switch_event_id: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    lower_bound_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    lower_bound_message_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+    upper_bound_message_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+    eligible_from_message_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+    eligible_through_message_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+    eligible_message_count: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    eligible_char_count: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    source_from_message_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+    source_through_message_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+    source_message_count: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    source_char_count: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    truncated: Mapped[bool] = mapped_column(
+        Boolean(create_constraint=True), nullable=False,
+        default=False, server_default="0",
+    )
+    reviewer_llm_profile_id_snapshot: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )
+    reviewer_llm_profile_kind_snapshot: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )
+    reviewer_llm_model_snapshot: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    prompt_version_snapshot: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )
+    budget_version_snapshot: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )
+    selection_policy_version: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )
+    summary: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
+    coverage_note: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
+    raw_output: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
+    raw_output_truncated: Mapped[bool] = mapped_column(
+        Boolean(create_constraint=True), nullable=False,
+        default=False, server_default="0",
+    )
+    error_code: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, default=None
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1",
+    )
+    remote_history_acknowledged: Mapped[bool] = mapped_column(
+        Boolean(create_constraint=True), nullable=False,
+        default=False, server_default="0",
+    )
+    remote_history_acknowledged_at: Mapped[datetime | None] = (
+        mapped_column(DateTime, nullable=True, default=None)
+    )
+    remote_history_ack_message_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        default=utc_now, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return (
+            "<HistoryReview id=" + str(self.id)
+            + " session_id=" + str(self.session_id) + ">"
+        )
+
+
+# ---------------------------------------------------------------------------
+# HistoryReviewSource — frozen source messages selected for a review
+# ---------------------------------------------------------------------------
+
+
+class HistoryReviewSource(Base):
+    __tablename__ = "history_review_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "review_id", "message_id",
+            name="uq_history_review_sources_review_message",
+        ),
+        UniqueConstraint(
+            "review_id", "seq",
+            name="uq_history_review_sources_review_seq",
+        ),
+        ForeignKeyConstraint(
+            ["review_id", "session_id"],
+            ["history_reviews.id", "history_reviews.session_id"],
+            ondelete="CASCADE",
+            name="fk_history_review_sources_review_session",
+        ),
+        ForeignKeyConstraint(
+            ["message_id", "session_id"],
+            ["messages.id", "messages.session_id"],
+            ondelete="CASCADE",
+            name="fk_history_review_sources_message_session",
+        ),
+        CheckConstraint("seq >= 1", name="ck_history_review_sources_seq"),
+        CheckConstraint(
+            "content_char_count >= 0",
+            name="ck_history_review_sources_char_count",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    review_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    session_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    message_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_char_count: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        default=utc_now, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return (
+            "<HistoryReviewSource review_id=" + str(self.review_id)
+            + " message_id=" + str(self.message_id) + ">"
+        )
+
+
+# ---------------------------------------------------------------------------
+# HistoryReviewFinding — one model finding tied to a persisted source
+# ---------------------------------------------------------------------------
+
+
+class HistoryReviewFinding(Base):
+    __tablename__ = "history_review_findings"
+    __table_args__ = (
+        UniqueConstraint(
+            "review_id", "seq",
+            name="uq_history_review_findings_review_seq",
+        ),
+        ForeignKeyConstraint(
+            ["review_id", "source_message_id"],
+            ["history_review_sources.review_id",
+             "history_review_sources.message_id"],
+            ondelete="CASCADE",
+            name="fk_history_review_findings_review_source",
+        ),
+        CheckConstraint(
+            "seq >= 1", name="ck_history_review_findings_seq",
+        ),
+        CheckConstraint(
+            "verdict IN ('correct', 'incorrect', 'uncertain', "
+            "'not_a_claim')",
+            name="ck_history_review_findings_verdict",
+        ),
+        CheckConstraint(
+            "length(trim(claim_text, "
+            "char(9) || char(10) || char(13) || char(32))) > 0",
+            name="ck_history_review_findings_claim_not_blank",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    review_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(20), nullable=False)
+    claim_text: Mapped[str] = mapped_column(Text, nullable=False)
+    correction_text: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
+    explanation_text: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
+    source_message_id: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        default=utc_now, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return (
+            "<HistoryReviewFinding review_id=" + str(self.review_id)
+            + " seq=" + str(self.seq) + ">"
+        )
