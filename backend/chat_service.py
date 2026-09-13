@@ -22,13 +22,14 @@ from backend.llm_profiles import (
     LLMProfileRegistry,
     SessionProfileStatus,
 )
-from backend.models import ChatSession, Message, ModeSwitchEvent, utc_now
-from backend.session_titles import derive_auto_title
+from backend.history_boundary import capture_history_boundary
 from backend.interaction_modes import (
     get_prompt_version_for_mode,
     get_system_prompt_for_mode,
     is_valid_interaction_mode,
 )
+from backend.models import ChatSession, Message, ModeSwitchEvent, utc_now
+from backend.session_titles import derive_auto_title
 from backend.system_prompt import SYSTEM_PROMPT
 
 # ---------------------------------------------------------------------------
@@ -496,31 +497,51 @@ class ChatService:
             raise ValueError("Unknown interaction mode")
 
         async with self._lock_registry.session_lock(session_id):
-            chat_session = db.get(ChatSession, session_id)
-            if chat_session is None:
-                raise SessionNotFoundError(session_id)
-
-            if chat_session.interaction_mode == interaction_mode:
-                return chat_session, None
-
-            event = ModeSwitchEvent(
-                session_id=chat_session.id,
-                from_mode=chat_session.interaction_mode,
-                to_mode=interaction_mode,
-            )
-            chat_session.interaction_mode = interaction_mode
-            chat_session.updated_at = utc_now()
-            db.add(event)
             try:
+                session_stmt = (
+                    select(ChatSession)
+                    .where(ChatSession.id == session_id)
+                    .execution_options(populate_existing=True)
+                )
+                chat_session = db.execute(session_stmt).scalars().first()
+                if chat_session is None:
+                    raise SessionNotFoundError(session_id)
+
+                if chat_session.interaction_mode == interaction_mode:
+                    return chat_session, None
+
+                boundary = capture_history_boundary(
+                    db=db,
+                    session_id=chat_session.id,
+                    from_mode=chat_session.interaction_mode,
+                    to_mode=interaction_mode,
+                )
+                event = ModeSwitchEvent(
+                    session_id=chat_session.id,
+                    from_mode=chat_session.interaction_mode,
+                    to_mode=interaction_mode,
+                    history_through_message_id=(
+                        boundary.history_through_message_id
+                    ),
+                    history_boundary_version=(
+                        boundary.history_boundary_version
+                    ),
+                    reviewable_user_message_count=(
+                        boundary.reviewable_user_message_count
+                    ),
+                )
+                chat_session.interaction_mode = interaction_mode
+                chat_session.updated_at = utc_now()
+                db.add(event)
                 db.flush()
                 db.refresh(chat_session)
-                db.commit()
                 db.refresh(event)
+                db.commit()
+
+                return chat_session, event
             except Exception:
                 db.rollback()
                 raise
-
-            return chat_session, event
 
     async def delete_session(self, session_id: int, db: Session) -> None:
         """Delete a session and all of its messages.

@@ -248,6 +248,15 @@ class ModeSwitchEventResponse(BaseModel):
     from_mode: InteractionMode
     to_mode: InteractionMode
     created_at: datetime
+    history_through_message_id: int | None = Field(
+        default=None, gt=0, strict=True
+    )
+    history_boundary_version: Annotated[
+        str, Field(strict=True, min_length=1, max_length=50)
+    ] | None = None
+    reviewable_user_message_count: int | None = Field(
+        default=None, ge=0, strict=True
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

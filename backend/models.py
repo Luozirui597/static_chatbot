@@ -228,6 +228,11 @@ class ModeSwitchEvent(Base):
             "to_mode IN ('receive_teaching', 'corrective')",
             name="ck_mode_switch_events_to_mode",
         ),
+        CheckConstraint(
+            "reviewable_user_message_count IS NULL OR "
+            "reviewable_user_message_count >= 0",
+            name="ck_mode_switch_events_reviewable_count",
+        ),
     )
 
     id: Mapped[int] = mapped_column(
@@ -242,6 +247,15 @@ class ModeSwitchEvent(Base):
     to_mode: Mapped[str] = mapped_column(String(30), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         default=utc_now, nullable=False
+    )
+    history_through_message_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+    history_boundary_version: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, default=None
+    )
+    reviewable_user_message_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
     )
 
     session: Mapped["ChatSession"] = relationship(

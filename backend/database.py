@@ -275,6 +275,7 @@ def run_migrations(bind: Engine) -> None:
 
         _run_interaction_mode_migration(conn)
         _run_interaction_mode_constraints_migration(conn)
+        _run_history_review_boundary_migration(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -491,5 +492,94 @@ def _run_interaction_mode_constraints_migration(conn) -> None:
         sa_text(
             "INSERT INTO schema_migrations (version) "
             "VALUES ('interaction_mode_constraints_v1')"
+        )
+    )
+
+
+def _run_history_review_boundary_migration(conn) -> None:
+    """Apply history_review_boundary_v1 idempotently.
+
+    Adds the immutable history-boundary columns to
+    ``mode_switch_events`` and installs a SQLite trigger that rejects
+    negative ``reviewable_user_message_count`` values on databases that
+    were created before the ORM-level CHECK constraint existed.
+    Existing events are never backfilled.
+    """
+    from sqlalchemy import text as sa_text
+
+    row = conn.execute(
+        sa_text(
+            "SELECT version FROM schema_migrations "
+            "WHERE version = 'history_review_boundary_v1'"
+        )
+    ).fetchone()
+    if row is not None:
+        return
+
+    cols = [
+        r[1]
+        for r in conn.execute(
+            sa_text("PRAGMA table_info('mode_switch_events')")
+        ).fetchall()
+    ]
+
+    if "history_through_message_id" not in cols:
+        conn.execute(
+            sa_text(
+                "ALTER TABLE mode_switch_events "
+                "ADD COLUMN history_through_message_id INTEGER"
+            )
+        )
+
+    if "history_boundary_version" not in cols:
+        conn.execute(
+            sa_text(
+                "ALTER TABLE mode_switch_events "
+                "ADD COLUMN history_boundary_version VARCHAR(50)"
+            )
+        )
+
+    if "reviewable_user_message_count" not in cols:
+        conn.execute(
+            sa_text(
+                "ALTER TABLE mode_switch_events "
+                "ADD COLUMN reviewable_user_message_count INTEGER"
+            )
+        )
+
+    conn.execute(
+        sa_text(
+            "CREATE TRIGGER IF NOT EXISTS "
+            "trg_mode_switch_events_reviewable_count_insert "
+            "BEFORE INSERT ON mode_switch_events "
+            "FOR EACH ROW "
+            "WHEN NEW.reviewable_user_message_count IS NOT NULL "
+            "  AND NEW.reviewable_user_message_count < 0 "
+            "BEGIN "
+            "  SELECT RAISE(ABORT, "
+            "    'invalid reviewable_user_message_count'); "
+            "END"
+        )
+    )
+    conn.execute(
+        sa_text(
+            "CREATE TRIGGER IF NOT EXISTS "
+            "trg_mode_switch_events_reviewable_count_update "
+            "BEFORE UPDATE OF reviewable_user_message_count "
+            "ON mode_switch_events "
+            "FOR EACH ROW "
+            "WHEN NEW.reviewable_user_message_count IS NOT NULL "
+            "  AND NEW.reviewable_user_message_count < 0 "
+            "BEGIN "
+            "  SELECT RAISE(ABORT, "
+            "    'invalid reviewable_user_message_count'); "
+            "END"
+        )
+    )
+
+    conn.execute(
+        sa_text(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('history_review_boundary_v1')"
         )
     )
