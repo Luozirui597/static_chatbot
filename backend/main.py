@@ -1,18 +1,30 @@
 """FastAPI application entry point."""
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend import config
-from backend.chat_service import ChatService, SessionNotFoundError
+from backend.chat_service import (
+    ChatService,
+    SessionLockRegistry,
+    SessionNotFoundError,
+)
 from backend.database import create_tables, engine, get_db, run_migrations
 from backend.exceptions import (
+    HistoryReviewBoundaryUnavailable,
+    HistoryReviewEventNotFound,
+    HistoryReviewEventNotReviewable,
+    HistoryReviewNoReviewableHistory,
+    HistoryReviewRemoteAckRequired,
+    HistoryReviewSessionNotFound,
     LLMError,
     SessionProfileConflictError,
     SessionProfileSwitchAckRequiredError,
@@ -20,18 +32,39 @@ from backend.exceptions import (
     UnknownLLMProfileError,
 )
 from backend.llm_client import create_llm_client
+from backend.history_review_selection import HistoryReviewSourceMessageTooLarge
+from backend.history_review_service import (
+    HistoryReviewExecutionConflict,
+    HistoryReviewExecutionNotFound,
+    HistoryReviewService,
+)
 from backend.llm_profiles import LLMProfile, LLMProfileRegistry
-from backend.models import ChatSession, Message
+from backend.models import (
+    ChatSession,
+    HistoryReview,
+    HistoryReviewFinding,
+    Message,
+)
 from backend.schemas import (
     ChatRequest,
     ChatResponse,
     CreateSessionRequest,
     DeleteResponse,
+    HistoryReviewAckRequiredDetail,
+    HistoryReviewAckRequiredResponse,
+    HistoryReviewCreateRequest,
+    HistoryReviewDetailResponse,
+    HistoryReviewErrorDetail,
+    HistoryReviewErrorResponse,
+    HistoryReviewFindingResponse,
+    HistoryReviewSummaryResponse,
     LLMProfilePublic,
     MessageResponse,
     RemoteHistoryAckRequiredDetail,
     RenameSessionRequest,
+    ReviewIdPath,
     SendMessageResponse,
+    SessionIdPath,
     SessionResponse,
     SwitchInteractionModeRequest,
     SwitchInteractionModeResponse,
@@ -141,7 +174,19 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Static Chatbot", lifespan=lifespan)
 
-chat_service = ChatService(profiles=_build_production_registry())
+logger = logging.getLogger(__name__)
+
+_profiles = _build_production_registry()
+_session_locks = SessionLockRegistry()
+
+chat_service = ChatService(
+    profiles=_profiles,
+    lock_registry=_session_locks,
+)
+history_review_service = HistoryReviewService(
+    profiles=_profiles,
+    lock_registry=_session_locks,
+)
 
 # ---------------------------------------------------------------------------
 # API routes
@@ -420,6 +465,407 @@ async def switch_session_profile(
             ).model_dump(),
         ) from exc
     return chat_service.build_session_response(session)
+
+
+# ---------------------------------------------------------------------------
+# History review API helpers
+# ---------------------------------------------------------------------------
+
+_HISTORY_REVIEW_SAFE_MESSAGES = {
+    "history_review_session_not_found": "Session not found.",
+    "history_review_event_not_found": "Mode switch event not found.",
+    "history_review_event_not_reviewable": (
+        "Mode switch event is not reviewable."
+    ),
+    "history_review_boundary_unavailable": (
+        "History boundary is unavailable."
+    ),
+    "history_review_no_reviewable_history": (
+        "No reviewable history is available."
+    ),
+    "history_review_source_message_too_large": (
+        "The reviewable message is too large to process."
+    ),
+    "history_review_reviewer_unavailable": (
+        "Reviewer profile is unavailable."
+    ),
+    "history_review_reviewer_conflict": (
+        "Reviewer profile configuration changed."
+    ),
+    "history_review_not_found": "History review not found.",
+    "history_review_execution_conflict": (
+        "History review execution conflict."
+    ),
+    "history_review_internal_error": (
+        "History review processing failed."
+    ),
+    "history_review_remote_ack_required": (
+        "Remote API review requires explicit acknowledgement that the "
+        "selected source messages will be sent to the API model."
+    ),
+}
+
+
+def _history_review_error(
+    status_code: int,
+    code: str,
+    *,
+    message: str | None = None,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail=HistoryReviewErrorDetail(
+            code=code,
+            message=message or _HISTORY_REVIEW_SAFE_MESSAGES[code],
+        ).model_dump(),
+    )
+
+
+def _history_review_internal_error(db: Session) -> HTTPException:
+    db.rollback()
+    logger.exception("Unexpected history review internal error")
+    return _history_review_error(
+        500,
+        "history_review_internal_error",
+    )
+
+
+def _build_history_review_summary(
+    review: HistoryReview,
+    *,
+    findings_count: int,
+) -> HistoryReviewSummaryResponse:
+    return HistoryReviewSummaryResponse(
+        id=review.id,
+        session_id=review.session_id,
+        mode_switch_event_id=review.mode_switch_event_id,
+        status=review.status,
+        eligible_message_count=review.eligible_message_count,
+        source_message_count=review.source_message_count,
+        source_from_message_id=review.source_from_message_id,
+        source_through_message_id=review.source_through_message_id,
+        truncated=bool(review.truncated),
+        summary=review.summary,
+        coverage_note=review.coverage_note,
+        error_code=review.error_code,
+        error_message=review.error_message,
+        findings_count=findings_count,
+        created_at=review.created_at,
+        started_at=review.started_at,
+        completed_at=review.completed_at,
+        updated_at=review.updated_at,
+    )
+
+
+def _load_history_review_summaries(
+    db: Session,
+    session_id: int,
+) -> list[HistoryReviewSummaryResponse]:
+    db.expire_all()
+    reviews = db.execute(
+        select(HistoryReview)
+        .where(HistoryReview.session_id == session_id)
+        .order_by(
+            HistoryReview.created_at.desc(),
+            HistoryReview.id.desc(),
+        )
+    ).scalars().all()
+    if not reviews:
+        return []
+
+    review_ids = [review.id for review in reviews]
+    counts = dict(
+        db.execute(
+            select(
+                HistoryReviewFinding.review_id,
+                func.count(HistoryReviewFinding.id),
+            )
+            .where(HistoryReviewFinding.review_id.in_(review_ids))
+            .group_by(HistoryReviewFinding.review_id)
+        ).all()
+    )
+    return [
+        _build_history_review_summary(
+            review,
+            findings_count=(
+                int(counts.get(review.id, 0))
+                if review.status == "completed"
+                else 0
+            ),
+        )
+        for review in reviews
+    ]
+
+
+def _load_history_review_detail(
+    db: Session,
+    session_id: int,
+    review_id: int,
+) -> HistoryReviewDetailResponse:
+    db.expire_all()
+    review = db.execute(
+        select(HistoryReview)
+        .where(
+            HistoryReview.id == review_id,
+            HistoryReview.session_id == session_id,
+        )
+    ).scalars().first()
+    if review is None:
+        raise _history_review_error(404, "history_review_not_found")
+
+    finding_rows = []
+    if review.status == "completed":
+        finding_rows = db.execute(
+            select(HistoryReviewFinding)
+            .where(HistoryReviewFinding.review_id == review.id)
+            .order_by(HistoryReviewFinding.seq.asc())
+        ).scalars().all()
+    findings = [
+        HistoryReviewFindingResponse(
+            seq=row.seq,
+            source_message_id=row.source_message_id,
+            verdict=row.verdict,
+            claim_text=row.claim_text,
+            correction_text=row.correction_text,
+            explanation_text=row.explanation_text,
+        )
+        for row in finding_rows
+    ]
+
+    summary = _build_history_review_summary(
+        review,
+        findings_count=len(findings),
+    )
+    return HistoryReviewDetailResponse(
+        **summary.model_dump(),
+        findings=findings,
+    )
+
+
+# ---------------------------------------------------------------------------
+# History review routes
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/api/sessions/{session_id}/history-reviews",
+    response_model=HistoryReviewDetailResponse,
+    status_code=201,
+    responses={
+        200: {
+            "model": HistoryReviewDetailResponse,
+            "description": "Existing history review reused.",
+        },
+        404: {
+            "model": HistoryReviewErrorResponse,
+            "description": "Session, event, or review not found.",
+        },
+        409: {
+            "model": (
+                HistoryReviewErrorResponse
+                | HistoryReviewAckRequiredResponse
+            ),
+            "description": (
+                "Remote acknowledgement or execution conflict."
+            ),
+        },
+        422: {
+            "description": (
+                "Request validation error or non-reviewable input."
+            ),
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "anyOf": [
+                            {
+                                "$ref": (
+                                    "#/components/schemas/"
+                                    "HistoryReviewErrorResponse"
+                                )
+                            },
+                            {
+                                "$ref": (
+                                    "#/components/schemas/"
+                                    "HTTPValidationError"
+                                )
+                            },
+                        ]
+                    }
+                }
+            },
+        },
+        500: {
+            "model": HistoryReviewErrorResponse,
+            "description": "Internal history review error.",
+        },
+        503: {
+            "model": HistoryReviewErrorResponse,
+            "description": "Reviewer profile unavailable.",
+        },
+    },
+)
+async def create_history_review(
+    session_id: SessionIdPath,
+    request: HistoryReviewCreateRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Create or reuse a review and execute it synchronously."""
+    try:
+        preparation = await history_review_service.prepare_history_review(
+            session_id=session_id,
+            mode_switch_event_id=request.mode_switch_event_id,
+            acknowledge_remote_history=request.acknowledge_remote_history,
+            db=db,
+        )
+    except HistoryReviewSessionNotFound:
+        raise _history_review_error(
+            404, "history_review_session_not_found"
+        ) from None
+    except HistoryReviewEventNotFound:
+        raise _history_review_error(
+            404, "history_review_event_not_found"
+        ) from None
+    except HistoryReviewEventNotReviewable:
+        raise _history_review_error(
+            422, "history_review_event_not_reviewable"
+        ) from None
+    except HistoryReviewBoundaryUnavailable:
+        raise _history_review_error(
+            422, "history_review_boundary_unavailable"
+        ) from None
+    except HistoryReviewNoReviewableHistory:
+        raise _history_review_error(
+            422, "history_review_no_reviewable_history"
+        ) from None
+    except HistoryReviewSourceMessageTooLarge:
+        raise _history_review_error(
+            422, "history_review_source_message_too_large"
+        ) from None
+    except SessionProfileUnavailableError:
+        raise _history_review_error(
+            503, "history_review_reviewer_unavailable"
+        ) from None
+    except SessionProfileConflictError:
+        raise _history_review_error(
+            409, "history_review_reviewer_conflict"
+        ) from None
+    except HTTPException:
+        raise
+    except HistoryReviewRemoteAckRequired as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=HistoryReviewAckRequiredDetail(
+                code="history_review_remote_ack_required",
+                message=_HISTORY_REVIEW_SAFE_MESSAGES[
+                    "history_review_remote_ack_required"
+                ],
+                source_message_count=exc.source_message_count,
+                reviewer_profile_label=exc.reviewer_profile_label,
+                reviewer_model=exc.reviewer_model,
+                truncated=exc.truncated,
+            ).model_dump(),
+        ) from None
+    except SQLAlchemyError:
+        raise _history_review_internal_error(db) from None
+    except Exception:
+        raise _history_review_internal_error(db) from None
+
+    review_id = preparation.review.id
+
+    try:
+        await history_review_service.execute_history_review(
+            session_id=session_id,
+            review_id=review_id,
+            db=db,
+        )
+    except HistoryReviewExecutionNotFound:
+        raise _history_review_error(
+            404, "history_review_not_found"
+        ) from None
+    except HistoryReviewExecutionConflict:
+        raise _history_review_error(
+            409, "history_review_execution_conflict"
+        ) from None
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        raise _history_review_internal_error(db) from None
+    except Exception:
+        raise _history_review_internal_error(db) from None
+
+    response.status_code = 201 if preparation.created else 200
+    try:
+        return _load_history_review_detail(db, session_id, review_id)
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        raise _history_review_internal_error(db) from None
+    except Exception:
+        raise _history_review_internal_error(db) from None
+
+
+@app.get(
+    "/api/sessions/{session_id}/history-reviews",
+    response_model=list[HistoryReviewSummaryResponse],
+    responses={
+        404: {
+            "model": HistoryReviewErrorResponse,
+            "description": "Session not found.",
+        },
+        500: {
+            "model": HistoryReviewErrorResponse,
+            "description": "Internal history review error.",
+        },
+    },
+)
+def list_history_reviews(
+    session_id: SessionIdPath,
+    db: Session = Depends(get_db),
+):
+    """Return history-review summaries for a session."""
+    try:
+        if db.get(ChatSession, session_id) is None:
+            raise _history_review_error(
+                404, "history_review_session_not_found"
+            )
+        return _load_history_review_summaries(db, session_id)
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        raise _history_review_internal_error(db) from None
+    except Exception:
+        raise _history_review_internal_error(db) from None
+
+
+@app.get(
+    "/api/sessions/{session_id}/history-reviews/{review_id}",
+    response_model=HistoryReviewDetailResponse,
+    responses={
+        404: {
+            "model": HistoryReviewErrorResponse,
+            "description": "History review not found for this session.",
+        },
+        500: {
+            "model": HistoryReviewErrorResponse,
+            "description": "Internal history review error.",
+        },
+    },
+)
+def get_history_review(
+    session_id: SessionIdPath,
+    review_id: ReviewIdPath,
+    db: Session = Depends(get_db),
+):
+    """Return one history review scoped to its session."""
+    try:
+        return _load_history_review_detail(db, session_id, review_id)
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        raise _history_review_internal_error(db) from None
+    except Exception:
+        raise _history_review_internal_error(db) from None
 
 
 # ---------------------------------------------------------------------------

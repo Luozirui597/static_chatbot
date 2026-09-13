@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from typing import Annotated, Literal
 
+from fastapi import Path
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -266,3 +267,108 @@ class SwitchInteractionModeResponse(BaseModel):
 
     session: SessionResponse
     switch_event: ModeSwitchEventResponse | None = None
+
+
+# ---------------------------------------------------------------------------
+# History review models
+# ---------------------------------------------------------------------------
+
+HistoryReviewStatus = Literal[
+    "pending", "running", "completed", "failed"
+]
+HistoryReviewVerdict = Literal[
+    "correct", "incorrect", "uncertain", "not_a_claim"
+]
+
+SessionIdPath = Annotated[int, Path(gt=0)]
+ReviewIdPath = Annotated[int, Path(gt=0)]
+
+
+class HistoryReviewCreateRequest(BaseModel):
+    """Request body for POST /api/sessions/{id}/history-reviews."""
+
+    mode_switch_event_id: int = Field(strict=True, gt=0)
+    acknowledge_remote_history: bool = Field(default=False, strict=True)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class HistoryReviewFindingResponse(BaseModel):
+    """Public representation of one persisted finding."""
+
+    seq: int = Field(strict=True, ge=1)
+    source_message_id: int = Field(strict=True, gt=0)
+    verdict: HistoryReviewVerdict
+    claim_text: str
+    correction_text: str | None
+    explanation_text: str | None
+
+
+class HistoryReviewBaseResponse(BaseModel):
+    """Public review fields shared by list and detail responses."""
+
+    id: int
+    session_id: int
+    mode_switch_event_id: int
+    status: HistoryReviewStatus
+    eligible_message_count: int
+    source_message_count: int
+    source_from_message_id: int | None
+    source_through_message_id: int | None
+    truncated: bool
+    summary: str | None
+    coverage_note: str | None
+    error_code: str | None
+    error_message: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    updated_at: datetime
+
+
+class HistoryReviewSummaryResponse(HistoryReviewBaseResponse):
+    """List response without findings."""
+
+    findings_count: int = Field(strict=True, ge=0)
+
+
+class HistoryReviewDetailResponse(HistoryReviewSummaryResponse):
+    """POST and GET detail response with full findings."""
+
+    findings: list[HistoryReviewFindingResponse]
+
+    @model_validator(mode="after")
+    def _count_matches_findings(self) -> "HistoryReviewDetailResponse":
+        if self.findings_count != len(self.findings):
+            raise ValueError(
+                "findings_count must equal len(findings)"
+            )
+        return self
+
+
+class HistoryReviewErrorDetail(BaseModel):
+    """Inner detail object for generic review API errors."""
+
+    code: str
+    message: str
+
+
+class HistoryReviewAckRequiredDetail(HistoryReviewErrorDetail):
+    """Inner detail object for a remote-history acknowledgement error."""
+
+    source_message_count: int
+    reviewer_profile_label: str
+    reviewer_model: str
+    truncated: bool
+
+
+class HistoryReviewErrorResponse(BaseModel):
+    """Real FastAPI error envelope for generic review API errors."""
+
+    detail: HistoryReviewErrorDetail
+
+
+class HistoryReviewAckRequiredResponse(BaseModel):
+    """Real FastAPI error envelope for ack-required errors."""
+
+    detail: HistoryReviewAckRequiredDetail
