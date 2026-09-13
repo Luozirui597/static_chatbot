@@ -24,6 +24,7 @@ from backend.exceptions import (
     SessionProfileUnavailableError,
 )
 from backend.history_boundary import HISTORY_BOUNDARY_VERSION
+from backend.history_review_prompt import HISTORY_REVIEW_PROMPT_VERSION
 from backend.history_review_selection import (
     HISTORY_REVIEW_BUDGET_VERSION,
     HISTORY_REVIEW_SELECTION_POLICY_VERSION,
@@ -40,9 +41,6 @@ from backend.models import (
     ModeSwitchEvent,
     utc_now,
 )
-
-HISTORY_REVIEW_PROMPT_VERSION = "history-review-prompt-v1"
-
 
 @dataclass(frozen=True)
 class HistoryReviewPreparationResult:

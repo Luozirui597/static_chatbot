@@ -29,8 +29,8 @@ from backend.history_review_selection import (
     HISTORY_REVIEW_SELECTION_POLICY_VERSION,
     HistoryReviewSourceMessageTooLarge,
 )
+from backend.history_review_prompt import HISTORY_REVIEW_PROMPT_VERSION
 from backend.history_review_service import (
-    HISTORY_REVIEW_PROMPT_VERSION,
     HistoryReviewPreparationResult,
     HistoryReviewService,
 )
