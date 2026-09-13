@@ -157,6 +157,7 @@ class ChatService:
         llm_client: LLMClient | None = None,
         *,
         profiles: LLMProfileRegistry | None = None,
+        lock_registry: SessionLockRegistry | None = None,
     ) -> None:
         if llm_client is not None and profiles is not None:
             raise ValueError(
@@ -174,7 +175,7 @@ class ChatService:
             assert profiles is not None  # mypy narrowing
             self._profiles = profiles
 
-        self._lock_registry = SessionLockRegistry()
+        self._lock_registry = lock_registry or SessionLockRegistry()
 
     # -- helpers ------------------------------------------------------------
 
