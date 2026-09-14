@@ -805,6 +805,10 @@ function createSessionProfileSwitchController(dependencies) {
  * subscription not returning a function, or a disconnected dialog —
  * fails closed to false with full listener cleanup.  close() throwing
  * cannot prevent settlement or cleanup.
+ *
+ * ``title`` is optional and only applied when the adapter exposes
+ * ``setTitle``; it lets a dialog keep a truthful heading per operation
+ * without duplicating the body text.
  */
 function createRemoteHistoryConfirmer(adapter) {
   var pending = false;
@@ -815,7 +819,7 @@ function createRemoteHistoryConfirmer(adapter) {
     }
   }
 
-  function confirm(message) {
+  function confirm(message, title) {
     if (pending) {
       return Promise.resolve(false);
     }
@@ -864,6 +868,18 @@ function createRemoteHistoryConfirmer(adapter) {
       } catch (_) {
         settle(false);
         return;
+      }
+
+      // Optional: dialogs whose heading is not already the question need
+      // to update it before they are shown.  Adapters without the method
+      // keep the static heading from the markup.
+      if (typeof adapter.setTitle === "function") {
+        try {
+          adapter.setTitle(title);
+        } catch (_) {
+          settle(false);
+          return;
+        }
       }
 
       if (!register(adapter.onDialogCancel,

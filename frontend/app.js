@@ -5,6 +5,36 @@
 (function () {
   "use strict";
 
+  /**
+   * History Review dialog copy, shared with history-review.js so the
+   * heading is the confirmation question and the body explains what the
+   * operation does.  The literals are a fallback for the case where
+   * history-review.js failed to load; neither may ever contain source
+   * messages, reviewer prompts or other private material.
+   */
+  const historyReviewDialogCopy = (function () {
+    const fallback = {
+      startTitle: "Start a history review?",
+      startBody:
+        "A separate review is generated from the teaching history " +
+        "frozen at this mode switch. Messages from this conversation " +
+        "only are used, and the review never runs on its own — you " +
+        "have to start it. The report appears here when it finishes.",
+      continueTitle: "Continue this history review?",
+      continueBody:
+        "The pending review resumes with the teaching history that was " +
+        "already frozen when it started. The completed report appears " +
+        "here.",
+    };
+    try {
+      if (typeof HISTORY_REVIEW_DIALOG_COPY === "object" &&
+          HISTORY_REVIEW_DIALOG_COPY !== null) {
+        return HISTORY_REVIEW_DIALOG_COPY;
+      }
+    } catch (_) { /* history-review.js did not load */ }
+    return fallback;
+  })();
+
   /* ---- DOM references ---------------------------------------------- */
 
   const sidebarEl = document.getElementById("sidebar");
@@ -38,6 +68,67 @@
     document.getElementById("interactionModeStatus");
   const profileSwitchDialogEl =
     document.getElementById("profileSwitchDialog");
+
+  const historyReviewPanelEl =
+    document.getElementById("historyReviewPanel");
+  const historyReviewTitleEl =
+    document.getElementById("historyReviewTitle");
+  const historyReviewStatusBadgeEl =
+    document.getElementById("historyReviewStatusBadge");
+  const historyReviewToggleBtn =
+    document.getElementById("historyReviewToggleBtn");
+  const historyReviewBodyEl =
+    document.getElementById("historyReviewBody");
+  const historyReviewLiveEl =
+    document.getElementById("historyReviewLive");
+  const historyReviewProposalEl =
+    document.getElementById("historyReviewProposal");
+  const historyReviewProposalTextEl =
+    document.getElementById("historyReviewProposalText");
+  const historyReviewStartBtn =
+    document.getElementById("historyReviewStartBtn");
+  const historyReviewDismissBtn =
+    document.getElementById("historyReviewDismissBtn");
+  const historyReviewDetailEl =
+    document.getElementById("historyReviewDetail");
+  const historyReviewSelectEl =
+    document.getElementById("historyReviewSelect");
+  const historyReviewSummaryEl =
+    document.getElementById("historyReviewSummary");
+  const historyReviewCoverageEl =
+    document.getElementById("historyReviewCoverage");
+  const historyReviewFindingsEl =
+    document.getElementById("historyReviewFindings");
+  const historyReviewErrorEl =
+    document.getElementById("historyReviewError");
+  const historyReviewRecheckBtn =
+    document.getElementById("historyReviewRecheckBtn");
+  const historyReviewContinueBtn =
+    document.getElementById("historyReviewContinueBtn");
+
+  const historyReviewStartDialogEl =
+    document.getElementById("historyReviewStartDialog");
+  const historyReviewStartTitleEl =
+    document.getElementById("hrs-title");
+  const historyReviewStartBodyEl =
+    document.getElementById("hrs-body");
+  const historyReviewStartCancelBtn =
+    document.getElementById("hrs-cancel");
+  const historyReviewStartConfirmBtn =
+    document.getElementById("hrs-start");
+
+  const historyReviewConsentDialogEl =
+    document.getElementById("historyReviewConsentDialog");
+  const historyReviewConsentBodyEl =
+    document.getElementById("hrc-body");
+  const historyReviewConsentCancelBtn =
+    document.getElementById("hrc-cancel");
+  const historyReviewConsentConfirmBtn =
+    document.getElementById("hrc-continue");
+
+  const historyReviewSelectorEl =
+    document.getElementById("historyReviewSelector");
+
   const messagesEl = document.getElementById("messages");
   const statusEl = document.getElementById("status");
   const inputEl = document.getElementById("messageInput");
@@ -93,6 +184,740 @@
   const sessionSwitchUncertain = Object.create(null);  // uncertain records
   const profileSwitchStatusBySession = Object.create(null); // {text, isError}
   const interactionModeStatusBySession = Object.create(null); // {text, isError}
+
+  // History Review state — per-session, never a single global result.
+  const reviewStateBySession = Object.create(null);
+  const reviewLifecycleEpochBySession = Object.create(null);
+  const reviewDialogContextBySession = Object.create(null);
+  const reviewBatchGenerationBySession = Object.create(null);
+
+  let historyReviewController = null;
+  let historyReviewInitializationError = null;
+  let historyReviewStartConfirmer = null;
+  let historyReviewConsentConfirmer = null;
+  let historyReviewStartDialogAdapter = null;
+  let historyReviewConsentDialogAdapter = null;
+  function getReviewStateIfExists(sessionId) {
+    if (isValidSessionIdKey(sessionId) === false) return null;
+    const key = String(sessionId);
+    if (Object.hasOwn(reviewStateBySession, key) === false) return null;
+    return reviewStateBySession[key];
+  }
+
+  function ensureReviewState(sessionId) {
+    if (isValidSessionIdKey(sessionId) === false) return null;
+    if (findSessionInList(sessionId) === null) return null;
+    const key = String(sessionId);
+    if (Object.hasOwn(reviewStateBySession, key) === false) {
+      reviewStateBySession[key] = {
+        events: null, eventsStatus: "idle", eventsError: null,
+        summaries: null, summariesStatus: "idle", summariesError: null,
+        detailsById: Object.create(null),
+        detailStatusByReviewId: Object.create(null),
+        detailErrorByReviewId: Object.create(null),
+        detailGenerationByReviewId: Object.create(null),
+        selectedReviewId: null, proposalEvent: null,
+        proposalDismissedEventId: null, operation: null,
+        operationGeneration: 0, uncertainEventId: null,
+        uncertainMessage: "", sessionLoadGeneration: 0,
+        collapsed: false, panelError: null,
+      };
+    }
+    return reviewStateBySession[key];
+  }
+
+  function reviewEpoch(sessionId) {
+    return reviewLifecycleEpochBySession[String(sessionId)] || 0;
+  }
+
+  function bumpReviewEpoch(sessionId) {
+    const key = String(sessionId);
+    reviewLifecycleEpochBySession[key] = reviewEpoch(sessionId) + 1;
+  }
+
+  function safeReviewError(err) {
+    if (err && typeof err.message === "string" && err.message) return err.message;
+    return "History review request failed.";
+  }
+
+  function isExactSessionNotFound(err) {
+    return err !== null && typeof err === "object" &&
+      err.failureKind === "http" && err.status === 404 &&
+      err.code === "history_review_session_not_found";
+  }
+
+  function canApplyCaptured(captured, kind) {
+    if (findSessionInList(captured.targetSessionId) === null) return false;
+    const current = getReviewStateIfExists(captured.targetSessionId);
+    if (current === null || current !== captured.stateIdentity) return false;
+    if (reviewEpoch(captured.targetSessionId) !== captured.epoch) return false;
+    if (kind === "batch") return current.sessionLoadGeneration === captured.generation;
+    if (kind === "detail") {
+      return current.detailGenerationByReviewId[captured.reviewId] === captured.generation;
+    }
+    if (kind === "operation") {
+      return current.operation !== null && current.operation.generation === captured.generation;
+    }
+    return false;
+  }
+
+  function clearReviewSessionState(sessionId) {
+    if (isValidSessionIdKey(sessionId) === false) return;
+    const key = String(sessionId);
+    const context = reviewDialogContextBySession[key];
+    if (context && context.pendingAdapter &&
+        typeof context.pendingAdapter.cancelPending === "function") {
+      try { context.pendingAdapter.cancelPending(); } catch (_) {}
+    }
+    delete reviewDialogContextBySession[key];
+    bumpReviewEpoch(sessionId);
+    delete reviewStateBySession[key];
+    if (currentSessionId === sessionId) {
+      renderHistoryReviewPanel();
+      updateControlStates();
+    }
+  }
+
+  function reviewTargetBusy(sessionId) {
+    const state = getReviewStateIfExists(sessionId);
+    if (state === null) return false;
+    return isHistoryReviewTargetBusy(sessionId, state, isValidApiTimestamp);
+  }
+
+  async function historyReviewRequestJson(url, options = {}) {
+    let response;
+    try {
+      response = await fetch(url, options);
+    } catch (_) {
+      throw { failureKind: "network", status: 0, code: null,
+        message: "Network error. Please check your connection.", body: null };
+    }
+    let body = null;
+    let parseFailed = false;
+    try { body = await response.json(); } catch (_) { parseFailed = true; }
+
+    if (response.ok === false) {
+      let code = null;
+      let message = "Something went wrong. Please try again.";
+      if (body && typeof body === "object" && Array.isArray(body) === false &&
+          body.detail && typeof body.detail === "object" &&
+          Array.isArray(body.detail) === false) {
+        if (typeof body.detail.code === "string") code = body.detail.code;
+        if (typeof body.detail.message === "string") message = body.detail.message;
+      } else if (body && typeof body === "object" &&
+                 Array.isArray(body.detail) && body.detail.length > 0 &&
+                 body.detail[0] && typeof body.detail[0].msg === "string") {
+        message = body.detail[0].msg;
+      } else if (body && typeof body === "object" &&
+                 typeof body.detail === "string") {
+        message = body.detail;
+      }
+      throw { failureKind: "http", status: response.status,
+        code: code, message: message, body: body };
+    }
+    if (parseFailed) {
+      throw { failureKind: "response_parse", status: 0, code: null,
+        message: "The server returned an unreadable response.", body: null };
+    }
+    return body;
+  }
+
+  function fetchModeSwitchEventsRequest(sessionId) {
+    return historyReviewRequestJson("/api/sessions/" + sessionId + "/mode-switch-events");
+  }
+  function fetchReviewSummariesRequest(sessionId) {
+    return historyReviewRequestJson("/api/sessions/" + sessionId + "/history-reviews");
+  }
+  function fetchReviewDetailRequest(sessionId, reviewId) {
+    return historyReviewRequestJson("/api/sessions/" + sessionId + "/history-reviews/" + reviewId);
+  }
+  function createHistoryReviewRequest(sessionId, payload) {
+    return historyReviewRequestJson("/api/sessions/" + sessionId + "/history-reviews", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  function createCancelableDialogAdapter(
+    dialog, bodyEl, cancelBtn, continueBtn, titleEl
+  ) {
+    const heading = titleEl === undefined ? null : titleEl;
+    if (typeof createCancelableReviewDialogAdapter === "function") {
+      return createCancelableReviewDialogAdapter({
+        dialog: dialog, bodyEl: bodyEl,
+        cancelBtn: cancelBtn, continueBtn: continueBtn,
+        titleEl: heading,
+      });
+    }
+    let pendingCancel = null;
+    function clearIfSame(cb) { if (pendingCancel === cb) pendingCancel = null; }
+    function addListener(target, name, handler) {
+      target.addEventListener(name, handler);
+      return function () { target.removeEventListener(name, handler); };
+    }
+    return {
+      showModal: function () { dialog.showModal(); },
+      close: function () { if (dialog.open) dialog.close(); },
+      setMessage: function (text) { bodyEl.textContent = text; },
+      setTitle: function (text) {
+        if (heading !== null) heading.textContent = text;
+      },
+      focusInitial: function () { cancelBtn.focus(); },
+      isConnected: function () { return dialog.isConnected; },
+      onDialogCancel: function (cb) {
+        pendingCancel = cb;
+        const handler = function () {
+          const current = pendingCancel;
+          pendingCancel = null;
+          if (typeof current === "function") current();
+        };
+        const unsub = addListener(dialog, "cancel", handler);
+        return function () { clearIfSame(cb); unsub(); };
+      },
+      onCancelClick: function (cb) {
+        pendingCancel = cb;
+        const handler = function () {
+          const current = pendingCancel;
+          pendingCancel = null;
+          if (typeof current === "function") current();
+        };
+        const unsub = addListener(cancelBtn, "click", handler);
+        return function () { clearIfSame(cb); unsub(); };
+      },
+      onContinueClick: function (cb) {
+        const handler = function () { cb(); };
+        const unsub = addListener(continueBtn, "click", handler);
+        return function () { unsub(); };
+      },
+      cancelPending: function () {
+        const current = pendingCancel;
+        pendingCancel = null;
+        if (typeof current === "function") {
+          try { current(); } catch (_) {}
+        }
+      },
+    };
+  }
+
+  async function confirmWithReviewFocus(confirmFn, targetSessionId, triggerEl) {
+    let confirmed = false;
+    try { confirmed = await confirmFn(); } catch (_) { confirmed = false; }
+    try {
+      if (triggerEl && triggerEl.isConnected &&
+          currentSessionId === targetSessionId &&
+          findSessionInList(targetSessionId) !== null) {
+        triggerEl.focus();
+      }
+    } catch (_) { /* focus failure must not leak */ }
+    return confirmed === true;
+  }
+
+  function initializeHistoryReview() {
+    try {
+      historyReviewStartDialogAdapter = createCancelableDialogAdapter(
+        historyReviewStartDialogEl, historyReviewStartBodyEl,
+        historyReviewStartCancelBtn, historyReviewStartConfirmBtn,
+        historyReviewStartTitleEl);
+      historyReviewConsentDialogAdapter = createCancelableDialogAdapter(
+        historyReviewConsentDialogEl, historyReviewConsentBodyEl,
+        historyReviewConsentCancelBtn, historyReviewConsentConfirmBtn);
+      historyReviewStartConfirmer = createRemoteHistoryConfirmer(historyReviewStartDialogAdapter);
+      historyReviewConsentConfirmer = createRemoteHistoryConfirmer(historyReviewConsentDialogAdapter);
+      historyReviewController = createHistoryReviewController({
+        postReview: createHistoryReviewRequest,
+        fetchReviewSummaries: fetchReviewSummariesRequest,
+        fetchReviewDetail: fetchReviewDetailRequest,
+        confirmRemoteHistory: function (metadata, operationSnapshot, title) {
+          const key = String(operationSnapshot.targetSessionId);
+          const context = reviewDialogContextBySession[key];
+          if (context === null || context === undefined) return Promise.resolve(false);
+          if (findSessionInList(operationSnapshot.targetSessionId) === null) return Promise.resolve(false);
+          if (currentSessionId !== operationSnapshot.targetSessionId) return Promise.resolve(false);
+          if (context.stateIdentity !== getReviewStateIfExists(operationSnapshot.targetSessionId)) return Promise.resolve(false);
+          if (context.lifecycleEpoch !== reviewEpoch(operationSnapshot.targetSessionId)) return Promise.resolve(false);
+          if (context.operationGeneration !== operationSnapshot.generation) return Promise.resolve(false);
+          context.pendingAdapter = historyReviewConsentDialogAdapter;
+          const text = metadata.sourceMessageCount + " messages\n" +
+            metadata.reviewerProfileLabel + " / " + metadata.reviewerModel + "\n" +
+            "truncated: " + (metadata.truncated ? "yes" : "no");
+          return confirmWithReviewFocus(
+            function () {
+              return historyReviewConsentConfirmer.confirm(text, title);
+            },
+            operationSnapshot.targetSessionId,
+            context.triggerEl,
+          );
+        },
+        validateTimestamp: isValidApiTimestamp,
+      });
+      historyReviewInitializationError = null;
+      return true;
+    } catch (_) {
+      historyReviewController = null;
+      historyReviewStartConfirmer = null;
+      historyReviewConsentConfirmer = null;
+      historyReviewInitializationError = "History review is unavailable.";
+      return false;
+    }
+  }
+
+  function renderHistoryReviewFindings(findings) {
+    historyReviewFindingsEl.replaceChildren();
+    for (const finding of findings) {
+      if (isValidHistoryReviewFinding(finding) === false) continue;
+      const li = document.createElement("li");
+      li.className = "history-review-finding";
+      const verdict = document.createElement("span");
+      verdict.className = "finding-verdict";
+      verdict.textContent =
+        finding.verdict === "correct" ? "Correct" :
+        finding.verdict === "incorrect" ? "Incorrect" :
+        finding.verdict === "uncertain" ? "Uncertain" :
+        finding.verdict === "not_a_claim" ? "Not a claim" : "";
+      li.appendChild(verdict);
+      const claim = document.createElement("div");
+      claim.textContent = "Source " + finding.source_message_id + ": " + finding.claim_text;
+      li.appendChild(claim);
+      if (typeof finding.correction_text === "string") {
+        const correction = document.createElement("div");
+        correction.textContent = "Correction: " + finding.correction_text;
+        li.appendChild(correction);
+      }
+      if (typeof finding.explanation_text === "string") {
+        const explanation = document.createElement("div");
+        explanation.textContent = "Explanation: " + finding.explanation_text;
+        li.appendChild(explanation);
+      }
+      historyReviewFindingsEl.appendChild(li);
+    }
+  }
+
+  function renderHistoryReviewPanel() {
+    if (currentSessionId === null) { historyReviewPanelEl.hidden = true; return; }
+    const state = getReviewStateIfExists(currentSessionId);
+    if (state === null) { historyReviewPanelEl.hidden = true; return; }
+    const model = buildHistoryReviewPanelModel({
+      sessionId: currentSessionId,
+      state: state,
+      currentMode: currentSessionInteractionMode(),
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    if (model === null || model.visible === false) {
+      historyReviewPanelEl.hidden = true;
+      return;
+    }
+    historyReviewPanelEl.hidden = false;
+    historyReviewPanelEl.classList.toggle("collapsed", model.collapsed === true);
+    historyReviewToggleBtn.textContent = model.collapsed ? "Expand" : "Collapse";
+    historyReviewToggleBtn.setAttribute("aria-expanded", model.collapsed ? "false" : "true");
+    historyReviewStatusBadgeEl.textContent = model.badgeText;
+    historyReviewLiveEl.textContent = state.operation !== null
+      ? "Working on history review..."
+      : (model.errorText || "");
+
+    if (model.proposal !== null) {
+      historyReviewProposalEl.hidden = false;
+      historyReviewProposalTextEl.textContent =
+        model.proposal.reviewableUserMessageCount + " previous teaching messages are available for review.";
+    } else {
+      historyReviewProposalEl.hidden = true;
+      historyReviewProposalTextEl.textContent = "";
+    }
+
+    const hasDetail = model.detail !== null || model.selectedSummary !== null;
+    historyReviewDetailEl.hidden = hasDetail ? false : true;
+
+    historyReviewSelectEl.replaceChildren();
+    historyReviewSelectEl.hidden = model.selectorVisible ? false : true;
+    // The "Review" label is hidden with the control so a single-review
+    // session shows neither an empty dropdown nor an orphaned label.  The
+    // wrapper owns the layout; the label's own hidden attribute keeps the
+    // intent explicit in the DOM (and in tests).
+    if (historyReviewSelectorEl !== null) {
+      historyReviewSelectorEl.hidden = model.selectorVisible ? false : true;
+    }
+    const selectorLabel = document.querySelector(
+      'label[for="historyReviewSelect"]');
+    if (selectorLabel !== null) {
+      selectorLabel.hidden = model.selectorVisible ? false : true;
+    }
+    if (model.selectorVisible) {
+      for (const summary of model.summaries) {
+        const option = document.createElement("option");
+        option.value = String(summary.id);
+        option.textContent = "Review #" + summary.id + " · " + summary.status;
+        historyReviewSelectEl.appendChild(option);
+      }
+      if (model.selectedReviewId !== null) {
+        historyReviewSelectEl.value = String(model.selectedReviewId);
+      }
+    }
+
+    historyReviewSummaryEl.textContent = model.summaryText || "";
+    historyReviewCoverageEl.textContent = model.coverageText || "";
+    historyReviewSummaryEl.hidden = model.summaryText ? false : true;
+    historyReviewCoverageEl.hidden = model.coverageText ? false : true;
+    renderHistoryReviewFindings(model.findings || []);
+
+    const errorText = model.errorText || "";
+    historyReviewErrorEl.textContent = errorText;
+    historyReviewErrorEl.hidden = errorText ? false : true;
+
+    const operationActive = state.operation !== null;
+    historyReviewStartBtn.disabled = operationActive;
+    historyReviewDismissBtn.disabled = operationActive;
+    historyReviewContinueBtn.disabled = operationActive;
+    historyReviewRecheckBtn.disabled = operationActive || model.actionKind === "none";
+    historyReviewStartBtn.hidden = model.startVisible ? false : true;
+    historyReviewDismissBtn.hidden = model.dismissVisible ? false : true;
+    historyReviewContinueBtn.hidden = model.continueVisible ? false : true;
+    historyReviewRecheckBtn.hidden = model.actionKind === "none";
+    historyReviewRecheckBtn.textContent = model.actionLabel || "Recheck";
+  }
+
+  function renderHistoryReviewPanelIfCurrent(sessionId) {
+    if (currentSessionId === sessionId) renderHistoryReviewPanel();
+  }
+
+  async function loadHistoryReviewDetail(sessionId, reviewId) {
+    const state = ensureReviewState(sessionId);
+    if (state === null) return;
+    const summary = Array.isArray(state.summaries)
+      ? state.summaries.find(function (item) { return item.id === reviewId; })
+      : null;
+    if (summary === undefined || summary === null) return;
+    const generation = (state.detailGenerationByReviewId[reviewId] || 0) + 1;
+    state.detailGenerationByReviewId[reviewId] = generation;
+    const captured = {
+      targetSessionId: sessionId, stateIdentity: state,
+      epoch: reviewEpoch(sessionId), reviewId: reviewId, generation: generation,
+    };
+    try {
+      const detail = await fetchReviewDetailRequest(sessionId, reviewId);
+      if (canApplyCaptured(captured, "detail") === false) return;
+      const currentSummary = Array.isArray(state.summaries)
+        ? state.summaries.find(function (item) { return item.id === reviewId; })
+        : null;
+      if (currentSummary === undefined || currentSummary === null) {
+        state.detailErrorByReviewId[reviewId] = "Review detail is out of date.";
+        renderHistoryReviewPanelIfCurrent(sessionId);
+        updateControlStates();
+        return;
+      }
+      if (isValidHistoryReviewDetail(
+            detail, sessionId, reviewId,
+            currentSummary.mode_switch_event_id, isValidApiTimestamp) === false) {
+        state.detailErrorByReviewId[reviewId] = "Invalid review detail.";
+        renderHistoryReviewPanelIfCurrent(sessionId);
+        updateControlStates();
+        return;
+      }
+
+      if (isHistoryReviewDetailCurrent(
+            detail, currentSummary, sessionId, isValidApiTimestamp)) {
+        state.detailsById[reviewId] = detail;
+        state.detailStatusByReviewId[reviewId] = "ready";
+        state.detailErrorByReviewId[reviewId] = null;
+      } else if (historyReviewDetailMayUpdateSummary(
+                   detail, currentSummary, sessionId, isValidApiTimestamp)) {
+        const derived = historyReviewSummaryFromDetail(
+          detail, sessionId, isValidApiTimestamp);
+        const next = derived === null ? null : upsertHistoryReviewSummary(
+          state.summaries, derived, sessionId, isValidApiTimestamp);
+        if (next === null) {
+          state.summariesStatus = "error";
+          state.summariesError = "Could not update review list.";
+          state.detailErrorByReviewId[reviewId] = "Could not update review list.";
+        } else {
+          state.summaries = next;
+          state.summariesStatus = "ready";
+          state.summariesError = null;
+          state.detailsById[reviewId] = detail;
+          state.detailStatusByReviewId[reviewId] = "ready";
+          state.detailErrorByReviewId[reviewId] = null;
+        }
+      } else {
+        state.detailErrorByReviewId[reviewId] = "Review detail is out of date.";
+      }
+      renderHistoryReviewPanelIfCurrent(sessionId);
+      updateControlStates();
+    } catch (err) {
+      if (canApplyCaptured(captured, "detail") === false) return;
+      if (isExactSessionNotFound(err)) { removeSessionLocally(sessionId); return; }
+      state.detailStatusByReviewId[reviewId] = "error";
+      state.detailErrorByReviewId[reviewId] = safeReviewError(err);
+      renderHistoryReviewPanelIfCurrent(sessionId);
+      updateControlStates();
+    }
+  }
+
+  async function loadHistoryReviewSession(sessionId, options) {
+    if (findSessionInList(sessionId) === null) { clearReviewSessionState(sessionId); return; }
+    const state = ensureReviewState(sessionId);
+    if (state === null) return;
+    const silent = options && options.silent === true;
+    const captured = {
+      targetSessionId: sessionId, stateIdentity: state,
+      epoch: reviewEpoch(sessionId),
+      generation: state.sessionLoadGeneration + 1,
+    };
+    state.sessionLoadGeneration = captured.generation;
+    if (silent === false) {
+      state.eventsStatus = "loading";
+      state.summariesStatus = "loading";
+      state.panelError = null;
+      renderHistoryReviewPanelIfCurrent(sessionId);
+    }
+    const settled = await Promise.allSettled([
+      fetchModeSwitchEventsRequest(sessionId),
+      fetchReviewSummariesRequest(sessionId),
+    ]);
+    const eventsResult = settled[0];
+    const summariesResult = settled[1];
+    if (eventsResult.status === "rejected" && isExactSessionNotFound(eventsResult.reason)) {
+      removeSessionLocally(sessionId); return;
+    }
+    if (summariesResult.status === "rejected" && isExactSessionNotFound(summariesResult.reason)) {
+      removeSessionLocally(sessionId); return;
+    }
+    if (canApplyCaptured(captured, "batch") === false) return;
+    if (eventsResult.status === "fulfilled" &&
+        isValidHistoryReviewEventList(eventsResult.value, sessionId,
+          isValidApiTimestamp, isValidModeSwitchEvent)) {
+      state.events = eventsResult.value;
+      state.eventsStatus = "ready";
+      state.eventsError = null;
+    } else {
+      state.eventsStatus = "error";
+      state.eventsError = eventsResult.status === "rejected"
+        ? safeReviewError(eventsResult.reason) : "Invalid event list.";
+    }
+    if (summariesResult.status === "fulfilled" &&
+        isValidHistoryReviewSummaryList(summariesResult.value, sessionId,
+          isValidApiTimestamp)) {
+      state.summaries = summariesResult.value;
+      state.summariesStatus = "ready";
+      state.summariesError = null;
+      const reconciled = reconcileHistoryReviewCaches(
+        state.detailsById, state.summaries, sessionId, isValidApiTimestamp);
+      if (reconciled !== null) {
+        state.summaries = reconciled.summaries;
+        state.detailsById = reconciled.detailsById;
+        for (const staleId of reconciled.staleReviewIds) {
+          state.detailErrorByReviewId[staleId] = "Review detail is out of date.";
+        }
+      }
+    } else {
+      state.summariesStatus = "error";
+      state.summariesError = summariesResult.status === "rejected"
+        ? safeReviewError(summariesResult.reason) : "Invalid review list.";
+    }
+    if (state.summariesStatus === "ready" && Array.isArray(state.summaries) &&
+        state.summaries.length > 0) {
+      const selectedExists = state.summaries.some(function (item) {
+        return item.id === state.selectedReviewId;
+      });
+      if (selectedExists === false) state.selectedReviewId = state.summaries[0].id;
+      const selectedSummary = state.summaries.find(function (item) {
+        return item.id === state.selectedReviewId;
+      });
+      const cachedDetail = state.detailsById[state.selectedReviewId];
+      if (selectedSummary && isHistoryReviewDetailCurrent(
+            cachedDetail, selectedSummary, sessionId, isValidApiTimestamp) === false) {
+        delete state.detailsById[selectedSummary.id];
+        state.detailErrorByReviewId[selectedSummary.id] = null;
+        await loadHistoryReviewDetail(sessionId, selectedSummary.id);
+      }
+    }
+    if (canApplyCaptured(captured, "batch") === false) return;
+    renderHistoryReviewPanelIfCurrent(sessionId);
+    updateControlStates();
+  }
+
+  function applyAuthoritativeReviewDetail(state, sessionId, detail) {
+    state.detailsById[detail.id] = detail;
+    state.selectedReviewId = detail.id;
+    state.uncertainEventId = null;
+    state.uncertainMessage = "";
+    state.proposalEvent = null;
+    state.panelError = null;
+    const summary = historyReviewSummaryFromDetail(detail, sessionId, isValidApiTimestamp);
+    if (summary !== null) {
+      const next = upsertHistoryReviewSummary(
+        state.summaries, summary, sessionId, isValidApiTimestamp);
+      if (next !== null) {
+        state.summaries = next;
+        state.summariesStatus = "ready";
+        state.summariesError = null;
+      } else {
+        state.summariesStatus = "error";
+        state.summariesError = "Could not update review list.";
+      }
+    }
+    renderHistoryReviewPanelIfCurrent(sessionId);
+    loadHistoryReviewSession(sessionId, { silent: true });
+  }
+
+  async function startHistoryReview(kind, eventId, triggerEl) {
+    if (historyReviewController === null) {
+      showStatus(historyReviewInitializationError || "History review is unavailable.", true);
+      return;
+    }
+    if (currentSessionId === null) return;
+    const sessionId = currentSessionId;
+    const state = ensureReviewState(sessionId);
+    if (state === null) return;
+    if (state.operation !== null) return;
+    if (kind !== "recheck" && reviewTargetBusy(sessionId)) return;
+    const generation = state.operationGeneration + 1;
+    state.operationGeneration = generation;
+    state.operation = { kind: kind, eventId: eventId, generation: generation,
+      phase: kind === "recheck" ? "rechecking" : "confirming_start" };
+    reviewDialogContextBySession[String(sessionId)] = {
+      stateIdentity: state, lifecycleEpoch: reviewEpoch(sessionId),
+      operationGeneration: generation, triggerEl: triggerEl || null,
+      pendingAdapter: null,
+    };
+    renderHistoryReviewPanelIfCurrent(sessionId);
+    updateControlStates();
+    try {
+      if (kind !== "recheck") {
+        const dialogContext = reviewDialogContextBySession[String(sessionId)];
+        if (dialogContext) dialogContext.pendingAdapter = historyReviewStartDialogAdapter;
+        // The heading is the confirmation question and the body explains
+        // the operation; the two never repeat the same sentence.
+        const isContinue = kind === "continue";
+        const dialogTitle = isContinue
+          ? historyReviewDialogCopy.continueTitle
+          : historyReviewDialogCopy.startTitle;
+        const message = isContinue
+          ? historyReviewDialogCopy.continueBody
+          : historyReviewDialogCopy.startBody;
+        const confirmed = historyReviewStartConfirmer === null
+          ? false
+          : await confirmWithReviewFocus(
+              function () {
+                return historyReviewStartConfirmer.confirm(message, dialogTitle);
+              },
+              sessionId,
+              triggerEl,
+            );
+        if (confirmed !== true) {
+          state.operation = null;
+          delete reviewDialogContextBySession[String(sessionId)];
+          renderHistoryReviewPanelIfCurrent(sessionId);
+          return;
+        }
+        state.operation.phase = "posting";
+        renderHistoryReviewPanelIfCurrent(sessionId);
+      }
+      const operation = {
+        targetSessionId: sessionId,
+        modeSwitchEventId: eventId,
+        generation: generation,
+      };
+      const outcome = kind === "recheck"
+        ? await historyReviewController.recheck(operation)
+        : await historyReviewController.start(operation);
+      const captured = {
+        targetSessionId: sessionId, stateIdentity: state,
+        epoch: reviewEpoch(sessionId), generation: generation,
+      };
+      if (canApplyCaptured(captured, "operation") === false) return;
+      if (outcome.status === "authoritative") {
+        applyAuthoritativeReviewDetail(state, sessionId, outcome.detail);
+      } else if (outcome.status === "uncertain") {
+        state.uncertainEventId = eventId;
+        state.uncertainMessage = outcome.message || "";
+        state.panelError = outcome.message || "";
+      } else if (outcome.status === "cancelled") {
+        state.panelError = "History review was cancelled.";
+      } else if (outcome.status === "session_not_found") {
+        removeSessionLocally(sessionId);
+        return;
+      } else if (outcome.status === "busy") {
+        state.panelError = "Another history review operation is already running.";
+      } else if (outcome.status === "invalid_request") {
+        state.panelError = "Invalid history review request.";
+      } else if (outcome.status === "failed") {
+        state.panelError = outcome.message || "History review failed.";
+      }
+      renderHistoryReviewPanelIfCurrent(sessionId);
+    } catch (_) {
+      state.panelError = "History review request failed.";
+      renderHistoryReviewPanelIfCurrent(sessionId);
+    } finally {
+      if (state.operation != null && state.operation.generation === generation) {
+        state.operation = null;
+      }
+      const context = reviewDialogContextBySession[String(sessionId)];
+      if (context && context.operationGeneration === generation) {
+        delete reviewDialogContextBySession[String(sessionId)];
+      }
+      renderHistoryReviewPanelIfCurrent(sessionId);
+      updateControlStates();
+    }
+  }
+
+  function handleInteractionModeReviewOutcome(targetSessionId, outcome) {
+    if (outcome.status != "switched") return;
+    const state = ensureReviewState(targetSessionId);
+    if (state === null) return;
+    if (outcome.switchEvent && isValidModeSwitchEvent(outcome.switchEvent, isValidApiTimestamp)) {
+      const existing = Array.isArray(state.events) ? state.events : [];
+      state.events = existing
+        .filter(function (event) { return event.id === outcome.switchEvent.id ? false : true; })
+        .concat([outcome.switchEvent]);
+    }
+    loadHistoryReviewSession(targetSessionId, { silent: true });
+  }
+
+  function handleHistoryReviewSelectChange() {
+    if (currentSessionId === null) return;
+    const state = getReviewStateIfExists(currentSessionId);
+    if (state === null) return;
+    const reviewId = Number(historyReviewSelectEl.value);
+    if (!Number.isSafeInteger(reviewId) || reviewId < 1) return;
+    state.selectedReviewId = reviewId;
+    if (state.detailsById[reviewId] === undefined) {
+      loadHistoryReviewDetail(currentSessionId, reviewId);
+    }
+    renderHistoryReviewPanel();
+  }
+
+  function handleHistoryReviewToggle() {
+    if (currentSessionId === null) return;
+    const state = getReviewStateIfExists(currentSessionId);
+    if (state === null) return;
+    state.collapsed = state.collapsed === true ? false : true;
+    renderHistoryReviewPanel();
+  }
+
+  function handleHistoryReviewRecheckAction() {
+    if (currentSessionId === null) return;
+    const state = getReviewStateIfExists(currentSessionId);
+    if (state === null) return;
+    const model = buildHistoryReviewPanelModel({
+      sessionId: currentSessionId, state: state,
+      currentMode: currentSessionInteractionMode(),
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    if (model === null) return;
+    if (model.actionKind === "reload") {
+      if (Number.isSafeInteger(model.actionReviewId) && model.actionReviewId > 0) {
+        loadHistoryReviewDetail(currentSessionId, model.actionReviewId);
+      } else {
+        loadHistoryReviewSession(currentSessionId);
+      }
+      return;
+    }
+    if (model.actionKind === "recheck" && Number.isSafeInteger(model.actionEventId)) {
+      startHistoryReview("recheck", model.actionEventId, historyReviewRecheckBtn);
+    }
+  }
 
   // Controller + confirmer, initialised once in init().
   let switchController = null;
@@ -768,6 +1593,9 @@
       isInteractionModeSwitching;
     const usable = registryUsable();
     const writable = currentSessionWritable();
+    const reviewBusy = currentSessionId === null
+      ? false
+      : reviewTargetBusy(currentSessionId);
 
     const blockCreate =
       blockSessionActions || !usable || selectedProfileId === null;
@@ -776,7 +1604,7 @@
     const blockSend =
       blockBase || isCreatingSession || isSending ||
       isProfileSwitching || isDeletingSession ||
-      isInteractionModeSwitching || !writable ||
+      isInteractionModeSwitching || !writable || reviewBusy ||
       (currentSessionId === null && !usable);
 
     const switchInitialized =
@@ -788,9 +1616,9 @@
       currentSessionInteractionMode();
     const blockCurrentProfile = blockSessionActions || !usable ||
       !switchInitialized || currentSessionId === null ||
-      interactionModeUncertain;
+      interactionModeUncertain || reviewBusy;
     const blockInteractionMode = blockSessionActions ||
-      currentSessionId === null;
+      currentSessionId === null || reviewBusy;
 
     sendBtn.disabled = blockSend;
     inputEl.disabled = blockSend;
@@ -823,12 +1651,16 @@
 
     const deleteBtns = document.querySelectorAll(".delete-session-btn");
     deleteBtns.forEach(function (btn) {
-      btn.disabled = blockSessionActions;
+      const sid = Number(btn.dataset.sessionId);
+      const targetBusy = Number.isSafeInteger(sid) && sid > 0 && reviewTargetBusy(sid);
+      btn.disabled = blockSessionActions || targetBusy;
     });
 
     const renameBtns = document.querySelectorAll(".rename-session-btn");
     renameBtns.forEach(function (btn) {
-      btn.disabled = blockSessionActions;
+      const sid = Number(btn.dataset.sessionId);
+      const targetBusy = Number.isSafeInteger(sid) && sid > 0 && reviewTargetBusy(sid);
+      btn.disabled = blockSessionActions || targetBusy;
     });
 
     const selectBtns = document.querySelectorAll(".session-select-btn");
@@ -1220,6 +2052,7 @@
         const renameBtn = document.createElement("button");
         renameBtn.type = "button";
         renameBtn.className = "rename-session-btn";
+        renameBtn.dataset.sessionId = String(sid);
         renameBtn.setAttribute("aria-label", "Rename session " + sid);
         renameBtn.title = "Rename";
         renameBtn.textContent = "✎";  // U+270E
@@ -1231,6 +2064,7 @@
         // -- Delete button -----------------------------------------------
         const delBtn = document.createElement("button");
         delBtn.className = "delete-session-btn";
+        delBtn.dataset.sessionId = String(sid);
         delBtn.type = "button";
         delBtn.setAttribute("aria-label", "Delete session " + sid);
         delBtn.title = "Delete";
@@ -1318,6 +2152,9 @@
     for (const sid of Object.keys(interactionModeUncertainBySession)) {
       if (!presentIds[sid]) delete interactionModeUncertainBySession[sid];
     }
+    for (const sid of Object.keys(reviewStateBySession)) {
+      if (!presentIds[sid]) clearReviewSessionState(Number(sid));
+    }
 
     // Decide the final selection BEFORE rendering the list so the
     // highlight, title, badge and message area all point at the same
@@ -1365,6 +2202,7 @@
 
     if (selectionChanged) {
       loadMessages(next.selectionId);
+      loadHistoryReviewSession(next.selectionId);
     }
 
     return true;
@@ -1415,6 +2253,7 @@
    * if it was the currently-selected session.
    */
   function removeSessionLocally(sessionId) {
+    clearReviewSessionState(sessionId);
     sessions = sessions.filter(function (s) { return s.id !== sessionId; });
     delete sessionLastMessageId[sessionId];
     delete sessionSendBlocks[sessionId];
@@ -1449,6 +2288,7 @@
 
       if (currentSessionId !== null) {
         loadMessages(currentSessionId);
+        loadHistoryReviewSession(currentSessionId);
       } else {
         renderWelcome();
       }
@@ -1532,6 +2372,7 @@
     renderCurrentProfileStatus();
     renderInteractionModeBar();
     loadMessages(sessionId);
+    loadHistoryReviewSession(sessionId);
 
     if (isMobile()) {
       closeSidebarOnMobile();
@@ -1775,6 +2616,7 @@
 
   async function handleDeleteSession(sessionId, event) {
     event.stopPropagation();
+    if (reviewTargetBusy(sessionId)) return;
     if (isSending || isProfileSwitching || isDeletingSession ||
         isCreatingSession || isInteractionModeSwitching) return;
 
@@ -1814,6 +2656,7 @@
     if (isSending || isRenaming || isInitializing ||
         isProfileSwitching || isDeletingSession ||
         isInteractionModeSwitching) return;
+    if (reviewTargetBusy(sessionId)) return;
 
     isRenaming = true;
     renamingSessionId = sessionId;
@@ -1825,6 +2668,7 @@
     if (isRenameSaving) return;  // prevent double-submit
     if (isProfileSwitching || isDeletingSession ||
         isInteractionModeSwitching) return;
+    if (reviewTargetBusy(sessionId)) return;
 
     var rawTitle = renameInputEl.value;
     if (!rawTitle.trim()) {
@@ -1896,6 +2740,7 @@
     if (isSending || isInitializing || isCreatingSession ||
         isProfileSwitching || isDeletingSession ||
         isInteractionModeSwitching) return;
+    if (currentSessionId !== null && reviewTargetBusy(currentSessionId)) return;
 
     // Auto-create session on first send
     if (currentSessionId === null) {
@@ -2276,6 +3121,7 @@
 
   function applyInteractionModeOutcome(outcome, operation) {
     const targetSessionId = operation.targetSessionId;
+    handleInteractionModeReviewOutcome(targetSessionId, outcome);
 
     if (outcome.status === "not_found") {
       removeSessionLocally(targetSessionId);
@@ -2366,6 +3212,7 @@
         isRenameSaving || isDeletingSession || isProfileSwitching ||
         isInteractionModeSwitching) return;
     if (currentSessionId === null) return;
+    if (reviewTargetBusy(currentSessionId)) return;
 
     const targetSessionId = currentSessionId;
     const session = findSessionInList(targetSessionId);
@@ -2590,6 +3437,7 @@
       interactionModeUncertainBySession, currentSessionId,
     )) return;
     if (!applyEnabled()) return;
+    if (reviewTargetBusy(currentSessionId)) return;
 
     const targetSessionId = currentSessionId;
     const requestedDraftId = currentProfileDraftId;
@@ -2873,6 +3721,59 @@
     applyInteractionModeSwitch();
   });
 
+  historyReviewToggleBtn.addEventListener("click", function () {
+    handleHistoryReviewToggle();
+  });
+  historyReviewStartBtn.addEventListener("click", function () {
+    if (currentSessionId === null) return;
+    const state = getReviewStateIfExists(currentSessionId);
+    if (state === null) return;
+    const model = buildHistoryReviewPanelModel({
+      sessionId: currentSessionId, state: state,
+      currentMode: currentSessionInteractionMode(),
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    if (model && model.proposal) {
+      startHistoryReview("start", model.proposal.eventId, historyReviewStartBtn);
+    }
+  });
+  historyReviewDismissBtn.addEventListener("click", function () {
+    if (currentSessionId === null) return;
+    const state = getReviewStateIfExists(currentSessionId);
+    if (state === null) return;
+    const model = buildHistoryReviewPanelModel({
+      sessionId: currentSessionId, state: state,
+      currentMode: currentSessionInteractionMode(),
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    if (model && model.proposal) {
+      state.proposalDismissedEventId = model.proposal.eventId;
+      renderHistoryReviewPanel();
+    }
+  });
+  historyReviewContinueBtn.addEventListener("click", function () {
+    if (currentSessionId === null) return;
+    const state = getReviewStateIfExists(currentSessionId);
+    if (state === null) return;
+    const model = buildHistoryReviewPanelModel({
+      sessionId: currentSessionId, state: state,
+      currentMode: currentSessionInteractionMode(),
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    if (model && model.selectedSummary) {
+      startHistoryReview("continue", model.selectedSummary.mode_switch_event_id, historyReviewContinueBtn);
+    }
+  });
+  historyReviewRecheckBtn.addEventListener("click", function () {
+    handleHistoryReviewRecheckAction();
+  });
+  historyReviewSelectEl.addEventListener("change", function () {
+    handleHistoryReviewSelectChange();
+  });
+
   // Mobile sidebar toggle
   sidebarToggleEl.addEventListener("click", function () {
     toggleSidebar();
@@ -2929,6 +3830,7 @@
     // the app keeps working; only the model switch bar is disabled.
     initializeProfileSwitching();
     initializeInteractionModeSwitching();
+    initializeHistoryReview();
 
     // Load profiles and sessions in parallel — results are handled
     // independently so one failure never blocks the other.
@@ -2995,6 +3897,7 @@
         renderCurrentProfileStatus();
         renderInteractionModeBar();
         await loadMessages(currentSessionId);
+        await loadHistoryReviewSession(currentSessionId);
       } else {
         renderWelcome();
         clearStatus();

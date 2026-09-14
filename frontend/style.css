@@ -8,6 +8,71 @@
   padding: 0;
 }
 
+/* The universal reset above also removes the ``margin: auto`` that
+   browsers apply to <dialog> for viewport centring, which parked every
+   modal in the top-left corner.  html/body are pinned to the viewport so
+   a focused input can never scroll the root document; the scrolling
+   surfaces (.chat-messages, .history-review-body, .session-list) own
+   their own overflow instead. */
+html,
+body {
+  overflow: hidden;
+}
+
+/* ---- Modal dialogs ------------------------------------------------- */
+
+/* One rule for every modal so the profile-switch and history-review
+   dialogs cannot drift apart.  Centring is explicit instead of relying
+   on a UA default, and the block/inline auto margins keep the dialog
+   centred in browsers without flex support for <dialog>. */
+dialog {
+  position: fixed;
+  inset: 0;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  margin: auto;
+  padding: 20px;
+  border: 1px solid #d1d1d6;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1a1a1a;
+  overflow: auto;
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.dialog-actions button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Cancel-type actions stay neutral; confirm-type actions are the single
+   blue primary button in every dialog. */
+.dialog-actions button[data-variant="secondary"] {
+  background: #f0f0f2;
+  color: #1a1a1a;
+}
+
+.dialog-actions button[data-variant="secondary"]:hover {
+  background: #e5e5e5;
+}
+
+.dialog-actions button[data-variant="primary"] {
+  background: #007aff;
+  color: #ffffff;
+}
+
+.dialog-actions button[data-variant="primary"]:hover {
+  background: #0066d6;
+}
+
 /* ---- Screen reader only ------------------------------------------- */
 
 .sr-only {
@@ -170,6 +235,7 @@ body {
 /* ---- Session list -------------------------------------------------- */
 
 .session-list {
+  min-height: 0;
   flex: 1;
   overflow-y: auto;
   padding: 8px 0;
@@ -455,12 +521,17 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Without min-height: 0 this flex item refuses to shrink below its
+     content, so a tall review panel pushed the input area past the
+     viewport and let the root page scroll. */
+  min-height: 0;
   overflow: hidden;
 }
 
 /* ---- Session header ------------------------------------------------ */
 
 .chat-session-header {
+  flex-shrink: 0;
   padding: 12px 20px;
   border-bottom: 1px solid #e5e5e5;
   background: #fafafa;
@@ -530,6 +601,7 @@ body {
 }
 
 .interaction-mode-bar {
+  flex-shrink: 0;
   padding: 8px 20px;
   border-bottom: 1px solid #e5e5e5;
   background: #ffffff;
@@ -576,6 +648,7 @@ body {
 /* ---- Session compatibility notice (persistent read-only state) ------ */
 
 .session-compatibility-notice {
+  flex-shrink: 0;
   padding: 8px 20px;
   border-bottom: 1px solid #e5e5e5;
   background: #fff8e1;
@@ -592,6 +665,7 @@ body {
 /* ---- Current-session model control bar ------------------------------- */
 
 .current-profile-bar {
+  flex-shrink: 0;
   padding: 8px 20px;
   border-bottom: 1px solid #e5e5e5;
   background: #ffffff;
@@ -680,16 +754,6 @@ body {
 
 /* ---- Model switch dialog ---------------------------------------------- */
 
-#profileSwitchDialog {
-  max-width: calc(100vw - 32px);
-  width: 400px;
-  padding: 20px;
-  border: 1px solid #d1d1d6;
-  border-radius: 10px;
-  background: #ffffff;
-  color: #1a1a1a;
-}
-
 #profileSwitchDialog h2 {
   font-size: 1rem;
   font-weight: 600;
@@ -709,33 +773,6 @@ body {
   gap: 8px;
 }
 
-.dialog-actions button {
-  padding: 6px 14px;
-  border: none;
-  border-radius: 6px;
-  font-size: 0.875rem;
-  font-family: inherit;
-  cursor: pointer;
-}
-
-#psd-cancel {
-  background: #f0f0f2;
-  color: #1a1a1a;
-}
-
-#psd-cancel:hover {
-  background: #e5e5e5;
-}
-
-#psd-continue {
-  background: #007aff;
-  color: #ffffff;
-}
-
-#psd-continue:hover {
-  background: #0066d6;
-}
-
 .dialog-actions button:focus-visible {
   outline: 2px solid #007aff;
   outline-offset: 1px;
@@ -744,7 +781,13 @@ body {
 /* ---- Messages area ------------------------------------------------- */
 
 .chat-messages {
-  flex: 1;
+  /* flex-basis 0 keeps a long transcript from inflating this item's
+     hypothetical size: the list grows into the space the fixed bars and
+     the review panel leave over, instead of shrinking the panel. */
+  flex: 1 1 0;
+  /* It still keeps a usable slice of history when the review panel is
+     open on a short viewport. */
+  min-height: 72px;
   overflow-y: auto;
   padding: 16px 20px;
   display: flex;
@@ -755,6 +798,12 @@ body {
 .message {
   display: flex;
   max-width: 80%;
+  /* Positioning context for the .sr-only copy-status live region inside
+     the message.  Without it that absolutely positioned node resolves
+     against the initial containing block, escapes .chat-messages'
+     scrollport and grows the document's scrollable overflow — which let
+     the browser scroll the whole page when the composer got focus. */
+  position: relative;
 }
 
 .message.user {
@@ -864,6 +913,7 @@ body {
 /* ---- Status bar ---------------------------------------------------- */
 
 .chat-status {
+  flex-shrink: 0;
   min-height: 24px;
   padding: 0 20px 4px;
   font-size: 0.8125rem;
@@ -878,6 +928,8 @@ body {
 
 .chat-input-area {
   display: flex;
+  align-items: flex-end;
+  flex-shrink: 0;
   gap: 8px;
   padding: 12px 16px 16px;
   border-top: 1px solid #e5e5e5;
@@ -939,7 +991,16 @@ body {
   .app-layout {
     flex-direction: column;
     max-width: none;
+    /* dvh tracks the collapsing mobile address bar; vh is the fallback
+       for browsers that do not support it. */
     height: 100vh;
+    height: 100dvh;
+  }
+
+  /* Small viewports: the column already shrinks correctly from the base
+     rules, so only the review panel's share is tuned here. */
+  .history-review-panel {
+    max-height: 45vh;
   }
 
   .sidebar-toggle {
@@ -1026,4 +1087,266 @@ body {
     width: 32px;
     height: 32px;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* History Review panel                                                */
+/* ------------------------------------------------------------------ */
+
+.history-review-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* The panel asks for a predictable share of the column instead of its
+     full content height (a long review would otherwise starve the
+     message list).  Its body caps and scrolls; the composer and a slice
+     of history always stay on screen. */
+  flex: 0 1 auto;
+  max-height: 45vh;
+  padding: 8px 20px;
+  border-bottom: 1px solid #e5e5e5;
+  background: #fafafa;
+  overflow: hidden;
+}
+
+.history-review-panel[hidden] {
+  display: none;
+}
+
+.history-review-panel.collapsed .history-review-body {
+  display: none;
+}
+
+.history-review-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  /* The header keeps the badge and the collapse control visible even
+     when the panel is squeezed on a short viewport. */
+  flex-shrink: 0;
+}
+
+.history-review-header h2 {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.history-review-status-badge {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: #5856d6;
+}
+
+.history-review-status-badge:empty {
+  display: none;
+}
+
+#historyReviewToggleBtn {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid #d1d1d6;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1c1c1e;
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.history-review-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Cap the scrollable body so the panel can never push the composer
+     below the viewport.  36vh is the roomy default; the calc() variants
+     reserve the fixed chrome (header, mode bar, profile bar, status,
+     composer) plus this panel's own chrome, and are ignored by browsers
+     that do not support vh/dvh in calc(). */
+  max-height: 36vh;
+  max-height: calc(100vh - 488px);
+  max-height: calc(100dvh - 488px);
+  overflow-y: auto;
+  padding-top: 8px;
+}
+
+.history-review-live {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: #636366;
+  min-height: 1em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.history-review-live:empty {
+  display: none;
+}
+
+#historyReviewProposal p {
+  margin: 4px 0 8px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.history-review-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.history-review-actions button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #007aff;
+  color: #ffffff;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  cursor: pointer;
+  min-height: 32px;
+}
+
+.history-review-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#historyReviewDismissBtn {
+  background: #f0f0f2;
+  color: #1a1a1a;
+}
+
+#historyReviewSelector {
+  margin: 4px 0 8px;
+}
+
+/* A bare ``display: block`` on the select used to win over the [hidden]
+   attribute, so a single-review session showed an empty dropdown.  Keep
+   the control and its "Review" label hidden together. */
+#historyReviewSelector[hidden],
+#historyReviewSelect[hidden] {
+  display: none;
+}
+
+#historyReviewSelect {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid #d1d1d6;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1c1c1e;
+  font-family: inherit;
+}
+
+#historyReviewDetail > label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #636366;
+  margin-bottom: 2px;
+}
+
+#historyReviewDetail > label[hidden] {
+  display: none;
+}
+
+#historyReviewSummary,
+#historyReviewCoverage {
+  margin: 4px 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#historyReviewSummary:empty,
+#historyReviewCoverage:empty {
+  display: none;
+}
+
+.history-review-findings {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-review-finding {
+  padding: 8px;
+  border: 1px solid #e5e5e5;
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.history-review-finding .finding-verdict {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e5e5ea;
+  color: #1c1c1e;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.history-review-error {
+  margin: 4px 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: #b00020;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.history-review-error[hidden] {
+  display: none;
+}
+
+/* mobile/touch */
+@media (max-width: 767px) {
+  .history-review-panel {
+    padding: 8px 12px;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .history-review-actions button,
+  #historyReviewToggleBtn {
+    min-height: 44px;
+  }
+}
+
+#historyReviewStartDialog h2,
+#historyReviewConsentDialog h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+#historyReviewStartDialog p,
+#historyReviewConsentDialog p {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  margin-bottom: 16px;
+  word-break: break-word;
+  white-space: pre-wrap;
 }

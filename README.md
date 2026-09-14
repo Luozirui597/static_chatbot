@@ -8,11 +8,17 @@ OpenAI-compatible chat-completions API.
 ## Development version
 
 - `static-baseline-v1` freezes the original Static Chatbot baseline.
-- The current `feature/teachable-agent` branch is the Teachable Agent
+- The current `feature/history-review` branch is the Teachable Agent
   development version.
-- Iteration 1 adds two switchable interaction modes.  It does **not**
-  implement history audit; Iteration 2 will add the switch-time history
-  summary and correction report.
+- **Iteration 1** adds two switchable interaction modes
+  (`receive_teaching`, `corrective`) and records an immutable boundary
+  for every switch.  Corrective mode only changes how *future* turns are
+  handled; it never inspects prior history on its own.
+- **Iteration 2** adds **History Review**: an explicit, user-started
+  audit of the teaching history that Iteration 1 froze at a mode
+  switch.  A review is a **separate operation with its own lifecycle** —
+  switching to `corrective` never starts one automatically, and nothing
+  is sent to a remote reviewer until the user confirms it.
 
 ## Features
 
@@ -35,12 +41,14 @@ OpenAI-compatible chat-completions API.
 - Responsive layout with a collapsible sidebar on mobile
 - Loading, empty, and error states in the UI
 - Input validation (blank and over-length messages are rejected)
-- 417 automated Python tests covering APIs, models, business logic,
-  LLM client behaviour, session isolation, concurrency, auto-title
-  generation, session rename, schema migration, and error handling
+- Complete Python and Node test suites covering APIs, models, business
+  logic, LLM client behaviour, session isolation, concurrency,
+  auto-title generation, session rename, schema migration, history
+  review selection/execution/persistence, and error handling
 - Frontend unit tests for clipboard logic, copy button state machine,
-  network-error recovery, model-selection logic, and session
-  model-switching logic (Node `node:test`)
+  network-error recovery, model-selection logic, session
+  model-switching logic, interaction-mode helpers, and the history
+  review panel/controller (Node `node:test`)
 - Two per-session interaction modes:
   `receive_teaching` (non-corrective teaching) and `corrective`
   (active correction for future turns)
@@ -49,6 +57,27 @@ OpenAI-compatible chat-completions API.
   **Model for this chat** control
 - Per-message interaction-mode and prompt-version snapshots plus a
   persisted `mode_switch_events` log
+- **History Review** — an explicit, user-started audit of prior
+  teaching history:
+  - a *frozen boundary*: each mode switch records the message id the
+    history runs through, so a review always sees the same history no
+    matter when it is started
+  - *deterministic source selection*: eligible user messages are picked
+    newest-first under a fixed token/character budget with a versioned
+    policy, never re-selected while a review exists
+  - a *reviewer snapshot*: the reviewer profile, model, prompt version
+    and source ids are frozen when the review starts
+  - an explicit *privacy confirmation* whenever the selected source
+    messages were not produced by the same API reviewer profile — a
+    non-API (local/fake) reviewer never asks, and an API reviewer asks
+    only when at least one selected source message carries a different
+    profile id, profile kind, or model snapshot
+  - a strict *state machine* (`pending` → `running` →
+    `completed` / `failed`) with a single CAS claim, at most one LLM
+    call per review, and a strict JSON parser that fails a review with
+    a stable error code instead of storing partial output
+  - a per-session review panel with status, findings, coverage note,
+    review selector, Recheck/Reload, and Continue actions
 
 ## Project structure
 
@@ -57,11 +86,19 @@ backend/
   main.py              FastAPI app, routes, static mount
   schemas.py           Pydantic request / response models
   chat_service.py      ChatService — business logic
+  history_boundary.py  Deterministic mode-switch boundary capture
+  history_review_selection.py  Deterministic review source selection
+  history_review_prompt.py     Frozen prompt inputs / construction
+  history_review_parser.py     Strict reviewer-output parser
+  history_review_service.py    Review preparation, CAS claim, execution
   llm_client.py        LLMClient protocol, FakeLLMClient,
                        OpenAICompatibleLLMClient, factory
+  llm_profiles.py      LLM profile registry and session binding
   config.py            Environment configuration
   database.py          SQLAlchemy engine, session factory, get_db
-  models.py            ORM models — ChatSession, Message
+  models.py            ORM models — ChatSession, Message,
+                       ModeSwitchEvent, HistoryReview,
+                       HistoryReviewSource, HistoryReviewFinding
   exceptions.py        Service-level exception types
   system_prompt.py     Fixed legacy chat prompt
   interaction_modes.py Interaction modes, prompt versions, prompts
@@ -75,6 +112,9 @@ frontend/
   model-selection.js   Pure helpers for the model selector
   session-profile-switch.js  Session model-switch controller,
                        confirmer, and outcome planners
+  history-review.js    Pure history-review logic: validators, proposal
+                       selection, cache reconciliation, panel model,
+                       execution controller
   app.js               Frontend logic (vanilla JS)
 tests/
   conftest.py          Forces LLM_MODE=fake for all tests
@@ -87,11 +127,22 @@ tests/
   test_sessions.py     Session CRUD API
   test_session_chat.py Session message send API, concurrency, lock safety
   test_interaction_mode.py    Interaction-mode API, prompts, snapshots, migration
+  test_history_boundary.py    Boundary capture rules
+  test_history_review_selection.py  Deterministic source selection
+  test_history_review_prompt.py     Prompt construction / snapshots
+  test_history_review_parser.py     Strict output parsing
+  test_history_review_service.py    Preparation and execution service
+  test_history_review_storage.py    Review/source/finding persistence
+  test_history_review_storage_migration.py  Schema migration
+  test_history_review_execution.py  CAS claim and execution outcomes
+  test_history_review_api.py        History-review HTTP API
   test_clipboard.test.js         Frontend clipboard helper tests
   test_network_recovery.test.js  Frontend send-failure recovery tests
   test_interaction_mode.test.js  Frontend interaction-mode helper tests
   test_model_selection.test.js   Frontend model-selection helper tests
   test_session_profile_switch.test.js  Frontend session model-switch tests
+  test_history_review.test.js    Frontend history-review controller tests
+  test_history_review_dom.test.js  Panel/dialog DOM, CSS and wiring tests
 .env.example           Documented environment variables
 requirements.txt       Python dependencies
 ```
@@ -216,6 +267,8 @@ Messages and sessions are stored in a local SQLite database.  The
 default database file is `data/chatbot.db` — it is created
 automatically on first startup if it does not exist.
 
+Core chat data:
+
 - Database tables (`chat_sessions`, `messages`) are initialised when
   the application starts.
 - All sessions and their messages persist across server restarts.
@@ -226,6 +279,48 @@ automatically on first startup if it does not exist.
 - Only the **20 most recent prior messages** are sent to the LLM as
   conversational context.  Messages beyond that window remain in the
   database but are not included in LLM requests.
+
+Interaction-mode and history-review data:
+
+- `mode_switch_events` — one immutable row per **real interaction-mode
+  change**, in both directions: `receive_teaching` → `corrective` and
+  `corrective` → `receive_teaching`.  Every row stores the frozen upper
+  boundary (`history_through_message_id`), the boundary version and the
+  reviewable user-message count.  These fields are never recomputed
+  after the switch, so a review started later still sees the history as
+  it was at the switch.  Only `receive_teaching` → `corrective` events
+  with a valid boundary are eligible for History Review: on the reverse
+  direction (and when the boundary cannot be trusted) the reviewable
+  count is `null`, and the review API rejects such an event as not
+  reviewable.  The event row does **not** store a lower bound.
+- `history_reviews` — the review state machine (`pending`, `running`,
+  `completed`, `failed`) plus the frozen reviewer snapshot (profile id,
+  label, model, prompt version), the selection/budget policy versions
+  and source counters, the review summary, coverage note, error
+  code/message, findings count, and the created/started/completed/
+  updated timestamps.  For an eligible review the lower bound is
+  *derived* while the review is prepared, from the preceding
+  `corrective` → `receive_teaching` event in that session (`session_start`
+  when there is none), and is then frozen in
+  `history_reviews.lower_bound_kind` and
+  `history_reviews.lower_bound_message_id` — never written back onto the
+  mode-switch event.  At most **one** history review exists per
+  mode-switch event (enforced by the
+  `uq_history_reviews_session_event` constraint on
+  `session_id` + `mode_switch_event_id`); execution is claimed with a
+  compare-and-swap update so a review is never executed twice.
+- `history_review_sources` — the **frozen** set of source messages for a
+  review (message id, sequence, role, snapshot of the text and byte
+  length).  The stored text is what the reviewer saw, so later message
+  edits never rewrite review history.
+- `history_review_findings` — the parsed findings for a completed
+  review: sequence, source message id, verdict
+  (`correct` / `incorrect` / `uncertain` / `not_a_claim`), the claim
+  text, and the optional correction and explanation text.
+- Deleting a session cascades to its mode-switch events, reviews,
+  sources and findings.
+- Schema upgrades are recorded in `schema_migrations`, so an existing
+  database is migrated once and never rewritten on later startups.
 
 ## API
 
@@ -247,7 +342,54 @@ Interactive API documentation (Swagger UI) is available at:
 | `PATCH` | `/api/sessions/{id}` | Rename a session |
 | `PATCH` | `/api/sessions/{id}/llm-profile` | Switch the session's LLM profile |
 | `PATCH` | `/api/sessions/{id}/interaction-mode` | Switch between `receive_teaching` and `corrective` |
+| `GET` | `/api/sessions/{id}/mode-switch-events` | List the session's mode-switch events and their frozen boundaries |
+| `POST` | `/api/sessions/{id}/history-reviews` | Start (or reuse) a history review for a mode-switch event |
+| `GET` | `/api/sessions/{id}/history-reviews` | List the session's review summaries (newest first) |
+| `GET` | `/api/sessions/{id}/history-reviews/{review_id}` | Get one review's detail, sources and findings |
 | `DELETE` | `/api/sessions/{id}` | Delete a session and its messages |
+
+The history-review endpoints behave as follows:
+
+```http
+GET  /api/sessions/{session_id}/mode-switch-events
+POST /api/sessions/{session_id}/history-reviews
+GET  /api/sessions/{session_id}/history-reviews
+GET  /api/sessions/{session_id}/history-reviews/{review_id}
+```
+
+- `POST /api/sessions/{id}/history-reviews` returns **201** for a newly
+  created review and **200** when an existing review for the same
+  mode-switch event is reused.
+- `GET /api/sessions/{id}/mode-switch-events` returns **every** recorded
+  mode change for the session (newest first), in both directions.
+  Events whose `reviewable_user_message_count` is `null` — the reverse
+  `corrective` → `receive_teaching` direction, or a boundary that could
+  not be trusted — are listed but cannot be reviewed.
+- The acknowledgement requirement for a remote reviewer is *conditional*:
+  - a **non-API** reviewer (local / fake) never requires it;
+  - an **API** reviewer whose selected source messages all carry that
+    same profile id, a profile kind of `api`, and the same model
+    snapshot as the reviewer never requires it;
+  - if **at least one** selected source message differs in profile id,
+    profile kind, or model snapshot, the request returns **409**
+    `history_review_remote_ack_required` with the acknowledgement
+    metadata (source message count, reviewer label/model, truncation
+    flag).  The frontend shows a privacy confirmation and retries once
+    it is accepted.
+- A concurrent execution returns **409**
+  `history_review_execution_conflict`.
+- Sessions with no reviewable history, an unusable boundary, or an
+  event that is not a supported switch fail with **422** and never
+  reach an LLM.
+- The reviewer output is parsed strictly, and a parse failure fails the
+  review instead of storing partial data.  The stable parser error
+  codes are:
+  `history_review_output_too_large`,
+  `history_review_json_syntax_error`,
+  `history_review_json_structure_error`,
+  `history_review_json_semantic_error`,
+  `history_review_source_reference_invalid`, and
+  `history_review_source_uncovered`.
 
 The web interface is served at:
 
@@ -339,8 +481,40 @@ by the current UI.
   session model profile.
 - `receive_teaching` is the default for new sessions.
 - Iteration 1 `corrective` mode only changes how subsequent messages
-  are handled.  It does **not** review or summarise prior history;
-  history audit is planned for Iteration 2.
+  are handled.  Switching to it does **not** review, summarise or
+  rewrite prior history — a history review is always a separate,
+  explicitly started operation (Iteration 2, below).
+- **History Review** panel:
+  - A switch to `corrective` that has reviewable prior user messages
+    shows a **Review available** proposal.  Nothing runs until the user
+    presses **Review previous teaching** and confirms the start dialog;
+    **Not now** dismisses the proposal for that switch.
+  - Starting a review asks for confirmation first.  A **second** privacy
+    confirmation appears only when the request needs remote
+    acknowledgement — that is, when an API reviewer would receive
+    selected source messages whose profile id, profile kind or model
+    snapshot differs from its own.  It lists how many messages would be
+    sent, which reviewer profile/model would receive them, and whether
+    the history is truncated.  Local/fake reviewers, and API reviewers
+    whose sources all match, go straight through.
+  - A review always uses the history frozen at its mode switch, so a
+    review started later sees exactly the same messages.
+  - The panel shows the review status badge (`Pending`, `Running`,
+    `Completed`, `Failed`, plus `Review available`, `Working`,
+    `Uncertain`, `Error`, `Loading`), the summary, the coverage note,
+    and the per-finding verdicts with their source message ids.
+  - The review selector appears only when the session has **two or
+    more** reviews; a session with a single review shows no dropdown.
+  - **Recheck** re-queries an unreliable or running review and a failed
+    one; **Reload** re-fetches a missing or outdated detail; **Continue
+    review** resumes a pending review.
+  - A review in flight keeps the session busy: sending, mode switching,
+    model switching, renaming and deleting are blocked for that
+    session until it settles.  A running review in one session never
+    blocks another session.
+  - If the review list cannot be loaded, the panel fails closed and
+    offers **Reload**; a cached detail is only rendered while it still
+    matches the authoritative review summary.
 
 - The sidebar lists all sessions, newest first (ordered by
   `updated_at` descending on the server).
@@ -460,17 +634,14 @@ Press `Ctrl+C` in the terminal where `start-local-ollama.sh` is running.
 .venv/bin/python -m pytest -q
 
 # Frontend tests (requires Node.js)
-node --test \
-  tests/test_clipboard.test.js \
-  tests/test_network_recovery.test.js \
-  tests/test_model_selection.test.js \
-  tests/test_session_profile_switch.test.js \
-  tests/test_interaction_mode.test.js
+node --test tests/*.test.js
 ```
 
-Current suite: **417 Python tests**, **360 frontend tests** (all passing):
-37 clipboard, 5 network recovery, 185 model selection,
-96 session profile switch, 37 interaction mode.
+Both suites are complete and green: the Python suite and the Node
+suite each run as a whole (`tests/*.test.js` collects every frontend
+test file, including the history-review controller and DOM/CSS
+contract tests).  Run them without a build step — no bundler, no
+framework, and no network access.
 
 - `conftest.py` forces `LLM_MODE=fake` and `DATABASE_URL=sqlite:///:memory:`
   before any test module is imported — no test ever touches a real
@@ -483,12 +654,15 @@ Current suite: **417 Python tests**, **360 frontend tests** (all passing):
   structural invariants (``max_active``) instead of wall-clock
   thresholds.  Coverage includes lock-cancellation safety and
   delete-during-generation races.
-- Frontend tests exercise the network-error recovery logic
-  (`findSentMessages`) with ``node:test`` — no build system required.
-- Coverage spans health checks, legacy chat, LLM client behaviour,
-  client factory routing, ORM model constraints, chat service
-  business logic and transactions, session CRUD, session message
-  send, session isolation, concurrency, and lock safety.
+- History-review tests cover boundary capture, deterministic source
+  selection, prompt construction, strict parsing, preparation and CAS
+  execution, persistence and migration, and the HTTP API.
+- Frontend tests exercise clipboard logic, copy-button state, network
+  recovery, model selection, session model switching, interaction
+  modes, and the history-review controller/panel — including cache
+  reconciliation, busy rules, dialog cancellation, and the panel's
+  DOM and CSS contracts (a small in-repo CSS reader, no browser
+  engine required).
 
 ## Security and privacy
 
@@ -557,7 +731,7 @@ These are tracked but not treated as release blockers.
 
 Future versions may extend this baseline into a learning-by-teaching
 chatbot with an explicit knowledge state and an adaptive learner
-model.
-Iteration 2 will add the switch-time audit: when a session switches
-to `corrective`, the agent will summarise the prior teaching history
-and produce a correction report.
+model.  Candidate next steps include a persistent learner/knowledge
+model that consumes review findings, follow-up reviews as new teaching
+accumulates, and streaming replies.  No such feature is implemented in
+the current branch.

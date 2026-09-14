@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Static Chatbot</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260815-sidebar-clearance">
+  <link rel="stylesheet" href="/static/style.css?v=20260914-history-review3">
 </head>
 <body>
   <div class="app-layout">
@@ -96,6 +96,79 @@
         ></div>
       </div>
 
+      <section
+        id="historyReviewPanel"
+        class="history-review-panel"
+        aria-labelledby="historyReviewTitle"
+        hidden
+      >
+        <div class="history-review-header">
+          <h2 id="historyReviewTitle">History review</h2>
+          <span
+            id="historyReviewStatusBadge"
+            class="history-review-status-badge"
+          ></span>
+          <button
+            id="historyReviewToggleBtn"
+            type="button"
+            aria-expanded="true"
+            aria-controls="historyReviewBody"
+          >Collapse</button>
+        </div>
+
+        <div id="historyReviewBody" class="history-review-body">
+          <div
+            id="historyReviewLive"
+            class="history-review-live"
+            role="status"
+            aria-live="polite"
+          ></div>
+
+          <div id="historyReviewProposal" hidden>
+            <p id="historyReviewProposalText"></p>
+            <div class="history-review-actions">
+              <button id="historyReviewStartBtn" type="button">
+                Review previous teaching
+              </button>
+              <button id="historyReviewDismissBtn" type="button">
+                Not now
+              </button>
+            </div>
+          </div>
+
+          <div id="historyReviewDetail" hidden>
+            <div id="historyReviewSelector" hidden>
+              <label for="historyReviewSelect">Review</label>
+              <select id="historyReviewSelect"></select>
+            </div>
+
+            <p id="historyReviewSummary"></p>
+            <p id="historyReviewCoverage"></p>
+
+            <ul
+              id="historyReviewFindings"
+              class="history-review-findings"
+            ></ul>
+
+            <p
+              id="historyReviewError"
+              class="history-review-error"
+              role="status"
+              hidden
+            ></p>
+
+            <div class="history-review-actions">
+              <button id="historyReviewRecheckBtn" type="button">
+                Recheck
+              </button>
+              <button id="historyReviewContinueBtn" type="button" hidden>
+                Continue review
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <div
         class="chat-messages"
         id="messages"
@@ -139,8 +212,34 @@
     <h2 id="psd-title">Send chat history to a remote API service?</h2>
     <p id="psd-body"></p>
     <div class="dialog-actions">
-      <button id="psd-cancel" type="button">Cancel</button>
-      <button id="psd-continue" type="button">Continue</button>
+      <button id="psd-cancel" type="button" data-variant="secondary">Cancel</button>
+      <button id="psd-continue" type="button" data-variant="primary">Continue</button>
+    </div>
+  </dialog>
+
+  <dialog
+    id="historyReviewStartDialog"
+    aria-labelledby="hrs-title"
+    aria-describedby="hrs-body"
+  >
+    <h2 id="hrs-title">Start a history review?</h2>
+    <p id="hrs-body"></p>
+    <div class="dialog-actions">
+      <button id="hrs-cancel" type="button" data-variant="secondary">Cancel</button>
+      <button id="hrs-start" type="button" data-variant="primary">Start review</button>
+    </div>
+  </dialog>
+
+  <dialog
+    id="historyReviewConsentDialog"
+    aria-labelledby="hrc-title"
+    aria-describedby="hrc-body"
+  >
+    <h2 id="hrc-title">Send local history to a remote API service?</h2>
+    <p id="hrc-body"></p>
+    <div class="dialog-actions">
+      <button id="hrc-cancel" type="button" data-variant="secondary">Cancel</button>
+      <button id="hrc-continue" type="button" data-variant="primary">Continue</button>
     </div>
   </dialog>
 
@@ -149,7 +248,8 @@
   <script src="/static/copy-controller.js?v=20260815-session-switch" defer></script>
   <script src="/static/interaction-mode.js?v=20260815-interaction-mode" defer></script>
   <script src="/static/model-selection.js?v=20260815-session-switch" defer></script>
-  <script src="/static/session-profile-switch.js?v=20260815-session-switch" defer></script>
-  <script src="/static/app.js?v=20260815-session-switch" defer></script>
+  <script src="/static/session-profile-switch.js?v=20260914-history-review3" defer></script>
+  <script src="/static/history-review.js?v=20260914-history-review3" defer></script>
+  <script src="/static/app.js?v=20260914-history-review3" defer></script>
 </body>
 </html>
