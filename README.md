@@ -143,6 +143,13 @@ tests/
   test_session_profile_switch.test.js  Frontend session model-switch tests
   test_history_review.test.js    Frontend history-review controller tests
   test_history_review_dom.test.js  Panel/dialog DOM, CSS and wiring tests
+  test_demo_launcher.py  One-command launcher/stopper control flow
+scripts/
+  start-local-ollama.sh  Project-local Ollama runtime only
+  start-demo.sh          One-command launcher (Ollama + FastAPI + browser)
+  stop-demo.sh           Stops only what the launcher started
+Start Teachable Agent.command  macOS double-click entry point (start)
+Stop Teachable Agent.command   macOS double-click entry point (stop)
 .env.example           Documented environment variables
 requirements.txt       Python dependencies
 ```
@@ -179,15 +186,280 @@ requirements.txt       Python dependencies
     credentials.  See [Environment variables](#environment-variables)
     for the full list.
 
-5.  **Start the server**
+5.  **Start everything with one command**
 
     ```bash
-    python -m uvicorn backend.main:app --reload
+    bash scripts/start-demo.sh
     ```
+
+    This starts the project-local Ollama runtime, waits until it is
+    healthy, starts FastAPI on `127.0.0.1:8000`, waits for
+    `/api/health`, and then opens the browser.  See
+    [One-command start and stop](#one-command-start-and-stop).
 
 6.  **Open the app**
 
-    Visit **http://127.0.0.1:8000** in a browser.
+    The launcher opens **http://127.0.0.1:8000** for you.  You can also
+    visit it manually.
+
+### Manual start (without the launcher)
+
+```bash
+bash scripts/start-local-ollama.sh        # terminal 1
+
+.venv/bin/python -m uvicorn backend.main:app \
+  --host 127.0.0.1 \
+  --port 8000                             # terminal 2
+```
+
+## One-command start and stop
+
+> **Current machine status.**  The automated control-flow tests pass, but
+> this checkout does **not** contain the local Ollama runtime
+> (`local_llm/Ollama.app`, `local_llm/models`,
+> `local_llm/runtime-home`), so the real one-command happy path has **not**
+> been verified on this machine yet.  Without the local runtime the
+> launcher can only **reuse an already-running healthy Ollama** on
+> `127.0.0.1:11435`; if none is running it stops with guidance instead of
+> starting anything.  Please do not read this as a completed real-world
+> "one-command start" acceptance.
+
+### Start
+
+```bash
+bash scripts/start-demo.sh
+```
+
+### Stop
+
+```bash
+bash scripts/stop-demo.sh
+```
+
+### macOS double-click
+
+```text
+Start Teachable Agent.command
+Stop Teachable Agent.command
+```
+
+Double-clicking `Start Teachable Agent.command` in Finder opens a
+Terminal window and runs the same launcher; `Stop Teachable Agent.command`
+runs the same stop script.  Both resolve the project directory from their
+own location, so the checkout may live anywhere (spaces in the path are
+fine) and no user name or absolute path is hardcoded.
+
+If macOS refuses to open a `.command` file the first time (for example
+because it was downloaded rather than cloned), use one of these safe
+routes instead of disabling system protections:
+
+1. Right-click the file in Finder and choose **Open**, then confirm
+   **Open** in the dialog; or
+2. Open **System Settings → Privacy & Security** and click **Open
+   Anyway** for the blocked file; or
+3. Simply run `bash scripts/start-demo.sh` (or `bash scripts/stop-demo.sh`)
+   in Terminal.
+
+The double-click entries need the executable bit; a fresh clone keeps it
+because it is recorded in Git.  If it was lost, restore it with:
+
+```bash
+chmod +x "Start Teachable Agent.command" "Stop Teachable Agent.command" \
+         scripts/start-demo.sh scripts/stop-demo.sh
+```
+
+### What the launcher does
+
+1. Resolves the project root from its own location (never from the
+   current working directory).
+2. Verifies `.venv/bin/python`, `scripts/start-local-ollama.sh`, the
+   project-local Ollama CLI, and the `lsof` / `curl` / `open` commands.
+   It also requires a working `ps` that can report process start times
+   (`ps -p <pid> -o lstart=`), because every PID record and the launcher
+   lock are fingerprint-verified; if `ps` cannot do that, the launcher
+   stops before starting anything.
+3. Checks that ports `11435` (Ollama) and `8000` (FastAPI) are safe to
+   use — see [Port conflicts](#port-conflicts) and
+   [Reusing a running Ollama](#reusing-a-running-ollama).
+4. Starts Ollama and waits for `http://127.0.0.1:11435/api/version`.
+5. Starts `.venv/bin/python -m uvicorn backend.main:app --host
+   127.0.0.1 --port 8000` (no `--reload`) and waits for
+   `http://127.0.0.1:8000/api/health`.
+6. Opens `http://127.0.0.1:8000` in the browser, then prints a status
+   block and stays in the foreground.
+
+### Service addresses
+
+| Service | URL |
+|---|---|
+| Web UI | `http://127.0.0.1:8000` |
+| Health check | `http://127.0.0.1:8000/api/health` |
+| Ollama API | `http://127.0.0.1:11435` |
+| Ollama version | `http://127.0.0.1:11435/api/version` |
+
+### Logs
+
+| File | Contents |
+|---|---|
+| `local_llm/logs/ollama-demo.log` | Output of the project-local Ollama runtime |
+| `local_llm/logs/backend-demo.log` | Output of uvicorn / FastAPI |
+
+Both files are **truncated at the start of every run**, so they always
+describe the most recent attempt and never grow without bound.  The
+launcher prints only short status lines to the terminal, so Ollama's
+inference logging does not flood the window.  Neither log ever receives
+`.env` contents, API keys, or other secrets.
+
+### Ctrl+C behaviour
+
+Press **Ctrl+C once** in the terminal running the launcher and it stops
+the processes that this run started: FastAPI first, then the project-local
+Ollama.  For processes whose state stays observable, it waits for them to
+exit, removes their PID records, and returns to the prompt.  `SIGTERM`
+behaves the same way; a single Ctrl+C is enough.
+
+Closing the Terminal window is **not** a guaranteed shutdown path: without
+a verified `SIGHUP` cleanup test it is not claimed to behave exactly like
+Ctrl+C.  Prefer Ctrl+C or `bash scripts/stop-demo.sh`.
+
+Cleanup is fail-closed.  If a process cannot be verified as stopped, the
+launcher does not guess: it does not signal an unknown process, that
+process may still be running, and the launcher exits non-zero.  The next
+launch then refuses to start services until the persisted state described
+under **Process safety** is resolved.  When the complete record can be
+published this is `local_llm/run/cleanup-failed`; if the record cannot be
+published, the pre-child `bootstrap.guard` remains as the durable block,
+and because it has no PID it requires manual inspection.
+
+### Reusing a running Ollama
+
+If port `11435` is already serving a healthy Ollama
+(`/api/version` answers), the launcher **reuses it** and marks it as an
+externally started service.  Such an instance is never stopped by the
+launcher or by `scripts/stop-demo.sh`.  If the port is occupied by
+something that does not answer like an Ollama server, the launcher
+refuses to start and tells you how to inspect it.
+
+### Port conflicts
+
+If port `8000` is already in use the launcher **fails without killing
+anything**.  A health check alone cannot prove that the listener belongs
+to this project, so it never guesses.  It suggests either:
+
+```bash
+bash scripts/stop-demo.sh                                  # a previous demo run
+lsof -nP -iTCP:8000 -sTCP:LISTEN                           # anything else
+```
+
+### Process safety
+
+* No `killall`, no broad `pkill`, and no "kill whatever owns the port".
+* **Run ownership.**  Every launch gets a unique `RUN_ID` and records, in
+  `local_llm/run/*.pid`, the `PID`, `SERVICE`, `PROJECT_ROOT`, the exact
+  `CMD`, the process start-time `FINGERPRINT`, and its `RUN_ID`.  A
+  launcher only ever deletes a record whose `RUN_ID` matches its own, and
+  it refuses to overwrite a pre-existing record, so a second launcher that
+  fails (port conflict, preflight error) can never delete or hijack the
+  first launcher's records.  A single-instance lock (`demo.lock`, created
+  atomically with `mkdir`) stops two launchers from running at once; a
+  stale lock is removed only when the lock owner's PID is a trusted
+  `gone` result.  An alive or unverifiable (`unknown`) owner is never
+  removed and fails closed.
+* **PID fingerprint.**  The process start time (`ps -o lstart=`) is
+  recorded when a service starts and re-read before every stop.  A PID is
+  only signalled when both the live command line **and** the live start
+  time match the record, so a PID reused by a different process with the
+  same command line is still never killed.
+* **Three-valued process state.**  Both scripts classify every PID as
+  `alive` (ps reported a usable, non-zombie state), `gone` (ps ran and
+  reported nothing for that PID) or `unknown` (ps missing or broken, a
+  malformed PID, a ps diagnostic, unusable output, or an unverifiable
+  zombie).  Only `gone` may justify deleting a PID record or a stale lock;
+  `unknown` always fails closed - no signal, no deletion, non-zero exit
+  with a diagnostic.  An empty ps result is never used to mean two things
+  at once.
+* **Bootstrap-child cleanup.**  Between forking a service and writing its
+  PID record there is a window in which the verified stop path cannot be
+  used.  For exactly that window the launcher falls back to a strictly
+  limited cleanup that only ever applies to the child this shell just
+  obtained from `$!`, never to a PID read from a file: it must still be an
+  unreaped direct child, no PID record may have been written for it, and
+  its live command line must still match the command this run spawned.  It
+  then sends `SIGTERM` and polls the state with a fixed time budget; only a
+  fresh `gone` or zombie result may call `wait`, so a running or unknown
+  child is never waited on.  If `SIGTERM` is not enough it escalates to
+  `SIGKILL` for that same child under the same bounded rule.  Nothing here
+  uses name-based kills or port lookups.  If the child state becomes
+  unknown, cleanup fails closed without a signal or a blocking wait; it
+  writes the quarantine marker described in the next bullet instead of
+  claiming that the process was stopped.
+* **Bootstrap guard.**  Before forking a service child the launcher
+  atomically claims `local_llm/run/bootstrap.guard` (an atomic `mkdir`)
+  and writes `SERVICE`, `PROJECT_ROOT`, `CMD`, `RUN_ID` and a fixed
+  reason.  The guard deliberately has no `PID` and no `FINGERPRINT`: the
+  child does not exist yet.  If the guard cannot be claimed, the child is
+  never started.  The guard is removed only after the formal PID record
+  exists, after a confirmed bootstrap cleanup, or together with a
+  matching complete quarantine record whose PID is a trusted `gone`
+  result.  A guard without a complete record is preserved and blocks the
+  next launch; because it has no PID it is never auto-resolved, never
+  signalled and never removed automatically.
+* **Cleanup-failed quarantine.**  When a bootstrap child cannot be
+  verified as stopped and has no formal PID record, the launcher writes
+  the complete `local_llm/run/cleanup-failed` record with `PID`,
+  `SERVICE`, `PROJECT_ROOT`, `CMD`, `RUN_ID` and a fixed safety reason; it
+  never invents a `FINGERPRINT`.  The record is published with a
+  complete temporary file plus Python `os.link` at the exact final
+  pathname, so existing files, directories, symlinks and concurrently
+  created markers are neither replaced nor followed.  The marker and
+  guard `REASON` fields must each equal their fixed safety text exactly;
+  a blank, custom or malformed reason is unverifiable and is preserved.
+  If publication fails, the pre-child guard is left in
+  place and the next launch still fails closed.  On the next launch, a
+  valid own-project marker whose PID is a trusted `gone` result is
+  removed and startup continues; a matching guard, if present, is removed
+  with it.  An alive, unknown, malformed, incomplete, duplicated or
+  foreign-project marker is preserved and the launch fails before any
+  service starts.  A normally verified launch and a normally verified
+  cleanup leave neither a guard nor a marker.
+* **Lock metadata is published atomically.**  `mkdir demo.lock` is the
+  atomic claim; ownership is marked the instant it succeeds, and the
+  metadata (`PID`/`RUN_ID`/`FINGERPRINT`/`PROJECT_ROOT`) is written to a
+  temporary file and moved into place, so a second launcher can never
+  observe a half-written info file.  A lock whose metadata is missing,
+  empty, partial or duplicated is never treated as stale - only a lock
+  with a complete, valid record whose owner PID is *explicitly* gone is
+  removed.  A failed metadata write releases only the lock that run just
+  created, and release requires all four fields to still describe that run.
+* **lsof fail closed.**  A port counts as *free* only when `lsof` exits
+  with its standard "no matching listener" status and prints nothing on
+  stdout and stderr.  Any other result — exit codes 2/126/127, non-empty
+  stderr, exit 0 with empty or malformed output — aborts the start.
+* **Strict records.**  `stop-demo.sh` requires every field
+  (`PID`/`SERVICE`/`PROJECT_ROOT`/`CMD`/`FINGERPRINT`/`RUN_ID`) to appear
+  exactly once, `SERVICE` to match the record file, `PROJECT_ROOT` to
+  equal this project, and `CMD` to match the expected signature.  Missing,
+  duplicated or mismatching fields never lead to a signal, "command
+  mismatch" is never treated as "already stopped", and records from other
+  projects are never deleted.
+* **Stop escalation.**  Both scripts send `SIGTERM` first, wait a bounded
+  time, and escalate to `SIGKILL` only while the process can still be
+  verified as the same managed process.  If it survives even that, the
+  exit status is non-zero, the PID record is **kept** for retry and manual
+  inspection, and the launcher does not report a false success.  Running
+  `stop-demo.sh` twice is harmless.
+
+### Notes
+
+* The launcher does **not** create a LaunchAgent, install a system
+  service, enable start-at-login, or use `sudo`; it never modifies a
+  system-wide Ollama.
+* **DeepSeek Harness (`npx @deepseek-ai/dsh web`) is not a runtime
+  dependency** of this project and is never started by the launcher.
+* `.env` is read by the backend as usual and is never modified or printed
+  by the launcher.
+* A failure to open the browser only prints a warning; the two services
+  keep running and you can open the URL manually.
 
 ## LLM modes
 
@@ -578,12 +850,21 @@ machine; a fresh checkout requires its own Ollama runtime preparation.
 
 ### Start the service
 
+Prefer the one-command launcher, which starts Ollama and FastAPI together:
+
+```bash
+bash scripts/start-demo.sh
+```
+
+To run the Ollama runtime on its own (foreground, Ctrl+C to stop):
+
 ```bash
 bash scripts/start-local-ollama.sh
 ```
 
-The service runs in the foreground, listening **only** on
-`127.0.0.1:11435`.  All runtime state stays under `local_llm/`.
+The service listens **only** on `127.0.0.1:11435`.  All runtime state
+stays under `local_llm/`.  When the demo launcher starts it, the output
+goes to `local_llm/logs/ollama-demo.log` instead of the terminal.
 
 Expected log output (first few lines):
 
@@ -635,6 +916,12 @@ Press `Ctrl+C` in the terminal where `start-local-ollama.sh` is running.
 
 # Frontend tests (requires Node.js)
 node --test tests/*.test.js
+
+# Shell syntax of the launcher, the stopper and the double-click entries
+bash -n scripts/start-demo.sh
+bash -n scripts/stop-demo.sh
+bash -n "Start Teachable Agent.command"
+bash -n "Stop Teachable Agent.command"
 ```
 
 Both suites are complete and green: the Python suite and the Node
@@ -657,6 +944,16 @@ framework, and no network access.
 - History-review tests cover boundary capture, deterministic source
   selection, prompt construction, strict parsing, preparation and CAS
   execution, persistence and migration, and the HTTP API.
+- `test_demo_launcher.py` exercises the launcher/stopper control flow
+  inside a disposable sandbox with fake `lsof`, `curl`, `open`, `ps` and
+  interpreter commands: it never starts a real Ollama, never loads a
+  model, never calls a remote API, never opens a browser, and never
+  signals a process outside the sandbox.  Covered: the happy path, reuse
+  of an already-running Ollama, unhealthy and occupied ports, readiness
+  timeouts for both services, Ctrl+C/SIGTERM cleanup, stale and malformed
+  PID records, PID reuse, idempotent stopping, paths containing spaces,
+  browser-open failure, per-run log truncation, and that neither the
+  terminal output nor the logs contain `.env` secrets.
 - Frontend tests exercise clipboard logic, copy-button state, network
   recovery, model selection, session model switching, interaction
   modes, and the history-review controller/panel — including cache
