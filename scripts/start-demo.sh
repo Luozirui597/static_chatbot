@@ -86,7 +86,12 @@ BACKEND_SERVICE="backend"
 # Expected process identity: PID + service kind + project root + a command
 # signature that must match the live process before any signal is sent.
 OLLAMA_CMD_SIGNATURE="$LOCAL_OLLAMA_CLI serve"
-BACKEND_CMD_SIGNATURE="$PYTHON_BIN -m uvicorn $APP_MODULE --host $APP_HOST --port $APP_PORT"
+# Fixed logical backend argument tail.  The live macOS process may show a
+# framework Python executable instead of .venv/bin/python, so live identity
+# anchors on this exact tail while the record must still name the expected
+# spawn command exactly.
+BACKEND_LOGIC_ARGS="-m uvicorn $APP_MODULE --host $APP_HOST --port $APP_PORT"
+BACKEND_CMD_SIGNATURE="$PYTHON_BIN $BACKEND_LOGIC_ARGS"
 
 # This run's identity.  Never shared, never printed with secrets.
 RUN_ID="$$-${RANDOM}-${RANDOM}-$("$DATE_BIN" +%s)"
@@ -96,6 +101,7 @@ OWN_OLLAMA_PID=""
 OWN_BACKEND_PID=""
 OLLAMA_RECORD_FP=""
 BACKEND_RECORD_FP=""
+BACKEND_LIVE_CMD=""
 # 0 while the child is still an unrecorded, unreaped direct child of this
 # shell; set to 1 as soon as a verified PID record exists for it.
 OLLAMA_RECORDED=0
@@ -267,7 +273,7 @@ ps_field_raw() {
     }
 
     set +e
-    "$ps_prog" -p "$pid" -o "$field" >"$out_file" 2>"$err_file"
+    LC_ALL=C "$ps_prog" -p "$pid" -o "$field" >"$out_file" 2>"$err_file"
     rc=$?
     set -e
 
@@ -419,6 +425,108 @@ read_lstart() {
     return 0
 }
 
+# True only when cmd is an absolute executable followed by exactly the fixed
+# backend logical argument tail.  A path containing spaces is accepted only
+# when it is exactly the configured spawn executable, so a different command
+# that merely embeds the tail is rejected.
+# True only for the configured spawn executable, a path that is the same
+# file, or the Python.app executable derived from the configured Python's
+# own canonical framework/version root.  Arbitrary path suffixes, basenames,
+# other framework versions and symlinks to unrelated files are rejected.
+backend_live_exec_allowed() {
+    local prefix="$1" expected="$2"
+    "$LINK_PYTHON_BIN" - "$prefix" "$expected" <<'PY' 2>/dev/null
+import os
+import re
+import stat
+import sys
+
+live = sys.argv[1]
+expected = sys.argv[2]
+
+
+def usable(path):
+    try:
+        info = os.stat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and os.access(path, os.X_OK)
+
+
+if not live or not expected:
+    sys.exit(1)
+if not usable(expected):
+    sys.exit(1)
+
+expected_canon = os.path.realpath(expected)
+live_canon = os.path.realpath(live)
+if not usable(live):
+    sys.exit(1)
+
+if live == expected:
+    sys.exit(0)
+
+try:
+    if os.path.samefile(expected, live):
+        sys.exit(0)
+except OSError:
+    pass
+
+if live_canon == expected_canon:
+    sys.exit(0)
+
+match = re.fullmatch(
+    r"(?P<root>.*/Python[.]framework/Versions/[^/]+)/bin/python[^/]*",
+    expected_canon,
+)
+if match is None:
+    sys.exit(1)
+derived = (
+    match.group("root")
+    + "/Resources/Python.app/Contents/MacOS/Python"
+)
+if os.path.realpath(derived) != derived:
+    sys.exit(1)
+if live_canon != derived:
+    sys.exit(1)
+if not usable(derived):
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+backend_live_cmd_shape_ok() {
+    local cmd="$1" logic="$2" expected_exec="$3" prefix
+    case "$cmd" in
+        *" $logic") : ;;
+        *) return 1 ;;
+    esac
+    prefix="${cmd%" $logic"}"
+    case "$prefix" in
+        /*) : ;;
+        *) return 1 ;;
+    esac
+    backend_live_exec_allowed "$prefix" "$expected_exec" || return 1
+    return 0
+}
+
+# Service-specific live command check shared by recorded stops and bootstrap
+# child cleanup.
+cmd_matches_spawn() {
+    local service="$1" cmd="$2" want="$3"
+    case "$service" in
+        "$OLLAMA_SERVICE")
+            case "$cmd" in *"$want") return 0 ;; *) return 1 ;; esac
+            ;;
+        "$BACKEND_SERVICE")
+            backend_live_cmd_shape_ok "$cmd" \
+                "$(normalize_cmd "$BACKEND_LOGIC_ARGS")" \
+                "$(normalize_cmd "$PYTHON_BIN")"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
 # ps may not report a just-started process immediately; retry a bounded
 # number of times before failing closed.  Used both for freshly spawned
 # children and for this launcher's own fingerprint.
@@ -438,6 +546,28 @@ read_lstart_retry() {
     _lstart_retry "$1" "$LSTART_RETRIES" "$LSTART_INTERVAL"
 }
 
+# Wait for the child to complete exec, then capture its full live command.
+# The command must end with the exact fixed backend logical args; the
+# captured executable may be the macOS framework Python path rather than
+# .venv/bin/python.  Returns the normalized live command or empty.
+read_backend_live_cmd_retry() {
+    local pid="$1" tries="$LSTART_RETRIES" interval="$LSTART_INTERVAL"
+    local i=0 cmd logic expected_exec
+    logic="$(normalize_cmd "$BACKEND_LOGIC_ARGS")"
+    expected_exec="$(normalize_cmd "$PYTHON_BIN")"
+    while [ "$i" -lt "$tries" ]; do
+        cmd="$(read_cmdline "$pid")"
+        if [ -n "$cmd" ] && \
+           backend_live_cmd_shape_ok "$cmd" "$logic" "$expected_exec"; then
+            printf '%s' "$cmd"
+            return 0
+        fi
+        "$SLEEP_BIN" "$interval"
+        i=$((i + 1))
+    done
+    return 1
+}
+
 # This launcher's own fingerprint, with a retry window wide enough for the
 # process to become visible to ps.
 own_lstart_retry() {
@@ -448,8 +578,9 @@ own_lstart_retry() {
 # Verify that a PID still belongs to the expected process: the live command
 # line AND the live start-time fingerprint must match the record.
 _identity_ok() {
-    local pid="$1" service="$2" expected_cmd="$3" expected_fp="$4"
-    local state cmd want live_fp
+    local pid="$1" service="$2" expected_cmd="$3" expected_live_cmd="$4"
+    local expected_fp="$5"
+    local state cmd want live_fp logic expected_exec
     is_positive_integer "$pid" || return 1
     proc_view "$pid" >/dev/null
     [ "$PROC_VIEW_ALIVE" -eq 1 ] || return 1
@@ -460,12 +591,14 @@ _identity_ok() {
     want="$(normalize_cmd "$expected_cmd")"
     case "$service" in
         "$OLLAMA_SERVICE")
-            # ps reports `env HOME=... OLLAMA_... <cli> serve`, so the CLI
-            # path and the `serve` argument are anchored at the end.
             case "$cmd" in *"$want") : ;; *) return 1 ;; esac
             ;;
         "$BACKEND_SERVICE")
-            case "$cmd" in *"$want") : ;; *) return 1 ;; esac
+            logic="$(normalize_cmd "$BACKEND_LOGIC_ARGS")"
+            expected_exec="$(normalize_cmd "$PYTHON_BIN")"
+            [ -n "$expected_live_cmd" ] || return 1
+            backend_live_cmd_shape_ok "$cmd" "$logic" "$expected_exec" || return 1
+            [ "$cmd" = "$expected_live_cmd" ] || return 1
             ;;
         *) return 1 ;;
     esac
@@ -485,7 +618,8 @@ _identity_ok() {
 # service, and mv is atomic, so two launchers can never corrupt each other's
 # file; the RUN_ID field lets a launcher know which records are its own.
 write_pid_record() {
-    local path="$1" pid="$2" service="$3" signature="$4" fingerprint="$5" tmp
+    local path="$1" pid="$2" service="$3" signature="$4" fingerprint="$5"
+    local live_cmd="${6:-}" tmp
     "$MKDIR_BIN" -p "$RUNTIME_DIR" || return 1
     # A pre-existing record belongs to some other run; silently replacing it
     # would let this launcher delete or hijack another run's record.
@@ -501,6 +635,9 @@ write_pid_record() {
         printf 'SERVICE=%s\n' "$service"
         printf 'PROJECT_ROOT=%s\n' "$PROJECT"
         printf 'CMD=%s\n' "$signature"
+        if [ -n "$live_cmd" ]; then
+            printf 'LIVE_CMD=%s\n' "$live_cmd"
+        fi
         printf 'FINGERPRINT=%s\n' "$fingerprint"
         printf 'RUN_ID=%s\n' "$RUN_ID"
     } > "$tmp" || return 1
@@ -866,7 +1003,7 @@ wait_for() {
 # record carries (empty when unknown).
 stop_owned_process() {
     local pid="$1" service="$2" signature="$3" timeout="$4" label="$5" \
-          record_file="$6" stored_fp="$7"
+          record_file="$6" stored_fp="$7" stored_live_cmd="$8"
     local i max_ticks view
 
     [ -n "$pid" ] || return 0
@@ -885,7 +1022,7 @@ stop_owned_process() {
         return 1
     fi
 
-    if ! _identity_ok "$pid" "$service" "$signature" "$stored_fp"; then
+    if ! _identity_ok "$pid" "$service" "$signature" "$stored_live_cmd" "$stored_fp"; then
         warn "$label (PID $pid) is alive but no longer matches this launcher's record"
         warn "(command line or process start fingerprint differs - the PID may have"
         warn "been reused). Refusing to signal it."
@@ -909,7 +1046,7 @@ stop_owned_process() {
             warn "Refusing to assume it stopped; keeping the PID record."
             return 1
         fi
-        if ! _identity_ok "$pid" "$service" "$signature" "$stored_fp"; then
+        if ! _identity_ok "$pid" "$service" "$signature" "$stored_live_cmd" "$stored_fp"; then
             # Either the identity genuinely changed (leave it alone) or the
             # process simply exited between the state and identity probes.
             # Re-probe the state to tell those two cases apart.
@@ -936,7 +1073,7 @@ stop_owned_process() {
 
     # Still alive: only escalate when the live identity still matches.
     if [ "$view" = "alive" ] && \
-       _identity_ok "$pid" "$service" "$signature" "$stored_fp"; then
+       _identity_ok "$pid" "$service" "$signature" "$stored_live_cmd" "$stored_fp"; then
         warn "$label (PID $pid) did not stop within ${timeout}s; escalating to SIGKILL."
         kill -KILL "$pid" 2>/dev/null || true
         i=0
@@ -951,7 +1088,7 @@ stop_owned_process() {
                 warn "Refusing to assume it stopped; keeping the PID record."
                 return 1
             fi
-            if ! _identity_ok "$pid" "$service" "$signature" "$stored_fp"; then
+            if ! _identity_ok "$pid" "$service" "$signature" "$stored_live_cmd" "$stored_fp"; then
                 proc_view_into "$pid"
                 if [ "$PROC_VIEW" = "gone" ]; then
                     return 0
@@ -1193,13 +1330,12 @@ stop_bootstrap_child() {
         BOOT_DETAIL="$label (PID $pid): cannot read the command line; refusing to signal"
         return 1
     fi
-    case "$cmd" in
-        *"$want") : ;;
-        *)
-            BOOT_DETAIL="$label (PID $pid): command line does not match this run's spawn"
-            return 1
-            ;;
-    esac
+    if cmd_matches_spawn "$service" "$cmd" "$want"; then
+        :
+    else
+        BOOT_DETAIL="$label (PID $pid): command line does not match this run's spawn"
+        return 1
+    fi
 
     info "Stopping $label (PID $pid, bootstrap child without a PID record) ..."
     kill -TERM "$pid" 2>/dev/null || true
@@ -1230,13 +1366,12 @@ stop_bootstrap_child() {
         BOOT_DETAIL="$label (PID $pid): cannot re-verify the command line; no SIGKILL sent"
         return 1
     fi
-    case "$cmd" in
-        *"$want") : ;;
-        *)
-            BOOT_DETAIL="$label (PID $pid): command line no longer matches; no SIGKILL sent"
-            return 1
-            ;;
-    esac
+    if cmd_matches_spawn "$service" "$cmd" "$want"; then
+        :
+    else
+        BOOT_DETAIL="$label (PID $pid): command line no longer matches; no SIGKILL sent"
+        return 1
+    fi
 
     warn "$label (PID $pid) did not stop within ${timeout}s; escalating to SIGKILL."
     kill -KILL "$pid" 2>/dev/null || true
@@ -1736,12 +1871,12 @@ check_cleanup_failed_marker() {
 # was never written).  Returns 0 only when the process is confirmed gone.
 stop_one_service() {
     local pid="$1" service="$2" signature="$3" timeout="$4" label="$5" \
-          record_file="$6" recorded="$7" stored_fp="$8"
+          record_file="$6" recorded="$7" stored_fp="$8" stored_live_cmd="$9"
     local result
 
     if [ "$recorded" -eq 1 ]; then
         stop_owned_process "$pid" "$service" "$signature" "$timeout" "$label" \
-            "$record_file" "$stored_fp"
+            "$record_file" "$stored_fp" "$stored_live_cmd"
         return $?
     fi
 
@@ -1768,7 +1903,8 @@ cleanup() {
     if [ -n "$OWN_BACKEND_PID" ]; then
         if stop_one_service "$OWN_BACKEND_PID" "$BACKEND_SERVICE" \
                 "$BACKEND_CMD_SIGNATURE" "$BACKEND_STOP_TIMEOUT" "FastAPI backend" \
-                "$BACKEND_PID_FILE" "$BACKEND_RECORDED" "$BACKEND_RECORD_FP"; then
+                "$BACKEND_PID_FILE" "$BACKEND_RECORDED" "$BACKEND_RECORD_FP" \
+                "$BACKEND_LIVE_CMD"; then
             BACKEND_CLEANUP_FAILED=0
             backend_final=1
             if [ "$BACKEND_GUARD_ACTIVE" -eq 1 ]; then
@@ -1806,7 +1942,7 @@ cleanup() {
     if [ -n "$OWN_OLLAMA_PID" ]; then
         if stop_one_service "$OWN_OLLAMA_PID" "$OLLAMA_SERVICE" \
                 "$OLLAMA_CMD_SIGNATURE" "$OLLAMA_STOP_TIMEOUT" "project-local Ollama" \
-                "$OLLAMA_PID_FILE" "$OLLAMA_RECORDED" "$OLLAMA_RECORD_FP"; then
+                "$OLLAMA_PID_FILE" "$OLLAMA_RECORDED" "$OLLAMA_RECORD_FP" ""; then
             ollama_final=1
             if [ "$OLLAMA_GUARD_ACTIVE" -eq 1 ]; then
                 if release_bootstrap_guard "$OLLAMA_SERVICE" "$OLLAMA_CMD_SIGNATURE"; then
@@ -2101,9 +2237,12 @@ start_backend() {
 
     info "Starting FastAPI on $APP_URL ..."
     : > "$BACKEND_LOG"
-    "$PYTHON_BIN" -m uvicorn "$APP_MODULE" \
-        --host "$APP_HOST" \
-        --port "$APP_PORT" >>"$BACKEND_LOG" 2>&1 &
+    (
+        cd -P "$PROJECT" || exit 1
+        exec "$PYTHON_BIN" -m uvicorn "$APP_MODULE" \
+            --host "$APP_HOST" \
+            --port "$APP_PORT"
+    ) >>"$BACKEND_LOG" 2>&1 &
     BACKEND_STARTED_BY_US=1
     OWN_BACKEND_PID=$!
     if [ -z "$OWN_BACKEND_PID" ]; then
@@ -2112,6 +2251,21 @@ start_backend() {
             BACKEND_GUARD_ACTIVE=0
         fi
         die "Startup aborted; no unmanaged child was left running."
+    fi
+
+    BACKEND_LIVE_CMD="$(read_backend_live_cmd_retry "$OWN_BACKEND_PID" || true)"
+    if [ -z "$BACKEND_LIVE_CMD" ]; then
+        fail "could not read the FastAPI live command after exec."
+        fail "No PID record was written, so the verified stop path cannot be used;"
+        fail "falling back to the bootstrap-child cleanup for the child this shell"
+        fail "just started (PID $OWN_BACKEND_PID, still an unreaped direct child)."
+        advise_logs
+        if cleanup 1; then :; fi
+        if [ "${CLEANUP_FAILED:-0}" = "1" ]; then
+            die "Startup aborted and the FastAPI process could NOT be confirmed stopped;" \
+                "it may still be running. Inspect PID $OWN_BACKEND_PID and the log above."
+        fi
+        die "Startup aborted; the freshly started FastAPI process was stopped and reaped."
     fi
 
     BACKEND_RECORD_FP="$(read_lstart_retry "$OWN_BACKEND_PID" || true)"
@@ -2130,7 +2284,7 @@ start_backend() {
     fi
 
     if ! write_pid_record "$BACKEND_PID_FILE" "$OWN_BACKEND_PID" "$BACKEND_SERVICE" \
-            "$BACKEND_CMD_SIGNATURE" "$BACKEND_RECORD_FP"; then
+            "$BACKEND_CMD_SIGNATURE" "$BACKEND_RECORD_FP" "$BACKEND_LIVE_CMD"; then
         fail "could not write $BACKEND_PID_FILE; aborting the start."
         advise_logs
         if ! cleanup 1; then :; fi

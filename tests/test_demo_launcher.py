@@ -149,6 +149,17 @@ if [ "$key" = "lstart=" ] && [ -f "$SANDBOX/state/ps-lstart-fails-for" ]; then
         exit 1
     fi
 fi
+if [ "$key" = "lstart=" ]; then
+    printf '%s\n' "${LC_ALL:-<unset>}" >> "$SANDBOX/state/ps-locale-log"
+    if [ -f "$SANDBOX/state/ps-lstart-locale-dependent" ]; then
+        if [ "${LC_ALL:-}" = "C" ]; then
+            printf 'Thu Sep 14 12:00:%.2d 2026\n' "$((pid % 60))"
+        else
+            printf '%s 9月/16 10:%.2d:50 2026\n' "${LC_ALL:-unset}" "$((pid % 60))"
+        fi
+        exit 0
+    fi
+fi
 if [ "$key" = "state=" ] && [ -f "$SANDBOX/state/ps-state-fails" ]; then
     printf 'ps: illegal option or unusable state\n' >&2
     exit 1
@@ -161,11 +172,87 @@ if [ -f "$SANDBOX/state/ps-field-stderr" ]; then
         printf 'ps: warning: something odd on stderr\n' >&2
     fi
 fi
+# Optional per-backend live command override for launcher-capture tests.
+# It applies when the PID is the published shim PID, or during the backend
+# bootstrap-guard window before the shim handshake has been scheduled.
+if [ "$key" = "command=" ] && [ -f "$SANDBOX/state/backend-live-cmd-override" ]; then
+    override_ok=0
+    if [ -f "$SANDBOX/state/backend-bootstrap-pid" ]; then
+        override_pid="$(tr -d '[:space:]' < "$SANDBOX/state/backend-bootstrap-pid")"
+        if [ "$override_pid" = "$pid" ]; then
+            override_ok=1
+        fi
+    fi
+    if [ "$override_ok" -eq 0 ]; then
+        override_guard="${TEACHABLE_RUNTIME_DIR:-$SANDBOX/project/local_llm/run}/bootstrap.guard/info"
+        if [ -f "$override_guard" ]; then
+            override_service="$(sed -n 's/^SERVICE=//p' "$override_guard" | head -n 1)"
+            if [ "$override_service" = "backend" ]; then
+                override_ok=1
+            fi
+        fi
+    fi
+    if [ "$override_ok" -eq 1 ]; then
+        cat "$SANDBOX/state/backend-live-cmd-override"
+        exit 0
+    fi
+fi
 # A per-pid scripted state sequence: state/ps-state-seq holds
 # "<pid>:<state>,<state>,..." and each state= probe returns the next entry
 # (the last one repeats once the sequence is exhausted).  The token "-"
 # means "report unknown" (ps diagnostic); the token "gone" means ps exits
 # 1 with empty stdout/stderr, i.e. the documented "no such process".
+injected_command_for() {
+    local want="$1" entry states n item index tail
+    [ -f "$SANDBOX/state/ps-command-seq" ] || return 1
+    while IFS= read -r entry; do
+        case "$entry" in ''|'#'*) continue ;; esac
+        case "${entry%%:*}" in "$want") ;; *) continue ;; esac
+        states="${entry#*:}"
+        [ -n "$states" ] || return 1
+        n=1
+        if [ -f "$SANDBOX/state/ps-command-seq-count-$want" ]; then
+            n="$(tr -d '[:space:]' < "$SANDBOX/state/ps-command-seq-count-$want")"
+            case "$n" in ''|*[!0-9]*) n=1 ;; esac
+            [ "$n" -ge 1 ] 2>/dev/null || n=1
+        fi
+        printf '%s\n' "$((n + 1))" > "$SANDBOX/state/ps-command-seq-count-$want"
+        index=1
+        tail="$states"
+        while [ -n "$tail" ]; do
+            item="${tail%%;;;*}"
+            if [ "$index" -eq "$n" ]; then
+                printf '%s\n' "$item"
+                return 0
+            fi
+            case "$tail" in
+                *";;;"*) tail="${tail#*;;;}" ;;
+                *) tail="" ;;
+            esac
+            index=$((index + 1))
+        done
+        tail="$states"
+        item=""
+        while [ -n "$tail" ]; do
+            item="${tail%%;;;*}"
+            case "$tail" in
+                *";;;"*) tail="${tail#*;;;}" ;;
+                *) tail="" ;;
+            esac
+        done
+        printf '%s\n' "$item"
+        return 0
+    done < "$SANDBOX/state/ps-command-seq"
+    return 1
+}
+
+if [ "$key" = "command=" ] && [ -f "$SANDBOX/state/ps-command-seq" ]; then
+    injected_command="$(injected_command_for "$pid" || true)"
+    if [ -n "$injected_command" ]; then
+        printf '%s\n' "$injected_command"
+        exit 0
+    fi
+fi
 injected_state_for() {
     local want="$1" entry states n item index
     [ -f "$SANDBOX/state/ps-state-seq" ] || return 1
@@ -362,6 +449,9 @@ def main() -> int:
         if port is None:
             return 2
         STATE.mkdir(parents=True, exist_ok=True)
+        (STATE / "backend-cwd").write_text(
+            os.getcwd() + "\n", encoding="utf-8"
+        )
         (STATE / "backend-started").write_text(
             " ".join(argv) + "\n", encoding="utf-8"
         )
@@ -580,6 +670,7 @@ class Sandbox:
         project_root: str | None = None,
         fingerprint: str | None = None,
         run_id: str | None = None,
+        live_cmd: str | None = None,
     ) -> Path:
         self.runtime.mkdir(parents=True, exist_ok=True)
         if service == "ollama":
@@ -598,18 +689,60 @@ class Sandbox:
             fingerprint = self._lstart_for(pid)
         if fingerprint is None:
             fingerprint = "unknown-fingerprint"
+        effective_sig = signature if signature is not None else default_sig
         lines = [
             "# Teachable Agent demo launcher record; safe to delete.",
             f"PID={pid}",
             f"SERVICE={service}",
             "PROJECT_ROOT="
             + (project_root if project_root is not None else str(self.project)),
-            f"CMD={signature if signature is not None else default_sig}",
+            f"CMD={effective_sig}",
             f"FINGERPRINT={fingerprint}",
             f"RUN_ID={run_id if run_id is not None else 'test-run-id'}",
         ]
+        if service != "ollama":
+            if live_cmd is None:
+                live_cmd = effective_sig
+            if live_cmd != "":
+                lines.insert(5, f"LIVE_CMD={live_cmd}")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
+
+    def install_mock_framework_python(
+        self, version: str = "3.13",
+    ) -> dict[str, str]:
+        """Create a real framework/version tree with a trusted mapping.
+
+        The configured Python is a symlink to a regular executable inside the
+        mock framework's version/bin directory.  The derived Python.app
+        executable is a second real executable in the same version root.
+        """
+        root = (
+            self.root / "mock-framework" / "Python.framework" /
+            "Versions" / version
+        )
+        bin_python = root / "bin" / "python3.13"
+        derived = (
+            root / "Resources" / "Python.app" / "Contents" / "MacOS" /
+            "Python"
+        )
+        shim = _BASH_SHEBANG + FAKE_PYTHON_SHIM_BODY
+        _write_executable(bin_python, shim)
+        _write_executable(derived, shim)
+        config = (
+            self.project / ".venv" / "bin" / f"python-framework-{version}"
+        )
+        config.parent.mkdir(parents=True, exist_ok=True)
+        if config.exists() or config.is_symlink():
+            config.unlink()
+        config.symlink_to(bin_python)
+        return {
+            "config": str(config),
+            "derived": str(derived),
+            "root": str(root),
+            "version": version,
+            "bin": str(bin_python),
+        }
 
     def break_lstart_for(self, pid: int) -> None:
         """Make the ps fixture unable to report this pid's start time."""
@@ -661,6 +794,20 @@ class Sandbox:
     def clear_ps_state_sequence(self) -> None:
         """Remove every scripted state sequence and its per-PID counter."""
         for path in self.state.glob("ps-state-seq*"):
+            path.unlink(missing_ok=True)
+
+    def set_ps_command_sequence(
+        self, pid: int | str, commands: list[str],
+    ) -> None:
+        """Install a deterministic command= sequence for one PID."""
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "ps-command-seq").write_text(
+            f"{pid}:" + ";;;".join(commands) + "\n", encoding="utf-8"
+        )
+        (self.state / f"ps-command-seq-count-{pid}").unlink(missing_ok=True)
+
+    def clear_ps_command_sequence(self) -> None:
+        for path in self.state.glob("ps-command-seq*"):
             path.unlink(missing_ok=True)
 
     def set_ps_probe_log(self) -> None:
@@ -1371,6 +1518,39 @@ def test_happy_path_does_not_depend_on_service_meta_sync(
     sandbox.kill_all()
 
 
+def test_backend_uses_project_root_as_cwd_from_outside(
+    sandbox: Sandbox,
+) -> None:
+    "The launcher must start backend with the project root as its cwd."
+    with sandbox.launch() as launcher:
+        launcher.wait_ready()
+        helper_pid = sandbox.backend_pid()
+        assert helper_pid is not None
+        cwd_file = sandbox.state / "backend-cwd"
+        assert Path(cwd_file.read_text(encoding="utf-8").strip()).resolve() == (
+            sandbox.project.resolve()
+        )
+        # The recorded PID is the interpreter/helper PID, not an intermediate
+        # shell: the helper itself wrote backend-started.pid.
+        assert sandbox.record_field("backend", "PID") == str(helper_pid)
+        expected_sig = (
+            f"{sandbox.project}/.venv/bin/python -m uvicorn "
+            "backend.main:app --host 127.0.0.1 --port 8000"
+        )
+        assert sandbox.record_field("backend", "CMD") == expected_sig
+        assert sandbox.record_field("backend", "FINGERPRINT") == (
+            sandbox._lstart_for(helper_pid)
+        )
+        launcher.signal(signal.SIGINT)
+        out, err, rc = launcher.wait_exit()
+    assert rc == 0, out + err
+    assert not sandbox.record_exists("backend")
+    assert not sandbox.record_exists("ollama")
+    assert not sandbox.bootstrap_guard_path().exists()
+    assert not sandbox.cleanup_failed_path().exists()
+    assert not (sandbox.runtime / "demo.lock").exists()
+
+
 def test_fingerprint_discovery_survives_delayed_backend_started_files(
     sandbox: Sandbox,
 ) -> None:
@@ -1837,6 +2017,484 @@ def _matching_backend_process(sandbox: Sandbox) -> tuple[subprocess.Popen, str]:
     )
     proc = subprocess.Popen(
         [str(fake_python), "-m", "uvicorn", "backend.main:app",
+         "--host", "127.0.0.1", "--port", "8000"],
+        env=sandbox.env(),
+    )
+    return proc, signature
+
+
+_BACKEND_LOGIC_TAIL = (
+    "-m uvicorn backend.main:app --host 127.0.0.1 --port 8000"
+)
+_BAD_BACKEND_LIVE_TAILS = [
+    "-m uvicorn wrong.main:app --host 127.0.0.1 --port 8000",
+    "-m uvicorn backend.other:app --host 127.0.0.1 --port 8000",
+    "-m uvicorn backend.main:app --host 0.0.0.0 --port 8000",
+    "-m uvicorn backend.main:app --host 127.0.0.1 --port 8001",
+    "-m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --extra",
+    "-m uvicorn backend.main:app --host 127.0.0.1",
+    "-m uvicorn backend.main:app --host 127.0.0.1 --port 8000 garbage",
+    "-m uvicorn backend.main:app --host 127.0.0.1 --flag --port 8000",
+]
+
+
+def test_stop_accepts_macos_framework_python_for_managed_backend(
+    sandbox: Sandbox,
+) -> None:
+    "A venv launcher may show the derived framework Python in ps."
+    info = sandbox.install_mock_framework_python()
+    proc, signature = _matching_backend_process_with_python(
+        sandbox, info["config"]
+    )
+    _suppress_auto_backend_row(sandbox)
+    live_cmd = f"{info['derived']} {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, live_cmd)
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature, live_cmd=live_cmd
+    )
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop(
+            env_overrides={"TEACHABLE_PYTHON_BIN": info["config"]}
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert sandbox.wait_for_pid_exit(proc.pid, timeout=10)
+        assert not record.exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("bad_tail", _BAD_BACKEND_LIVE_TAILS)
+def test_stop_rejects_non_matching_backend_logic(
+    sandbox: Sandbox, bad_tail: str,
+) -> None:
+    "Only the exact fixed backend argument tail may be signalled."
+    proc, signature = _matching_backend_process(sandbox)
+    _suppress_auto_backend_row(sandbox)
+    live_cmd = f"{sandbox.project}/.venv/bin/python {bad_tail}"
+    sandbox.declare_process(proc.pid, live_cmd)
+    record = sandbox.write_pid_record("backend", proc.pid, signature)
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop()
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Refusing to signal" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_stop_rejects_relative_basename_backend_command(
+    sandbox: Sandbox,
+) -> None:
+    proc, signature = _matching_backend_process(sandbox)
+    _suppress_auto_backend_row(sandbox)
+    live_cmd = f"Python {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, live_cmd)
+    record = sandbox.write_pid_record("backend", proc.pid, signature)
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop()
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Refusing to signal" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_launcher_captures_framework_python_live_command(
+    sandbox: Sandbox,
+) -> None:
+    "The launcher stores the derived framework-Python live command."
+    info = sandbox.install_mock_framework_python()
+    framework_cmd = f"{info['derived']} {_BACKEND_LOGIC_TAIL}"
+    (sandbox.state / "backend-live-cmd-override").write_text(
+        framework_cmd + "\n", encoding="utf-8"
+    )
+    expected_spawn = f"{info['config']} {_BACKEND_LOGIC_TAIL}"
+    with sandbox.launch(
+        TEACHABLE_PYTHON_BIN=info["config"]
+    ) as launcher:
+        launcher.wait_ready()
+        assert sandbox.record_field("backend", "CMD") == expected_spawn
+        assert sandbox.record_field("backend", "LIVE_CMD") == framework_cmd
+        launcher.signal(signal.SIGINT)
+        out, err, rc = launcher.wait_exit()
+    assert rc == 0, out + err
+    assert not sandbox.record_exists("backend")
+    sandbox.kill_all()
+
+
+def test_stop_rejects_arbitrary_absolute_executable_against_record(
+    sandbox: Sandbox,
+) -> None:
+    "Record LIVE_CMD pins the executable even for correct uvicorn args."
+    info = sandbox.install_mock_framework_python()
+    proc, signature = _matching_backend_process_with_python(
+        sandbox, info["config"]
+    )
+    _suppress_auto_backend_row(sandbox)
+    recorded_live = f"{info['derived']} {_BACKEND_LOGIC_TAIL}"
+    live_cmd = f"/usr/bin/arbitrary-program {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, live_cmd)
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature, live_cmd=recorded_live
+    )
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop(
+            env_overrides={"TEACHABLE_PYTHON_BIN": info["config"]}
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Refusing to signal" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_stop_rejects_tampered_record_live_cmd(
+    sandbox: Sandbox,
+) -> None:
+    "A record whose LIVE_CMD names an unrelated executable is rejected."
+    info = sandbox.install_mock_framework_python()
+    proc, signature = _matching_backend_process_with_python(
+        sandbox, info["config"]
+    )
+    _suppress_auto_backend_row(sandbox)
+    tampered = f"/usr/bin/arbitrary-program {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, tampered)
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature, live_cmd=tampered
+    )
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop(
+            env_overrides={"TEACHABLE_PYTHON_BIN": info["config"]}
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Refusing to signal" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_stop_rejects_unrelated_python_app_path(
+    sandbox: Sandbox,
+) -> None:
+    "Derived framework mapping is not a generic string suffix whitelist."
+    info = sandbox.install_mock_framework_python()
+    proc, signature = _matching_backend_process_with_python(
+        sandbox, info["config"]
+    )
+    _suppress_auto_backend_row(sandbox)
+    fake = f"/tmp/fake/Python.app/Contents/MacOS/Python {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, fake)
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature, live_cmd=fake
+    )
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop(
+            env_overrides={"TEACHABLE_PYTHON_BIN": info["config"]}
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Refusing to signal" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_stop_rejects_other_framework_version(
+    sandbox: Sandbox,
+) -> None:
+    "A different Python.framework version must not be accepted."
+    info = sandbox.install_mock_framework_python("3.13")
+    other = sandbox.install_mock_framework_python("3.12")
+    proc, signature = _matching_backend_process_with_python(
+        sandbox, info["config"]
+    )
+    _suppress_auto_backend_row(sandbox)
+    live_cmd = f"{other['derived']} {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, live_cmd)
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature, live_cmd=live_cmd
+    )
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop(
+            env_overrides={"TEACHABLE_PYTHON_BIN": info["config"]}
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Refusing to signal" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_stop_rejects_nonexistent_framework_executable(
+    sandbox: Sandbox,
+) -> None:
+    "A suffix-correct but nonexistent Python.app executable is rejected."
+    info = sandbox.install_mock_framework_python()
+    Path(info["derived"]).unlink()
+    proc, signature = _matching_backend_process_with_python(
+        sandbox, info["config"]
+    )
+    _suppress_auto_backend_row(sandbox)
+    live_cmd = f"{info['derived']} {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, live_cmd)
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature, live_cmd=live_cmd
+    )
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop(
+            env_overrides={"TEACHABLE_PYTHON_BIN": info["config"]}
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Refusing to signal" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_stop_rejects_symlink_to_unrelated_executable(
+    sandbox: Sandbox,
+) -> None:
+    "The derived Python.app path must be a real executable, not a symlink."
+    info = sandbox.install_mock_framework_python()
+    derived = Path(info["derived"])
+    derived.unlink()
+    derived.symlink_to("/usr/bin/true")
+    proc, signature = _matching_backend_process_with_python(
+        sandbox, info["config"]
+    )
+    _suppress_auto_backend_row(sandbox)
+    live_cmd = f"{info['derived']} {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, live_cmd)
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature, live_cmd=live_cmd
+    )
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop(
+            env_overrides={"TEACHABLE_PYTHON_BIN": info["config"]}
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Refusing to signal" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_stop_rejects_framework_record_when_live_command_differs(
+    sandbox: Sandbox,
+) -> None:
+    "A correctly derived record still does not match a different live command."
+    info = sandbox.install_mock_framework_python()
+    proc, signature = _matching_backend_process_with_python(
+        sandbox, info["config"]
+    )
+    _suppress_auto_backend_row(sandbox)
+    current_live = f"{info['config']} {_BACKEND_LOGIC_TAIL}"
+    recorded_live = f"{info['derived']} {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, current_live)
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature, live_cmd=recorded_live
+    )
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop(
+            env_overrides={"TEACHABLE_PYTHON_BIN": info["config"]}
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Refusing to signal" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("variant", ["missing", "blank", "duplicate"])
+def test_stop_rejects_malformed_record_live_cmd(
+    sandbox: Sandbox, variant: str,
+) -> None:
+    "Missing, blank or duplicated LIVE_CMD is fail-closed."
+    proc, signature = _matching_backend_process(sandbox)
+    _suppress_auto_backend_row(sandbox)
+    live_cmd = (
+        f"{sandbox.project}/.venv/bin/python {_BACKEND_LOGIC_TAIL}"
+    )
+    sandbox.declare_process(proc.pid, signature)
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature,
+        live_cmd="" if variant == "missing" else live_cmd,
+    )
+    if variant != "missing":
+        lines = record.read_text(encoding="utf-8").splitlines()
+        rebuilt: list[str] = []
+        for line in lines:
+            if line.startswith("LIVE_CMD="):
+                if variant == "blank":
+                    rebuilt.append("LIVE_CMD=")
+                else:
+                    rebuilt.append(line)
+                    rebuilt.append(line)
+            else:
+                rebuilt.append(line)
+        record.write_text("\n".join(rebuilt) + "\n", encoding="utf-8")
+    before = record.read_text(encoding="utf-8")
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop()
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "LIVE_CMD" in result.stderr or "malformed" in result.stderr
+        assert proc.poll() is None
+        assert record.read_text(encoding="utf-8") == before
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_stop_prekill_change_of_live_command_never_kills(
+    sandbox: Sandbox,
+) -> None:
+    "A live command that changes after TERM is not handed to SIGKILL."
+    fake_python = sandbox.bin / "python-helper"
+    body = fake_python.read_text(encoding="utf-8").replace(
+        "        while True:\n            time.sleep(0.2)",
+        "        import signal as _s\n"
+        "        _s.signal(_s.SIGTERM, _s.SIG_IGN)\n"
+        "        time.sleep(300)",
+    )
+    fake_python.write_text(body, encoding="utf-8")
+    fake_python.chmod(0o755)
+
+    proc, signature = _matching_backend_process(sandbox)
+    _suppress_auto_backend_row(sandbox)
+    good_cmd = f"{sandbox.project}/.venv/bin/python {_BACKEND_LOGIC_TAIL}"
+    bad_cmd = f"/usr/bin/arbitrary-program {_BACKEND_LOGIC_TAIL}"
+    sandbox.declare_process(proc.pid, good_cmd)
+    sandbox.set_ps_command_sequence(
+        proc.pid, [good_cmd, good_cmd, bad_cmd]
+    )
+    record = sandbox.write_pid_record(
+        "backend", proc.pid, signature, live_cmd=good_cmd
+    )
+    try:
+        time.sleep(0.7)
+        result = sandbox.stop(
+            env_overrides={"TEACHABLE_STOP_TIMEOUT": "1"}
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "escalating to SIGKILL" not in result.stderr
+        assert "Keeping the PID record" in result.stderr
+        assert proc.poll() is None
+        assert record.exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        sandbox.clear_ps_command_sequence()
+        sandbox.clear_declared()
+        record.unlink(missing_ok=True)
+
+
+def test_stop_uses_stable_c_locale_across_start_and_stop(
+    sandbox: Sandbox,
+) -> None:
+    "ps probes must use LC_ALL=C regardless of the caller's locale."
+    sandbox.flag("ps-lstart-locale-dependent")
+    locale_log = sandbox.state / "ps-locale-log"
+    locale_log.unlink(missing_ok=True)
+    with sandbox.launch(LC_ALL="zh_CN.UTF-8") as launcher:
+        launcher.wait_ready()
+        backend_pid = sandbox.backend_pid()
+        assert backend_pid is not None
+        assert sandbox.record_field("backend", "FINGERPRINT") == (
+            sandbox._lstart_for(backend_pid)
+        )
+        stopped = sandbox.stop(env_overrides={"LC_ALL": "fr_FR.UTF-8"})
+        assert stopped.returncode == 0, stopped.stdout + stopped.stderr
+        assert not sandbox.record_exists("backend")
+    locales = [
+        line.strip() for line in locale_log.read_text(
+            encoding="utf-8"
+        ).splitlines() if line.strip()
+    ]
+    assert locales
+    assert all(locale == "C" for locale in locales)
+    assert not sandbox.record_exists("backend")
+    assert not sandbox.record_exists("ollama")
+
+
+def _matching_backend_process_with_python(
+    sandbox: Sandbox, python_path: str,
+) -> tuple[subprocess.Popen, str]:
+    """Start a matching backend using a specific configured Python path."""
+    signature = f"{python_path} {_BACKEND_LOGIC_TAIL}"
+    proc = subprocess.Popen(
+        [python_path, "-m", "uvicorn", "backend.main:app",
          "--host", "127.0.0.1", "--port", "8000"],
         env=sandbox.env(),
     )
@@ -3908,6 +4566,7 @@ def _base_record(sandbox: Sandbox, pid: int | str) -> str:
         "SERVICE=backend\n"
         f"PROJECT_ROOT={sandbox.project}\n"
         f"CMD={sig}\n"
+        f"LIVE_CMD={sig}\n"
         f"FINGERPRINT={fp}\n"
         "RUN_ID=test-run\n"
     )

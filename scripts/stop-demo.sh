@@ -24,6 +24,7 @@ SCRIPT_DIR="$(cd -P "$(dirname "$0")" && pwd)"
 PROJECT="${TEACHABLE_PROJECT_ROOT:-$(cd -P "$SCRIPT_DIR/.." && pwd)}"
 
 PYTHON_BIN="${TEACHABLE_PYTHON_BIN:-$PROJECT/.venv/bin/python}"
+LINK_PYTHON_BIN="${TEACHABLE_LINK_PYTHON:-$PYTHON_BIN}"
 LOCAL_OLLAMA_CLI="${TEACHABLE_LOCAL_OLLAMA_CLI:-$PROJECT/local_llm/Ollama.app/Contents/Resources/ollama}"
 RUNTIME_DIR="${TEACHABLE_RUNTIME_DIR:-$PROJECT/local_llm/run}"
 
@@ -49,7 +50,12 @@ BACKEND_PID_FILE="$RUNTIME_DIR/backend-demo.pid"
 OLLAMA_SERVICE="ollama"
 BACKEND_SERVICE="backend"
 OLLAMA_CMD_SIGNATURE="$LOCAL_OLLAMA_CLI serve"
-BACKEND_CMD_SIGNATURE="$PYTHON_BIN -m uvicorn $APP_MODULE --host $APP_HOST --port $APP_PORT"
+# Fixed logical backend argument tail.  The live macOS process may show a
+# framework Python executable instead of .venv/bin/python, so live identity
+# anchors on this exact tail while the record must still name the expected
+# spawn command exactly.
+BACKEND_LOGIC_ARGS="-m uvicorn $APP_MODULE --host $APP_HOST --port $APP_PORT"
+BACKEND_CMD_SIGNATURE="$PYTHON_BIN $BACKEND_LOGIC_ARGS"
 
 info() { printf '[stop] %s\n' "$*"; }
 warn() { printf '[stop] WARNING: %s\n' "$*" >&2; }
@@ -128,7 +134,7 @@ ps_field_raw() {
     }
 
     set +e
-    "$ps_prog" -p "$pid" -o "$field" >"$out_file" 2>"$err_file"
+    LC_ALL=C "$ps_prog" -p "$pid" -o "$field" >"$out_file" 2>"$err_file"
     rc=$?
     set -e
 
@@ -317,13 +323,15 @@ read_lstart() {
 # signalled and never deleted.
 parse_pid_record() {
     local path="$1"
-    local pid service root cmd fingerprint run_id
+    local pid service root cmd fingerprint run_id live_cmd
     local pid_count service_count root_count cmd_count fp_count run_count
+    local live_count=0
     local line key value
 
     [ -f "$path" ] || return 1
 
     pid=""; service=""; root=""; cmd=""; fingerprint=""; run_id=""
+    live_cmd=""
     pid_count=0; service_count=0; root_count=0; cmd_count=0; fp_count=0
     run_count=0
 
@@ -350,6 +358,8 @@ parse_pid_record() {
                 fingerprint="$value"; fp_count=$((fp_count + 1)) ;;
             RUN_ID)
                 run_id="$value"; run_count=$((run_count + 1)) ;;
+            LIVE_CMD)
+                live_cmd="$value"; live_count=$((live_count + 1)) ;;
         esac
     done < "$path"
 
@@ -358,9 +368,97 @@ parse_pid_record() {
        [ "$fp_count" -ne 1 ] || [ "$run_count" -ne 1 ]; then
         return 1
     fi
+    [ "$live_count" -le 1 ] || return 1
 
     REC_PID="$pid"; REC_SERVICE="$service"; REC_ROOT="$root"
     REC_CMD="$cmd"; REC_FP="$fingerprint"; REC_RUN_ID="$run_id"
+    REC_LIVE_CMD="$live_cmd"
+    REC_LIVE_CMD_COUNT="$live_count"
+    return 0
+}
+
+# True only when cmd is an absolute executable followed by exactly the fixed
+# backend logical argument tail.  A path containing spaces is accepted only
+# when it is exactly the configured spawn executable, so a different command
+# that merely embeds the tail is rejected.
+# True only for the configured spawn executable, a path that is the same
+# file, or the Python.app executable derived from the configured Python's
+# own canonical framework/version root.  Arbitrary path suffixes, basenames,
+# other framework versions and symlinks to unrelated files are rejected.
+backend_live_exec_allowed() {
+    local prefix="$1" expected="$2"
+    "$LINK_PYTHON_BIN" - "$prefix" "$expected" <<'PY' 2>/dev/null
+import os
+import re
+import stat
+import sys
+
+live = sys.argv[1]
+expected = sys.argv[2]
+
+
+def usable(path):
+    try:
+        info = os.stat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and os.access(path, os.X_OK)
+
+
+if not live or not expected:
+    sys.exit(1)
+if not usable(expected):
+    sys.exit(1)
+
+expected_canon = os.path.realpath(expected)
+live_canon = os.path.realpath(live)
+if not usable(live):
+    sys.exit(1)
+
+if live == expected:
+    sys.exit(0)
+
+try:
+    if os.path.samefile(expected, live):
+        sys.exit(0)
+except OSError:
+    pass
+
+if live_canon == expected_canon:
+    sys.exit(0)
+
+match = re.fullmatch(
+    r"(?P<root>.*/Python[.]framework/Versions/[^/]+)/bin/python[^/]*",
+    expected_canon,
+)
+if match is None:
+    sys.exit(1)
+derived = (
+    match.group("root")
+    + "/Resources/Python.app/Contents/MacOS/Python"
+)
+if os.path.realpath(derived) != derived:
+    sys.exit(1)
+if live_canon != derived:
+    sys.exit(1)
+if not usable(derived):
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+backend_live_cmd_shape_ok() {
+    local cmd="$1" logic="$2" expected_exec="$3" prefix
+    case "$cmd" in
+        *" $logic") : ;;
+        *) return 1 ;;
+    esac
+    prefix="${cmd%" $logic"}"
+    case "$prefix" in
+        /*) : ;;
+        *) return 1 ;;
+    esac
+    backend_live_exec_allowed "$prefix" "$expected_exec" || return 1
     return 0
 }
 
@@ -368,8 +466,9 @@ parse_pid_record() {
 # command line AND process start fingerprint.  If the platform cannot read
 # the fingerprint, this fails closed.
 identity_ok() {
-    local pid="$1" service="$2" expected_cmd="$3" recorded_fp="$4"
-    local state cmd want live_fp
+    local pid="$1" service="$2" expected_cmd="$3" recorded_live_cmd="$4"
+    local recorded_fp="$5"
+    local state cmd want live_fp logic expected_exec
     is_positive_integer "$pid" || return 1
     proc_view "$pid" >/dev/null
     [ "$PROC_VIEW_ALIVE" -eq 1 ] || return 1
@@ -379,8 +478,15 @@ identity_ok() {
     [ -n "$cmd" ] || return 1
     want="$(normalize_cmd "$expected_cmd")"
     case "$service" in
-        "$OLLAMA_SERVICE"|"$BACKEND_SERVICE")
+        "$OLLAMA_SERVICE")
             case "$cmd" in *"$want") : ;; *) return 1 ;; esac
+            ;;
+        "$BACKEND_SERVICE")
+            logic="$(normalize_cmd "$BACKEND_LOGIC_ARGS")"
+            expected_exec="$(normalize_cmd "$PYTHON_BIN")"
+            [ -n "$recorded_live_cmd" ] || return 1
+            backend_live_cmd_shape_ok "$cmd" "$logic" "$expected_exec" || return 1
+            [ "$cmd" = "$recorded_live_cmd" ] || return 1
             ;;
         *) return 1 ;;
     esac
@@ -394,6 +500,7 @@ identity_ok() {
 stop_managed() {
     local pid_file="$1" service="$2" signature="$3" label="$4"
     local pid recorded_root recorded_cmd recorded_fp i max_ticks view
+    local recorded_live expected_logic expected_exec
 
     if [ ! -f "$pid_file" ]; then
         info "$label: no PID record ($pid_file) - nothing to stop."
@@ -435,6 +542,25 @@ stop_managed() {
         return 0
     fi
 
+    if [ "$service" = "$BACKEND_SERVICE" ]; then
+        if [ "$REC_LIVE_CMD_COUNT" -ne 1 ]; then
+            warn "$label: the backend record has no LIVE_CMD. Never signalling;"
+            warn "        keeping the record for inspection."
+            return 1
+        fi
+        if [ -z "$REC_LIVE_CMD" ]; then
+            warn "$label: the backend record has a blank LIVE_CMD. Never signalling;"
+            warn "        keeping the record for inspection."
+            return 1
+        fi
+    else
+        if [ "$REC_LIVE_CMD_COUNT" -ne 0 ]; then
+            warn "$label: this record unexpectedly carries LIVE_CMD. Never signalling;"
+            warn "        keeping the record for inspection."
+            return 1
+        fi
+    fi
+
     if [ -z "$REC_CMD" ] || [ -z "$REC_FP" ] || [ -z "$REC_RUN_ID" ]; then
         warn "$label: the record has an empty CMD, FINGERPRINT or RUN_ID and"
         warn "        cannot be verified. Never signalling; keeping the record."
@@ -442,11 +568,40 @@ stop_managed() {
     fi
 
     recorded_cmd="$(normalize_cmd "$REC_CMD")"
-    if [ "$recorded_cmd" != "$(normalize_cmd "$signature")" ]; then
-        warn "$label: the recorded CMD does not match the expected command"
-        warn "        signature for this project. Never signalling; keeping the record."
-        return 1
-    fi
+    case "$service" in
+        "$BACKEND_SERVICE")
+            expected_prefix="$(normalize_cmd "$PYTHON_BIN")"
+            expected_logic="$(normalize_cmd "$BACKEND_LOGIC_ARGS")"
+            if [ "$recorded_cmd" != "$expected_prefix $expected_logic" ]; then
+                warn "$label: the recorded CMD does not match this project's"
+                warn "        fixed backend command signature. Never signalling;"
+                warn "        keeping the record for inspection."
+                return 1
+            fi
+            recorded_live="$(normalize_cmd "$REC_LIVE_CMD")"
+            if [ -z "$recorded_live" ]; then
+                warn "$label: the record has no usable LIVE_CMD. Never signalling;"
+                warn "        keeping the record for inspection."
+                return 1
+            fi
+            if backend_live_cmd_shape_ok "$recorded_live" \
+                    "$expected_logic" "$expected_prefix"; then
+                :
+            else
+                warn "$label: the record LIVE_CMD is malformed or does not match"
+                warn "        this project's fixed backend command signature."
+                warn "        Refusing to signal it; keeping the record for inspection."
+                return 1
+            fi
+            ;;
+        *)
+            if [ "$recorded_cmd" != "$(normalize_cmd "$signature")" ]; then
+                warn "$label: the recorded CMD does not match the expected command"
+                warn "        signature for this project. Never signalling; keeping the record."
+                return 1
+            fi
+            ;;
+    esac
 
     # Three-state gate: only an explicit "gone" may delete the stale record.
     proc_view_into "$pid"
@@ -464,7 +619,7 @@ stop_managed() {
             ;;
     esac
 
-    if ! identity_ok "$pid" "$service" "$signature" "$REC_FP"; then
+    if ! identity_ok "$pid" "$service" "$signature" "$REC_LIVE_CMD" "$REC_FP"; then
         warn "$label: PID $pid is alive but is NOT the managed $service process"
         warn "        (command line or process start fingerprint does not match)."
         warn "        Refusing to signal it - the PID was probably reused."
@@ -490,7 +645,7 @@ stop_managed() {
                 return 1
                 ;;
         esac
-        identity_ok "$pid" "$service" "$signature" "$REC_FP" || break
+        identity_ok "$pid" "$service" "$signature" "$REC_LIVE_CMD" "$REC_FP" || break
         "$SLEEP_BIN" 0.1
         i=$((i + 1))
     done
@@ -508,7 +663,7 @@ stop_managed() {
         return 1
     fi
 
-    if identity_ok "$pid" "$service" "$signature" "$REC_FP"; then
+    if identity_ok "$pid" "$service" "$signature" "$REC_LIVE_CMD" "$REC_FP"; then
         warn "$label: still running after ${STOP_TIMEOUT}s; escalating to SIGKILL for PID $pid."
         kill -KILL "$pid" 2>/dev/null || true
         i=0
@@ -523,7 +678,7 @@ stop_managed() {
                     return 1
                     ;;
             esac
-            identity_ok "$pid" "$service" "$signature" "$REC_FP" || break
+            identity_ok "$pid" "$service" "$signature" "$REC_LIVE_CMD" "$REC_FP" || break
             "$SLEEP_BIN" 0.1
             i=$((i + 1))
         done
