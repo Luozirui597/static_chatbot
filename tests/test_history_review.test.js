@@ -25,6 +25,7 @@ const {
   upsertHistoryReviewSummary,
   createCancelableReviewDialogAdapter,
   isHistoryReviewTargetBusy,
+  isHistoryReviewOperationVisiblyWorking,
   buildHistoryReviewPanelModel,
   selectLatestHistoryReviewProposal,
   buildHistoryReviewCreatePayload,
@@ -2089,5 +2090,171 @@ describe("history review 2F-4 acceptance scenarios", function () {
     assert.equal(staleModel.detail, null);
     assert.equal(staleModel.summaryText, null);
     assert.equal(staleModel.findings.length, 0);
+  });
+});
+
+
+/* ------------------------------------------------------------------ */
+/* History review visible-working phase policy                         */
+/* ------------------------------------------------------------------ */
+
+describe("history review visible-working phase policy", function () {
+  it("classifies only known execution phases as visibly working", function () {
+    assert.equal(isHistoryReviewOperationVisiblyWorking(null), false);
+    assert.equal(isHistoryReviewOperationVisiblyWorking(undefined), false);
+    assert.equal(isHistoryReviewOperationVisiblyWorking("posting"), false);
+    assert.equal(isHistoryReviewOperationVisiblyWorking([]), false);
+    assert.equal(isHistoryReviewOperationVisiblyWorking({}), false);
+    assert.equal(
+      isHistoryReviewOperationVisiblyWorking({ phase: "confirming_start" }),
+      false,
+    );
+    assert.equal(
+      isHistoryReviewOperationVisiblyWorking({ phase: "posting" }), true,
+    );
+    assert.equal(
+      isHistoryReviewOperationVisiblyWorking({ phase: "rechecking" }), true,
+    );
+
+    const unknownPhases = [
+      "starting", "working", "pending", "running", "confirming_start ",
+      "Posting", "", null, 0, true, {}, [],
+    ];
+    for (const phase of unknownPhases) {
+      assert.equal(
+        isHistoryReviewOperationVisiblyWorking({ phase: phase }),
+        false,
+        "phase=" + String(phase),
+      );
+    }
+  });
+
+  it("keeps a malformed operation fail-closed for busy without claiming work", function () {
+    const state = makeScenarioState({
+      events: [makeEvent()],
+      eventsStatus: "ready",
+      summaries: [],
+      summariesStatus: "ready",
+      operation: { kind: "start", eventId: 5, phase: "mystery" },
+    });
+    assert.equal(
+      isHistoryReviewOperationVisiblyWorking(state.operation), false,
+    );
+    assert.equal(
+      isHistoryReviewTargetBusy(1, state, isValidApiTimestamp), true,
+    );
+
+    const model = panelModelFor(state);
+    assert.equal(model.workingVisible, false);
+    assert.equal(model.workingLiveText, "");
+    assert.equal(model.busy, true);
+    assert.equal(model.badgeText, "Review available");
+    assert.notEqual(model.proposal, null);
+    assert.equal(model.startVisible, false);
+  });
+
+  it("shows Review available for proposal + confirming_start without Working", function () {
+    const state = makeScenarioState({
+      events: [makeEvent()],
+      eventsStatus: "ready",
+      summaries: [],
+      summariesStatus: "ready",
+      operation: {
+        kind: "start", eventId: 5, generation: 1,
+        phase: "confirming_start",
+      },
+    });
+    const model = panelModelFor(state);
+    assert.equal(model.badgeText, "Review available");
+    assert.equal(model.workingVisible, false);
+    assert.equal(model.workingLiveText, "");
+    assert.equal(model.busy, true);
+    assert.notEqual(model.proposal, null);
+    assert.equal(model.proposal.eventId, 5);
+    assert.equal(model.startVisible, false);
+    assert.equal(model.dismissVisible, false);
+  });
+
+  it("shows Working only after posting starts", function () {
+    const state = makeScenarioState({
+      events: [makeEvent()],
+      eventsStatus: "ready",
+      summaries: [],
+      summariesStatus: "ready",
+      operation: {
+        kind: "start", eventId: 5, generation: 1, phase: "posting",
+      },
+    });
+    const model = panelModelFor(state);
+    assert.equal(model.badgeText, "Working");
+    assert.equal(model.workingVisible, true);
+    assert.equal(model.workingLiveText, "Working on history review...");
+    assert.equal(model.busy, true);
+    assert.notEqual(model.proposal, null);
+  });
+
+  it("shows Working while rechecking a running review", function () {
+    const running = makeSummary({
+      id: 10, mode_switch_event_id: 5, status: "running",
+      findings_count: 0, summary: null, coverage_note: null,
+      completed_at: null, updated_at: "2026-08-06T12:00:00",
+    });
+    const state = makeScenarioState({
+      summaries: [running], summariesStatus: "ready",
+      selectedReviewId: 10,
+      operation: {
+        kind: "recheck", eventId: 5, generation: 2, phase: "rechecking",
+      },
+    });
+    const model = panelModelFor(state);
+    assert.equal(model.badgeText, "Working");
+    assert.equal(model.workingVisible, true);
+    assert.equal(model.workingLiveText, "Working on history review...");
+    assert.equal(model.busy, true);
+  });
+
+  it("keeps proposal and completed detail while confirming_start is reserved", function () {
+    const completedSummary = makeSummary({
+      id: 10, mode_switch_event_id: 5, status: "completed",
+      findings_count: 1, summary: "final summary text",
+      coverage_note: "full coverage",
+      updated_at: "2026-08-06T12:05:00",
+    });
+    const completedDetail = makeDetail({
+      id: 10, mode_switch_event_id: 5, status: "completed",
+      findings: [makeFinding()],
+      summary: "final summary text", coverage_note: "full coverage",
+      updated_at: "2026-08-06T12:05:00",
+    });
+    const laterEvent = makeEvent({
+      id: 6, created_at: "2026-08-06T12:10:00",
+      history_through_message_id: 4, reviewable_user_message_count: 4,
+    });
+    const state = makeScenarioState({
+      events: [laterEvent, makeEvent()],
+      eventsStatus: "ready",
+      summaries: [completedSummary],
+      summariesStatus: "ready",
+      detailsById: { "10": completedDetail },
+      selectedReviewId: 10,
+      operation: {
+        kind: "start", eventId: 6, generation: 1,
+        phase: "confirming_start",
+      },
+    });
+
+    const model = panelModelFor(state);
+    assert.equal(model.badgeText, "Review available");
+    assert.equal(model.workingVisible, false);
+    assert.equal(model.busy, true);
+    assert.notEqual(model.proposal, null);
+    assert.equal(model.proposal.eventId, 6);
+    assert.notEqual(model.detail, null);
+    assert.equal(model.detail.id, 10);
+    assert.equal(model.summaryText, "final summary text");
+    assert.equal(model.coverageText, "full coverage");
+    assert.equal(model.findings.length, 1);
+    assert.equal(state.detailsById["10"], completedDetail);
+    assert.deepEqual(state.summaries, [completedSummary]);
   });
 });

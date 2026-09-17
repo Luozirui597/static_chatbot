@@ -137,6 +137,8 @@ const {
 } = require(path.join(ROOT, "frontend", "interaction-mode.js"));
 const { isValidApiTimestamp } = require(
   path.join(ROOT, "frontend", "model-selection.js"));
+const { createRemoteHistoryConfirmer } = require(
+  path.join(ROOT, "frontend", "session-profile-switch.js"));
 
 const PANEL_IDS = [
   "historyReviewPanel", "historyReviewTitle", "historyReviewStatusBadge",
@@ -535,15 +537,22 @@ const APP_FUNCTIONS = [
   "async function loadHistoryReviewDetail(sessionId, reviewId) {",
   "async function loadHistoryReviewSession(sessionId, options) {",
   "function renderHistoryReviewPanel() {",
+  "async function confirmWithReviewFocus(confirmFn, targetSessionId, triggerEl) {",
+  "function applyAuthoritativeReviewDetail(state, sessionId, detail) {",
+  "async function startHistoryReview(kind, eventId, triggerEl) {",
 ];
 
 function makeFakeElement() {
   const classes = new Set();
-  return {
+  const listeners = Object.create(null);
+  const element = {
     hidden: false,
     textContent: "",
     value: "",
     disabled: false,
+    open: false,
+    isConnected: true,
+    focusCount: 0,
     children: [],
     classList: {
       toggle: function (name, on) {
@@ -554,8 +563,37 @@ function makeFakeElement() {
     replaceChildren: function () { this.children = []; },
     appendChild: function (child) { this.children.push(child); },
     setAttribute: function () {},
-    addEventListener: function () {},
+    focus: function () { element.focusCount += 1; },
+    showModal: function () { element.open = true; },
+    close: function () { element.open = false; },
+    addEventListener: function (name, handler) {
+      if (Object.hasOwn(listeners, name) === false) {
+        listeners[name] = [];
+      }
+      listeners[name].push(handler);
+    },
+    removeEventListener: function (name, handler) {
+      if (Object.hasOwn(listeners, name) === false) return;
+      listeners[name] = listeners[name].filter(function (item) {
+        return item === handler ? false : true;
+      });
+    },
+    dispatchEvent: function (event) {
+      const name = typeof event === "string"
+        ? event
+        : (event && typeof event === "object" ? event.type : "");
+      const handlers = Object.hasOwn(listeners, name)
+        ? listeners[name].slice()
+        : [];
+      for (const handler of handlers) {
+        handler(event && typeof event === "object"
+          ? event
+          : { type: name });
+      }
+      return true;
+    },
   };
+  return element;
 }
 
 /**
@@ -575,11 +613,22 @@ function createAppHarness() {
   for (const id of PANEL_IDS) elements[id] = makeFakeElement();
   // The "Review" label lives inside the selector wrapper.
   elements.historyReviewSelectorLabel = makeFakeElement();
+  for (const id of [
+    "historyReviewStartDialog", "hrsTitle", "hrsBody", "hrsCancel", "hrsStart",
+  ]) {
+    elements[id] = makeFakeElement();
+  }
 
   const inner = [
     "let currentSessionId = __fixtures.currentSessionId;",
+    "let currentInteractionMode = __receiveMode;",
     "const reviewStateBySession = Object.create(null);",
     "const reviewLifecycleEpochBySession = Object.create(null);",
+    "const reviewDialogContextBySession = Object.create(null);",
+    "let historyReviewController = null;",
+    "let historyReviewInitializationError = null;",
+    "let historyReviewStartConfirmer = null;",
+    "let historyReviewStartDialogAdapter = null;",
     "const historyReviewPanelEl = __elements.historyReviewPanel;",
     "const historyReviewTitleEl = __elements.historyReviewTitle;",
     "const historyReviewStatusBadgeEl = __elements.historyReviewStatusBadge;",
@@ -599,6 +648,14 @@ function createAppHarness() {
     "const historyReviewContinueBtn = __elements.historyReviewContinueBtn;",
     "const historyReviewStartBtn = __elements.historyReviewStartBtn;",
     "const historyReviewDismissBtn = __elements.historyReviewDismissBtn;",
+    "const historyReviewStartDialogEl = __elements.historyReviewStartDialog;",
+    "const historyReviewStartTitleEl = __elements.hrsTitle;",
+    "const historyReviewStartBodyEl = __elements.hrsBody;",
+    "const historyReviewStartCancelBtn = __elements.hrsCancel;",
+    "const historyReviewStartConfirmBtn = __elements.hrsStart;",
+    "function showStatus(text, isError) {",
+    "  __fixtures.lastStatus = { text: text, isError: isError === true };",
+    "}",
     "const document = {",
     "  createElement: function () { return __makeElement(); },",
     "  querySelector: function (selector) {",
@@ -616,7 +673,7 @@ function createAppHarness() {
     "  for (const s of __fixtures.sessions) { if (s.id === sessionId) return s; }",
     "  return null;",
     "}",
-    "function currentSessionInteractionMode() { return __receiveMode; }",
+    "function currentSessionInteractionMode() { return currentInteractionMode; }",
     "function removeSessionLocally(sessionId) {",
     "  __fixtures.sessions = __fixtures.sessions.filter(function (s) {",
     "    return s.id === sessionId ? false : true;",
@@ -679,6 +736,7 @@ function createAppHarness() {
     "}",
     "let lastRenderedFindings = null;",
     stripCommonJsExport(reviewSource),
+    "const historyReviewDialogCopy = HISTORY_REVIEW_DIALOG_COPY;",
     "function __buildReviewModel(state) {",
     "  return buildHistoryReviewPanelModel({",
     "    sessionId: currentSessionId, state: state,",
@@ -747,6 +805,21 @@ function createAppHarness() {
     "  sessions: __fixtures.sessions,",
     "  currentSession: function () { return currentSessionId; },",,
     "  setCurrentSession: function (id) { currentSessionId = id; },",
+    "  setCurrentMode: function (mode) { currentInteractionMode = mode; },",
+    "  setController: function (controller) { historyReviewController = controller; },",
+    "  setupStartFlow: function () {",
+    "    historyReviewStartDialogAdapter = createCancelableReviewDialogAdapter({",
+    "      dialog: historyReviewStartDialogEl,",
+    "      bodyEl: historyReviewStartBodyEl,",
+    "      cancelBtn: historyReviewStartCancelBtn,",
+    "      continueBtn: historyReviewStartConfirmBtn,",
+    "      titleEl: historyReviewStartTitleEl,",
+    "    });",
+    "    historyReviewStartConfirmer = __createRemoteHistoryConfirmer(",
+    "      historyReviewStartDialogAdapter);",
+    "  },",
+    "  startHistoryReview: startHistoryReview,",
+    "  reviewDialogContextBySession: reviewDialogContextBySession,",
     "  lastRenderedModel: function () { return lastRenderedModel; },",
     "};",
   ].join("\n");
@@ -754,13 +827,13 @@ function createAppHarness() {
   const run = new Function(
     "__fixtures", "__elements", "__request", "__makeElement",
     "__receiveMode", "__reviewSource", "isValidApiTimestamp",
-    "isValidModeSwitchEvent", inner,
+    "isValidModeSwitchEvent", "__createRemoteHistoryConfirmer", inner,
   );
 
   return run(
     fixtures, elements, fixtures.request, makeFakeElement,
     RECEIVE_TEACHING_MODE, reviewSource, isValidApiTimestamp,
-    isValidModeSwitchEvent,
+    isValidModeSwitchEvent, createRemoteHistoryConfirmer,
   );
 }
 
@@ -1327,5 +1400,281 @@ describe("history review app.js execution path", function () {
         1, isValidApiTimestamp).length,
       1,
     );
+  });
+
+  function flushAsync() {
+    return new Promise(function (resolve) { setImmediate(resolve); });
+  }
+
+  function seedStartProposal() {
+    harness.setCurrentMode(CORRECTIVE_MODE);
+    const state = harness.ensureReviewState(1);
+    state.events = [makeEvent()];
+    state.eventsStatus = "ready";
+    state.eventsError = null;
+    state.summaries = [];
+    state.summariesStatus = "ready";
+    state.summariesError = null;
+    state.detailsById = Object.create(null);
+    state.selectedReviewId = null;
+    state.operation = null;
+    state.panelError = null;
+    harness.renderHistoryReviewPanel();
+    return state;
+  }
+
+  function makeStartController(postReview) {
+    return historyReview.createHistoryReviewController({
+      postReview: postReview || async function () {
+        throw new Error("unexpected review POST");
+      },
+      fetchReviewSummaries: function (sessionId) {
+        return router.request("summaries:" + sessionId);
+      },
+      fetchReviewDetail: function (sessionId, reviewId) {
+        return router.request("detail:" + sessionId + ":" + reviewId);
+      },
+      confirmRemoteHistory: async function () { return false; },
+      validateTimestamp: isValidApiTimestamp,
+    });
+  }
+
+  function completedPayload() {
+    return makeDetail({
+      id: 10, session_id: 1, mode_switch_event_id: 5,
+      status: "completed", summary: "final summary text",
+      coverage_note: "full coverage",
+      updated_at: "2026-08-06T12:05:00",
+      completed_at: "2026-08-06T12:05:00",
+    });
+  }
+
+  function routeCompletedPayload(payload) {
+    router.route("events:1", [makeEvent()]);
+    router.route("summaries:1", [makeSummary({
+      id: payload.id, session_id: payload.session_id,
+      mode_switch_event_id: payload.mode_switch_event_id,
+      status: payload.status, findings_count: payload.findings_count,
+      summary: payload.summary, coverage_note: payload.coverage_note,
+      updated_at: payload.updated_at, completed_at: payload.completed_at,
+    })]);
+    router.route("detail:1:" + payload.id, payload);
+  }
+
+  it("keeps a busy reservation without Working or POST while the start dialog is open", async function () {
+    const state = seedStartProposal();
+    harness.setupStartFlow();
+    let posts = 0;
+    harness.setController(makeStartController(async function () {
+      posts += 1;
+      throw new Error("POST must not run before confirmation");
+    }));
+
+    const pending = harness.startHistoryReview(
+      "start", 5, harness.elements.historyReviewStartBtn);
+
+    assert.equal(state.operation.phase, "confirming_start");
+    assert.equal(harness.reviewTargetBusy(1), true);
+    const model = renderedModel();
+    assert.equal(model.busy, true);
+    assert.equal(model.workingVisible, false);
+    assert.equal(model.workingLiveText, "");
+    assert.equal(model.badgeText, "Review available");
+    assert.notEqual(model.proposal, null);
+    assert.equal(model.startVisible, false);
+    assert.equal(harness.elements.historyReviewStatusBadge.textContent,
+      "Review available");
+    assert.equal(
+      harness.elements.historyReviewLive.textContent.includes(
+        "Working on history review..."),
+      false,
+    );
+    assert.equal(harness.elements.historyReviewLive.textContent, "");
+    assert.equal(harness.elements.historyReviewProposal.hidden, false);
+    assert.equal(posts, 0);
+
+    harness.elements.hrsCancel.dispatchEvent({ type: "click" });
+    await flushAsync();
+    await pending;
+    assert.equal(state.operation, null);
+    assert.equal(posts, 0);
+  });
+
+  it("shows Working and posts exactly once after Start review is clicked", async function () {
+    const state = seedStartProposal();
+    harness.setupStartFlow();
+    const payload = completedPayload();
+    let posts = 0;
+    let resolvePost = null;
+
+    harness.setController(makeStartController(function (sessionId, body) {
+      posts += 1;
+      assert.equal(sessionId, 1);
+      assert.deepEqual(body, {
+        mode_switch_event_id: 5,
+        acknowledge_remote_history: false,
+      });
+      return new Promise(function (resolve) { resolvePost = resolve; });
+    }));
+
+    const pending = harness.startHistoryReview(
+      "start", 5, harness.elements.historyReviewStartBtn);
+    assert.equal(state.operation.phase, "confirming_start");
+    assert.equal(posts, 0);
+
+    harness.elements.hrsStart.dispatchEvent({ type: "click" });
+    await flushAsync();
+
+    assert.equal(state.operation.phase, "posting");
+    assert.equal(renderedModel().badgeText, "Working");
+    assert.equal(renderedModel().workingVisible, true);
+    assert.equal(harness.elements.historyReviewStatusBadge.textContent,
+      "Working");
+    assert.equal(harness.elements.historyReviewLive.textContent,
+      "Working on history review...");
+    assert.equal(posts, 1);
+
+    routeCompletedPayload(payload);
+    resolvePost(payload);
+    await flushAsync();
+    await pending;
+
+    assert.equal(posts, 1);
+    assert.equal(state.operation, null);
+    assert.equal(harness.reviewTargetBusy(1), false);
+  });
+
+  it("cancels without POST, restores focus, keeps the proposal, and allows a restart", async function () {
+    const state = seedStartProposal();
+    harness.setupStartFlow();
+    let posts = 0;
+    harness.setController(makeStartController(async function () {
+      posts += 1;
+      throw new Error("POST must not run on cancel");
+    }));
+    const startBtn = harness.elements.historyReviewStartBtn;
+
+    const first = harness.startHistoryReview("start", 5, startBtn);
+    assert.equal(state.operation.phase, "confirming_start");
+    assert.equal(startBtn.focusCount, 0);
+
+    harness.elements.hrsCancel.dispatchEvent({ type: "click" });
+    await flushAsync();
+    await first;
+
+    assert.equal(posts, 0);
+    assert.equal(state.operation, null);
+    assert.equal(startBtn.focusCount, 1);
+    assert.equal(harness.elements.historyReviewStatusBadge.textContent,
+      "Review available");
+    const model = renderedModel();
+    assert.equal(model.badgeText, "Review available");
+    assert.equal(model.workingVisible, false);
+    assert.notEqual(model.proposal, null);
+    assert.equal(model.startVisible, true);
+
+    const second = harness.startHistoryReview("start", 5, startBtn);
+    assert.equal(state.operation.phase, "confirming_start");
+    harness.elements.hrsCancel.dispatchEvent({ type: "click" });
+    await flushAsync();
+    await second;
+    assert.equal(state.operation, null);
+    assert.equal(posts, 0);
+    assert.equal(startBtn.focusCount, 2);
+  });
+
+  it("does not double-fire the review POST on repeated start actions or Start clicks", async function () {
+    const state = seedStartProposal();
+    harness.setupStartFlow();
+    const payload = completedPayload();
+    let posts = 0;
+    let resolvePost = null;
+    harness.setController(makeStartController(function () {
+      posts += 1;
+      return new Promise(function (resolve) { resolvePost = resolve; });
+    }));
+
+    const first = harness.startHistoryReview(
+      "start", 5, harness.elements.historyReviewStartBtn);
+    assert.equal(state.operation.phase, "confirming_start");
+
+    await harness.startHistoryReview(
+      "start", 5, harness.elements.historyReviewStartBtn);
+    assert.equal(posts, 0);
+    assert.equal(state.operation.phase, "confirming_start");
+
+    harness.elements.hrsStart.dispatchEvent({ type: "click" });
+    harness.elements.hrsStart.dispatchEvent({ type: "click" });
+    await flushAsync();
+    assert.equal(state.operation.phase, "posting");
+    assert.equal(posts, 1);
+
+    await harness.startHistoryReview(
+      "start", 5, harness.elements.historyReviewStartBtn);
+    assert.equal(posts, 1);
+
+    routeCompletedPayload(payload);
+    resolvePost(payload);
+    await flushAsync();
+    await first;
+    assert.equal(posts, 1);
+    assert.equal(state.operation, null);
+  });
+
+  it("keeps session A's confirmation reservation out of session B", async function () {
+    const stateA = seedStartProposal();
+    harness.setupStartFlow();
+    let posts = 0;
+    harness.setController(makeStartController(async function () {
+      posts += 1;
+      throw new Error("POST must not run for a cancelled confirmation");
+    }));
+
+    const pendingA = harness.startHistoryReview(
+      "start", 5, harness.elements.historyReviewStartBtn);
+    assert.equal(stateA.operation.phase, "confirming_start");
+    assert.equal(Object.hasOwn(harness.reviewDialogContextBySession, "1"), true);
+    assert.equal(Object.hasOwn(harness.reviewDialogContextBySession, "2"), false);
+
+    harness.setCurrentSession(2);
+    const summaryB = makeSummary({
+      id: 20, session_id: 2, mode_switch_event_id: 6,
+      status: "completed", findings_count: 1,
+      updated_at: "2026-08-06T12:06:00",
+    });
+    const detailB = makeDetail({
+      id: 20, session_id: 2, mode_switch_event_id: 6,
+      status: "completed", updated_at: "2026-08-06T12:06:00",
+    });
+    const stateB = harness.ensureReviewState(2);
+    stateB.events = [];
+    stateB.eventsStatus = "ready";
+    stateB.summaries = [summaryB];
+    stateB.summariesStatus = "ready";
+    stateB.detailsById["20"] = detailB;
+    stateB.selectedReviewId = 20;
+    stateB.operation = null;
+    harness.setCurrentMode(CORRECTIVE_MODE);
+
+    const modelB = harness.renderHistoryReviewPanel();
+    assert.equal(modelB.badgeText, "Completed");
+    assert.equal(harness.elements.historyReviewStatusBadge.textContent,
+      "Completed");
+    assert.equal(modelB.workingVisible, false);
+    assert.equal(modelB.busy, false);
+    assert.equal(harness.reviewTargetBusy(2), false);
+    assert.equal(harness.reviewTargetBusy(1), true);
+    assert.equal(stateA.operation.phase, "confirming_start");
+    assert.equal(Object.hasOwn(harness.reviewDialogContextBySession, "2"), false);
+
+    harness.elements.hrsCancel.dispatchEvent({ type: "click" });
+    await flushAsync();
+    await pendingA;
+
+    assert.equal(posts, 0);
+    assert.equal(stateA.operation, null);
+    assert.equal(stateB.operation, null);
+    assert.equal(harness.reviewTargetBusy(2), false);
+    assert.equal(harness.reviewDialogContextBySession["1"], undefined);
   });
 });

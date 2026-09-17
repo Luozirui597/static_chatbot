@@ -608,6 +608,20 @@ function isHistoryReviewTargetBusy(
   }
 }
 
+function isHistoryReviewOperationVisiblyWorking(operation) {
+  try {
+    if (_isPlainObject(operation) === false) return false;
+    var phase = operation.phase;
+    // confirming_start is a concurrency reservation, not observable work.
+    // Unknown/malformed phases stay non-working on purpose: concurrency is
+    // still protected by operation !== null, but the UI must not claim work
+    // that no known execution phase actually started.
+    return phase === "posting" || phase === "rechecking";
+  } catch (_) {
+    return false;
+  }
+}
+
 function _selectedSummaryForPanel(
   state, sessionId, validateTimestamp
 ) {
@@ -711,8 +725,12 @@ function buildHistoryReviewPanelModel(options) {
       actionKind = "reload";
     }
 
+    var operation = state.operation || null;
+    var workingVisible =
+      isHistoryReviewOperationVisiblyWorking(operation);
+
     var badgeText = "";
-    if (state.operation !== null && state.operation !== undefined) {
+    if (workingVisible) {
       badgeText = "Working";
     } else if (proposal !== null) {
       badgeText = "Review available";
@@ -784,7 +802,6 @@ function buildHistoryReviewPanelModel(options) {
       findings = [];
     }
 
-    var operation = state.operation || null;
     var visible = proposal !== null ||
       selectedSummary !== null ||
       operation !== null ||
@@ -797,6 +814,10 @@ function buildHistoryReviewPanelModel(options) {
     return {
       visible: visible,
       badgeText: badgeText,
+      workingVisible: workingVisible,
+      workingLiveText: workingVisible
+        ? "Working on history review..."
+        : "",
       summaryText: summaryText,
       coverageText: coverageText,
       findings: findings,
@@ -1472,6 +1493,8 @@ if (typeof module !== "undefined" && module.exports) {
     reconcileHistoryReviewCaches: reconcileHistoryReviewCaches,
     upsertHistoryReviewSummary: upsertHistoryReviewSummary,
     isHistoryReviewTargetBusy: isHistoryReviewTargetBusy,
+    isHistoryReviewOperationVisiblyWorking:
+      isHistoryReviewOperationVisiblyWorking,
     buildHistoryReviewPanelModel: buildHistoryReviewPanelModel,
     selectLatestHistoryReviewProposal: selectLatestHistoryReviewProposal,
     buildHistoryReviewCreatePayload: buildHistoryReviewCreatePayload,

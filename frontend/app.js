@@ -513,8 +513,8 @@
     historyReviewToggleBtn.textContent = model.collapsed ? "Expand" : "Collapse";
     historyReviewToggleBtn.setAttribute("aria-expanded", model.collapsed ? "false" : "true");
     historyReviewStatusBadgeEl.textContent = model.badgeText;
-    historyReviewLiveEl.textContent = state.operation !== null
-      ? "Working on history review..."
+    historyReviewLiveEl.textContent = model.workingVisible
+      ? model.workingLiveText
       : (model.errorText || "");
 
     if (model.proposal !== null) {
