@@ -135,8 +135,10 @@ const {
   RECEIVE_TEACHING_MODE,
   isValidModeSwitchEvent,
 } = require(path.join(ROOT, "frontend", "interaction-mode.js"));
-const { isValidApiTimestamp } = require(
-  path.join(ROOT, "frontend", "model-selection.js"));
+const {
+  isValidApiTimestamp,
+  isValidSessionResponse,
+} = require(path.join(ROOT, "frontend", "model-selection.js"));
 const { createRemoteHistoryConfirmer } = require(
   path.join(ROOT, "frontend", "session-profile-switch.js"));
 
@@ -540,6 +542,8 @@ const APP_FUNCTIONS = [
   "async function confirmWithReviewFocus(confirmFn, targetSessionId, triggerEl) {",
   "function applyAuthoritativeReviewDetail(state, sessionId, detail) {",
   "async function startHistoryReview(kind, eventId, triggerEl) {",
+  "async function newChat() {",
+  "async function ensureSession() {",
 ];
 
 function makeFakeElement() {
@@ -554,6 +558,7 @@ function makeFakeElement() {
     isConnected: true,
     focusCount: 0,
     children: [],
+    style: Object.create(null),
     classList: {
       toggle: function (name, on) {
         if (on === true) classes.add(name);
@@ -607,6 +612,10 @@ function createAppHarness() {
     sessions: [{ id: 1 }, { id: 2 }],
     currentSessionId: 1,
     request: null,
+    selectedProfileId: "profile-1",
+    createSessionRequest: function () {
+      return Promise.reject(new Error("unexpected session create"));
+    },
   };
 
   const elements = Object.create(null);
@@ -615,6 +624,7 @@ function createAppHarness() {
   elements.historyReviewSelectorLabel = makeFakeElement();
   for (const id of [
     "historyReviewStartDialog", "hrsTitle", "hrsBody", "hrsCancel", "hrsStart",
+    "inputEl", "newChatBtn", "sessionCompatibilityNoticeEl",
   ]) {
     elements[id] = makeFakeElement();
   }
@@ -629,6 +639,17 @@ function createAppHarness() {
     "let historyReviewInitializationError = null;",
     "let historyReviewStartConfirmer = null;",
     "let historyReviewStartDialogAdapter = null;",
+    "let isCreatingSession = false;",
+    "let isSending = false;",
+    "let isInitializing = false;",
+    "let isProfileSwitching = false;",
+    "let isDeletingSession = false;",
+    "let isInteractionModeSwitching = false;",
+    "let selectedProfileId = __fixtures.selectedProfileId;",
+    "let currentProfileDraftId = null;",
+    "let sessionLoadRequestId = 0;",
+    "const sessionLastMessageId = Object.create(null);",
+    "const sessionHasMessages = Object.create(null);",
     "const historyReviewPanelEl = __elements.historyReviewPanel;",
     "const historyReviewTitleEl = __elements.historyReviewTitle;",
     "const historyReviewStatusBadgeEl = __elements.historyReviewStatusBadge;",
@@ -653,9 +674,32 @@ function createAppHarness() {
     "const historyReviewStartBodyEl = __elements.hrsBody;",
     "const historyReviewStartCancelBtn = __elements.hrsCancel;",
     "const historyReviewStartConfirmBtn = __elements.hrsStart;",
+    "const inputEl = __elements.inputEl;",
+    "const newChatBtn = __elements.newChatBtn;",
+    "const sessionCompatibilityNoticeEl = __elements.sessionCompatibilityNoticeEl;",
     "function showStatus(text, isError) {",
     "  __fixtures.lastStatus = { text: text, isError: isError === true };",
     "}",
+    "function clearStatus() {}",
+    "function renderSessionListOrError() {}",
+    "function syncCurrentSessionUI() {}",
+    "function renderCurrentProfileBar() {}",
+    "function renderInteractionModeBar() {}",
+    "function renderEmptyChat() {}",
+    "function closeSidebarOnMobile() {}",
+    "function isMobile() { return false; }",
+    "function setInteractionModeDraftForSession(_session) {}",
+    "function createSessionRequest(profileId) { return __fixtures.createSessionRequest(profileId); }",
+    "async function handleCreateSessionFailure(err) {",
+    "  __fixtures.lastCreateFailure = err;",
+    "  showStatus(err && err.message ? err.message : 'Session creation failed.', true);",
+    "}",
+    "function setHistoryState(sessionId, state) {",
+    "  if (isValidSessionIdKey(sessionId) === false) return;",
+    "  if (state === undefined) delete sessionHasMessages[sessionId];",
+    "  else sessionHasMessages[sessionId] = state === true;",
+    "}",
+    "const isValidSessionResponse = __isValidSessionResponse;",
     "const document = {",
     "  createElement: function () { return __makeElement(); },",
     "  querySelector: function (selector) {",
@@ -666,6 +710,7 @@ function createAppHarness() {
     "  },",
     "};",
     "let lastRenderedModel = null;",
+    "const sessions = __fixtures.sessions;",
     "function isValidSessionIdKey(value) {",
     "  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;",
     "}",
@@ -746,12 +791,15 @@ function createAppHarness() {
     "  });",
     "}",
     "function __renderHistoryReviewPanel() {",
-    "  if (currentSessionId === null) return null;",
+    "  if (currentSessionId === null) { historyReviewPanelEl.hidden = true; return null; }",
     "  const state = getReviewStateIfExists(currentSessionId);",
-    "  if (state === null) return null;",
+    "  if (state === null) { historyReviewPanelEl.hidden = true; return null; }",
     "  const model = __buildReviewModel(state);",
     "  lastRenderedModel = model;",
-    "  if (model === null || model.visible === false) return null;",
+    "  if (model === null || model.visible === false) {",
+    "    historyReviewPanelEl.hidden = true;",
+    "    return null;",
+    "  }",
     "  __renderReviewPanelDom(model, state);",
     "  return model;",
     "}",
@@ -764,6 +812,8 @@ function createAppHarness() {
         .join("function __renderReviewPanelDom(model, state) {");
       body = body.split("renderHistoryReviewPanelIfCurrent(")
         .join("__renderHistoryReviewPanelIfCurrent(");
+      body = body.split("renderHistoryReviewPanel()")
+        .join("__renderHistoryReviewPanel()");
       // The shim already resolved the state and built the model, so the
       // renamed body starts after those lookups.
       body = body.replace(
@@ -820,6 +870,14 @@ function createAppHarness() {
     "  },",
     "  startHistoryReview: startHistoryReview,",
     "  reviewDialogContextBySession: reviewDialogContextBySession,",
+    "  newChat: newChat,",
+    "  ensureSession: ensureSession,",
+    "  setCreateSessionRequest: function (fn) {",
+    "    __fixtures.createSessionRequest = fn;",
+    "  },",
+    "  lastCreateFailure: function () { return __fixtures.lastCreateFailure || null; },",
+    "  lastStatus: function () { return __fixtures.lastStatus || null; },",
+    "  sessionHasMessages: sessionHasMessages,",
     "  lastRenderedModel: function () { return lastRenderedModel; },",
     "};",
   ].join("\n");
@@ -827,13 +885,15 @@ function createAppHarness() {
   const run = new Function(
     "__fixtures", "__elements", "__request", "__makeElement",
     "__receiveMode", "__reviewSource", "isValidApiTimestamp",
-    "isValidModeSwitchEvent", "__createRemoteHistoryConfirmer", inner,
+    "isValidModeSwitchEvent", "__createRemoteHistoryConfirmer",
+    "__isValidSessionResponse", inner,
   );
 
   return run(
     fixtures, elements, fixtures.request, makeFakeElement,
     RECEIVE_TEACHING_MODE, reviewSource, isValidApiTimestamp,
     isValidModeSwitchEvent, createRemoteHistoryConfirmer,
+    isValidSessionResponse,
   );
 }
 
@@ -897,6 +957,20 @@ function makeEvent(overrides) {
     history_boundary_version: "history-boundary-v1",
     reviewable_user_message_count: 2,
     review_supported: true,
+  };
+  return Object.assign(value, overrides || {});
+}
+
+function makeSessionResponse(overrides) {
+  const value = {
+    id: 3,
+    title: "New Chat",
+    created_at: "2026-08-06T12:20:00Z",
+    updated_at: "2026-08-06T12:20:00Z",
+    llm_profile_id: "profile-1",
+    llm_profile_label: "Default",
+    llm_profile_status: "ready",
+    llm_model_snapshot: null,
   };
   return Object.assign(value, overrides || {});
 }
@@ -1676,5 +1750,180 @@ describe("history review app.js execution path", function () {
     assert.equal(stateB.operation, null);
     assert.equal(harness.reviewTargetBusy(2), false);
     assert.equal(harness.reviewDialogContextBySession["1"], undefined);
+  });
+
+  async function seedCompletedReview(sessionId) {
+    const reviewId = sessionId === 1 ? 10 : sessionId * 10;
+    const eventId = sessionId === 1 ? 5 : sessionId + 4;
+    const summary = makeSummary({
+      id: reviewId,
+      session_id: sessionId,
+      mode_switch_event_id: eventId,
+      status: "completed",
+      findings_count: 1,
+      summary: "old review summary",
+      coverage_note: "old review coverage",
+      updated_at: "2026-08-06T12:10:00",
+    });
+    const detail = makeDetail({
+      id: reviewId,
+      session_id: sessionId,
+      mode_switch_event_id: eventId,
+      status: "completed",
+      summary: "old review summary",
+      coverage_note: "old review coverage",
+      updated_at: "2026-08-06T12:10:00",
+    });
+    router.route("events:" + sessionId, []);
+    router.route("summaries:" + sessionId, [summary]);
+    router.route("detail:" + sessionId + ":" + reviewId, detail);
+    const state = harness.ensureReviewState(sessionId);
+    harness.setCurrentSession(sessionId);
+    await harness.loadHistoryReviewSession(sessionId);
+    return { state: state, summary: summary, detail: detail };
+  }
+
+  it("newChat hides the old completed review immediately and keeps the old cache", async function () {
+    const seeded = await seedCompletedReview(1);
+    assert.equal(harness.elements.historyReviewPanel.hidden, false);
+    assert.equal(harness.elements.historyReviewStatusBadge.textContent,
+      "Completed");
+    assert.equal(harness.reviewStateBySession["1"], seeded.state);
+
+    const newSession = makeSessionResponse({ id: 3 });
+    let requestedProfileId = null;
+    harness.setCreateSessionRequest(async function (profileId) {
+      requestedProfileId = profileId;
+      return newSession;
+    });
+    const reviewLogLength = router.log.length;
+    await harness.newChat();
+    assert.equal(requestedProfileId, "profile-1");
+    assert.equal(harness.currentSession(), 3);
+    assert.equal(harness.sessions[0].id, 3);
+    assert.equal(harness.elements.historyReviewPanel.hidden, true);
+    assert.equal(Object.hasOwn(harness.reviewStateBySession, "3"), false);
+    assert.equal(harness.reviewStateBySession["1"], seeded.state);
+    assert.equal(seeded.state.summaries[0].id, seeded.summary.id);
+    assert.equal(
+      router.log.slice(reviewLogLength).some(function (key) {
+        return key.endsWith(":3");
+      }),
+      false,
+      "creating a fresh session must not request review data for it",
+    );
+  });
+
+  it("still renders the old cached review after switching back to the old session", async function () {
+    const seeded = await seedCompletedReview(1);
+    harness.setCreateSessionRequest(async function () {
+      return makeSessionResponse({ id: 3 });
+    });
+
+    await harness.newChat();
+    assert.equal(harness.elements.historyReviewPanel.hidden, true);
+
+    harness.setCurrentSession(1);
+    await harness.loadHistoryReviewSession(1);
+
+    assert.equal(harness.currentSession(), 1);
+    assert.equal(harness.elements.historyReviewPanel.hidden, false);
+    assert.equal(harness.elements.historyReviewStatusBadge.textContent,
+      "Completed");
+    assert.equal(seeded.state.summaries[0].id, seeded.summary.id);
+    assert.equal(seeded.state.detailsById[seeded.summary.id], seeded.detail);
+  });
+
+  it("leaves the old panel and selection untouched when session creation fails", async function () {
+    const seeded = await seedCompletedReview(1);
+    const sessionsBefore = harness.sessions.slice();
+    harness.setCreateSessionRequest(async function () {
+      throw new Error("network down");
+    });
+
+    await harness.newChat();
+
+    assert.equal(harness.currentSession(), 1);
+    assert.equal(harness.elements.historyReviewPanel.hidden, false);
+    assert.equal(harness.elements.historyReviewStatusBadge.textContent,
+      "Completed");
+    assert.deepEqual(harness.sessions, sessionsBefore);
+    assert.equal(harness.reviewStateBySession["1"], seeded.state);
+    assert.notEqual(harness.lastCreateFailure(), null);
+  });
+
+  it("keeps the old panel for invalid or duplicate session responses", async function () {
+    const seeded = await seedCompletedReview(1);
+
+    harness.setCreateSessionRequest(async function () {
+      return { id: 3 };
+    });
+    await harness.newChat();
+
+    assert.equal(harness.currentSession(), 1);
+    assert.equal(harness.sessions.length, 2);
+    assert.equal(harness.elements.historyReviewPanel.hidden, false);
+    assert.equal(harness.elements.historyReviewStatusBadge.textContent,
+      "Completed");
+
+    harness.setCreateSessionRequest(async function () {
+      return makeSessionResponse({ id: 1 });
+    });
+    await harness.newChat();
+
+    assert.equal(harness.currentSession(), 1);
+    assert.equal(harness.sessions.length, 2);
+    assert.equal(harness.elements.historyReviewPanel.hidden, false);
+    assert.equal(harness.elements.historyReviewStatusBadge.textContent,
+      "Completed");
+    assert.equal(harness.reviewStateBySession["1"], seeded.state);
+    assert.equal(Object.hasOwn(harness.reviewStateBySession, "3"), false);
+  });
+
+  it("keeps the new session hidden when an old session review response lands late", async function () {
+    const seeded = await seedCompletedReview(1);
+    let resolveEvents = null;
+    let resolveSummaries = null;
+    router.route("events:1", function () {
+      return new Promise(function (resolve) { resolveEvents = resolve; });
+    });
+    router.route("summaries:1", function () {
+      return new Promise(function (resolve) { resolveSummaries = resolve; });
+    });
+
+    const lateOldLoad = harness.loadHistoryReviewSession(1, { silent: true });
+    harness.setCreateSessionRequest(async function () {
+      return makeSessionResponse({ id: 3 });
+    });
+    await harness.newChat();
+    assert.equal(harness.currentSession(), 3);
+    assert.equal(harness.elements.historyReviewPanel.hidden, true);
+
+    resolveEvents([]);
+    resolveSummaries([seeded.summary]);
+    await lateOldLoad;
+    await flushAsync();
+
+    assert.equal(harness.currentSession(), 3);
+    assert.equal(harness.elements.historyReviewPanel.hidden, true);
+    assert.equal(Object.hasOwn(harness.reviewStateBySession, "3"), false);
+    assert.equal(harness.reviewStateBySession["1"], seeded.state);
+  });
+
+  it("ensureSession clears a stale visible panel when it auto-creates a session", async function () {
+    const seeded = await seedCompletedReview(1);
+    harness.elements.historyReviewPanel.hidden = false;
+    harness.setCurrentSession(null);
+    harness.setCreateSessionRequest(async function () {
+      return makeSessionResponse({ id: 3 });
+    });
+
+    const created = await harness.ensureSession();
+
+    assert.equal(created, true);
+    assert.equal(harness.currentSession(), 3);
+    assert.equal(harness.elements.historyReviewPanel.hidden, true);
+    assert.equal(Object.hasOwn(harness.reviewStateBySession, "3"), false);
+    assert.equal(harness.reviewStateBySession["1"], seeded.state);
   });
 });

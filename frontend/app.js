@@ -2526,6 +2526,7 @@
       syncCurrentSessionUI();
       renderCurrentProfileBar();
       renderInteractionModeBar();
+      renderHistoryReviewPanel();
       renderEmptyChat();
       clearStatus();
       inputEl.value = "";
@@ -2603,6 +2604,7 @@
       syncCurrentSessionUI();
       renderCurrentProfileBar();
       renderInteractionModeBar();
+      renderHistoryReviewPanel();
       clearStatus();
       return true;
     } catch (err) {
