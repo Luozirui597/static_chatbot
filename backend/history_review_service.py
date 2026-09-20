@@ -1,14 +1,17 @@
 """Internal preparation and execution service for history reviews.
 
-Preparation creates pending review rows. Execution uses the frozen
-reviewer and fixed sources, calls one LLM exactly once after a CAS claim,
-and persists strict parser output.  Retry, timeout recovery, HTTP mapping,
-background tasks, and source selection reruns remain out of scope.
+Preparation creates pending review rows. Execution claims the review
+once via CAS, then runs the frozen two-stage History Review pipeline
+(extraction followed by optional verification) against the frozen
+sources and exposes the final parsed output.  Bounded repair retries
+are owned by the pipeline; timeout recovery, HTTP mapping, background
+tasks, and source selection reruns remain out of scope.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -30,16 +33,14 @@ from backend.exceptions import (
     SessionProfileUnavailableError,
 )
 from backend.history_boundary import HISTORY_BOUNDARY_VERSION
-from backend.history_review_parser import (
-    HistoryReviewOutputError,
-    parse_history_review_output,
-    truncate_raw_output,
-)
+from backend.history_review_parser import truncate_raw_output
 from backend.history_review_prompt import (
-    HISTORY_REVIEW_PROMPT_VERSION,
     HistoryReviewExecutionSnapshot,
     HistoryReviewSourceSnapshot,
-    build_history_review_messages,
+)
+from backend.history_review_pipeline import (
+    HistoryReviewPipelineError,
+    run_history_review_pipeline,
 )
 from backend.history_review_selection import (
     HISTORY_REVIEW_BUDGET_VERSION,
@@ -47,6 +48,7 @@ from backend.history_review_selection import (
     HistoryReviewCandidate,
     select_history_review_sources,
 )
+from backend.history_review_stages import HISTORY_REVIEW_PIPELINE_VERSION
 from backend.interaction_modes import CORRECTIVE_MODE, RECEIVE_TEACHING_MODE
 from backend.llm_profiles import LLMProfile, LLMProfileRegistry, SessionProfileStatus
 from backend.models import (
@@ -58,6 +60,8 @@ from backend.models import (
     ModeSwitchEvent,
     utc_now,
 )
+
+logger = logging.getLogger(__name__)
 
 # Execution error codes -----------------------------------------------------
 
@@ -75,6 +79,10 @@ LLM_EMPTY_RESPONSE = "history_review_llm_empty_response"
 LLM_NON_STRING_RESPONSE = "history_review_llm_non_string_response"
 FINALIZE_FAILED = "history_review_finalize_failed"
 INTERNAL_ERROR = "history_review_internal_error"
+HISTORY_REVIEW_EXECUTION_INTERRUPTED = (
+    "history_review_execution_interrupted"
+)
+HISTORY_REVIEW_RETRY_NOT_ALLOWED = "history_review_retry_not_allowed"
 
 _SAFE_ERROR_MESSAGES = {
     HISTORY_REVIEW_NOT_FOUND: "History review not found.",
@@ -91,6 +99,12 @@ _SAFE_ERROR_MESSAGES = {
     LLM_NON_STRING_RESPONSE: "LLM returned a non-string response.",
     FINALIZE_FAILED: "History review finalization failed.",
     INTERNAL_ERROR: "History review execution failed.",
+    HISTORY_REVIEW_EXECUTION_INTERRUPTED: (
+        "History review execution was interrupted."
+    ),
+    HISTORY_REVIEW_RETRY_NOT_ALLOWED: (
+        "This history review cannot be retried."
+    ),
     "history_review_output_too_large": (
         "History review output exceeds configured limits."
     ),
@@ -108,6 +122,54 @@ _SAFE_ERROR_MESSAGES = {
     ),
     "history_review_source_uncovered": (
         "History review output does not cover every source."
+    ),
+    "history_review_extraction_json_syntax_error": (
+        "History review extraction output is not valid JSON."
+    ),
+    "history_review_extraction_json_structure_error": (
+        "History review extraction output has an invalid JSON structure."
+    ),
+    "history_review_extraction_json_semantic_error": (
+        "History review extraction output violates the semantic contract."
+    ),
+    "history_review_extraction_source_invalid": (
+        "History review extraction references an invalid source."
+    ),
+    "history_review_extraction_source_uncovered": (
+        "History review extraction does not cover every source."
+    ),
+    "history_review_extraction_quote_invalid": (
+        "History review extraction contains an invalid source quote."
+    ),
+    "history_review_extraction_too_large": (
+        "History review extraction output exceeds configured limits."
+    ),
+    "history_review_extraction_input_too_large": (
+        "History review extraction input exceeds configured limits."
+    ),
+    "history_review_extraction_capacity_exceeded": (
+        "History review extraction cannot fit all factual claims."
+    ),
+    "history_review_verification_json_syntax_error": (
+        "History review verification output is not valid JSON."
+    ),
+    "history_review_verification_json_structure_error": (
+        "History review verification output has an invalid JSON structure."
+    ),
+    "history_review_verification_json_semantic_error": (
+        "History review verification output violates the semantic contract."
+    ),
+    "history_review_verification_claim_invalid": (
+        "History review verification references an invalid claim."
+    ),
+    "history_review_verification_claim_uncovered": (
+        "History review verification does not cover every claim."
+    ),
+    "history_review_verification_too_large": (
+        "History review verification output exceeds configured limits."
+    ),
+    "history_review_verification_input_too_large": (
+        "History review verification input exceeds configured limits."
     ),
 }
 
@@ -137,6 +199,11 @@ class HistoryReviewExecutionNotFound(HistoryReviewExecutionError):
 class HistoryReviewExecutionConflict(HistoryReviewExecutionError):
     code = HISTORY_REVIEW_EXECUTION_CONFLICT
     default_message = "History review execution conflict."
+
+
+class HistoryReviewRetryNotAllowed(HistoryReviewExecutionError):
+    code = HISTORY_REVIEW_RETRY_NOT_ALLOWED
+    default_message = "This history review cannot be retried."
 
 
 class _PreflightFailure(Exception):
@@ -180,7 +247,6 @@ class HistoryReviewExecutionResult:
 class _ClaimedExecution:
     snapshot: HistoryReviewExecutionSnapshot
     profile: LLMProfile
-    source_seq_by_id: dict[int, int]
 
 
 @dataclass(frozen=True)
@@ -196,8 +262,9 @@ class HistoryReviewService:
     """Prepare and execute history reviews.
 
     Preparation never calls an LLM.  Execution freezes reviewer/source
-    values, calls the frozen reviewer once after claim, and persists
-    either completed output or a safe failed state.
+    values, claims the review once, delegates LLM calls and bounded
+    repair retries to the frozen pipeline, and persists either completed
+    output or a safe failed state.
     """
 
     def __init__(
@@ -704,7 +771,7 @@ class HistoryReviewService:
         db: Session,
         review: HistoryReview,
     ) -> _ClaimedExecution:
-        if review.prompt_version_snapshot != HISTORY_REVIEW_PROMPT_VERSION:
+        if review.prompt_version_snapshot != HISTORY_REVIEW_PIPELINE_VERSION:
             raise _PreflightFailure(PROMPT_VERSION_UNSUPPORTED)
 
         reviewer = self._profiles.get(
@@ -746,14 +813,176 @@ class HistoryReviewService:
                 )
             ),
         )
-        source_seq_by_id = {
-            source.message_id: source.seq for source in source_rows
-        }
         return _ClaimedExecution(
             snapshot=snapshot,
             profile=reviewer,
-            source_seq_by_id=source_seq_by_id,
         )
+
+    def _prepare_existing_review(
+        self,
+        db: Session,
+        existing: HistoryReview,
+        *,
+        retry_failed: bool,
+    ) -> HistoryReviewPreparationResult:
+        if retry_failed:
+            if existing.status == "failed":
+                if existing.error_code != HISTORY_REVIEW_EXECUTION_INTERRUPTED:
+                    raise HistoryReviewRetryNotAllowed()
+            elif existing.status not in (
+                "pending", "running", "completed",
+            ):
+                raise HistoryReviewRetryNotAllowed()
+        return HistoryReviewPreparationResult(
+            review=existing,
+            sources=self._load_sources(db, existing.id),
+            created=False,
+        )
+
+    def recover_abandoned_running_reviews(self, db: Session) -> int:
+        """Mark all running reviews from a previous process as interrupted."""
+        review_ids = list(db.execute(
+            select(HistoryReview.id)
+            .where(HistoryReview.status == "running")
+        ).scalars().all())
+        if not review_ids:
+            db.rollback()
+            return 0
+
+        now = utc_now()
+        try:
+            update_result = db.execute(
+                update(HistoryReview)
+                .where(
+                    HistoryReview.id.in_(review_ids),
+                    HistoryReview.status == "running",
+                )
+                .values(
+                    status="failed",
+                    error_code=HISTORY_REVIEW_EXECUTION_INTERRUPTED,
+                    error_message=_safe_error_message(
+                        HISTORY_REVIEW_EXECUTION_INTERRUPTED
+                    ),
+                    summary=None,
+                    coverage_note=None,
+                    raw_output=None,
+                    raw_output_truncated=False,
+                    completed_at=now,
+                    updated_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if update_result.rowcount:
+                db.execute(
+                    delete(HistoryReviewFinding).where(
+                        HistoryReviewFinding.review_id.in_(review_ids)
+                    )
+                )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return int(update_result.rowcount or 0)
+
+    def _reset_interrupted_review_for_retry(
+        self,
+        db: Session,
+        session_id: int,
+        review_id: int,
+    ) -> bool:
+        now = utc_now()
+        try:
+            update_result = db.execute(
+                update(HistoryReview)
+                .where(
+                    HistoryReview.id == review_id,
+                    HistoryReview.session_id == session_id,
+                    HistoryReview.status == "failed",
+                    HistoryReview.error_code
+                    == HISTORY_REVIEW_EXECUTION_INTERRUPTED,
+                )
+                .values(
+                    status="pending",
+                    attempt_count=HistoryReview.attempt_count + 1,
+                    summary=None,
+                    coverage_note=None,
+                    raw_output=None,
+                    raw_output_truncated=False,
+                    error_code=None,
+                    error_message=None,
+                    started_at=None,
+                    completed_at=None,
+                    updated_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if update_result.rowcount != 1:
+                db.rollback()
+                return False
+            db.execute(
+                delete(HistoryReviewFinding).where(
+                    HistoryReviewFinding.review_id == review_id
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return True
+
+    def _claim_retry_or_authoritative(
+        self,
+        db: Session,
+        session_id: int,
+        review_id: int,
+    ) -> _ClaimedExecution | HistoryReviewExecutionResult:
+        review = self._load_execution_review(db, session_id, review_id)
+        if review is None:
+            db.rollback()
+            raise HistoryReviewExecutionNotFound()
+
+        if review.status != "failed":
+            if review.status in ("running", "completed"):
+                result = self._build_execution_result(
+                    db, review, called_llm=False
+                )
+                db.rollback()
+                return result
+            db.rollback()
+            raise HistoryReviewExecutionConflict()
+
+        if review.error_code != HISTORY_REVIEW_EXECUTION_INTERRUPTED:
+            db.rollback()
+            raise HistoryReviewRetryNotAllowed()
+
+        if not self._reset_interrupted_review_for_retry(
+            db, session_id, review_id
+        ):
+            current = self._load_execution_review(db, session_id, review_id)
+            if current is None:
+                db.rollback()
+                raise HistoryReviewExecutionNotFound()
+            if current.status in ("running", "completed"):
+                result = self._build_execution_result(
+                    db, current, called_llm=False
+                )
+                db.rollback()
+                return result
+            if current.status == "pending":
+                return self._claim_pending_review(
+                    db, session_id, review_id
+                )
+            if (
+                current.status == "failed"
+                and current.error_code
+                == HISTORY_REVIEW_EXECUTION_INTERRUPTED
+            ):
+                db.rollback()
+                raise HistoryReviewExecutionConflict()
+            db.rollback()
+            raise HistoryReviewRetryNotAllowed()
+
+        return self._claim_pending_review(db, session_id, review_id)
 
     def _claim_pending_review(
         self,
@@ -910,6 +1139,29 @@ class HistoryReviewService:
             called_llm=called_llm,
         )
 
+    def _handle_cancelled_execution(
+        self,
+        db: Session,
+        claim: _ClaimedExecution,
+    ) -> None:
+        try:
+            db.rollback()
+            self._record_running_failure(
+                db,
+                claim,
+                error_code=HISTORY_REVIEW_EXECUTION_INTERRUPTED,
+                raw_output=None,
+                called_llm=True,
+            )
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.exception(
+                "Failed to mark cancelled history review as interrupted"
+            )
+
     def _finalize_success(
         self,
         db: Session,
@@ -991,37 +1243,33 @@ class HistoryReviewService:
         session_id: int,
         review_id: int,
         db: Session,
+        retry_failed: bool = False,
     ) -> HistoryReviewExecutionResult:
         """Execute a pending history review exactly once per claim."""
         session_id = self._require_positive_int("session_id", session_id)
         review_id = self._require_positive_int("review_id", review_id)
+        retry_failed = self._require_bool("retry_failed", retry_failed)
 
         async with self._lock_registry.session_lock(session_id):
-            claim_or_result = self._claim_pending_review(
-                db, session_id, review_id
-            )
+            if retry_failed:
+                claim_or_result = self._claim_retry_or_authoritative(
+                    db, session_id, review_id
+                )
+            else:
+                claim_or_result = self._claim_pending_review(
+                    db, session_id, review_id
+                )
             if isinstance(claim_or_result, HistoryReviewExecutionResult):
                 return claim_or_result
             claim = claim_or_result
 
             try:
-                messages = build_history_review_messages(
-                    claim.snapshot
+                pipeline_result = await run_history_review_pipeline(
+                    client=claim.profile.client,
+                    sources=claim.snapshot.sources,
                 )
-            except Exception:
-                return self._handle_running_failure(
-                    db,
-                    claim,
-                    session_id=session_id,
-                    review_id=review_id,
-                    error_code=INTERNAL_ERROR,
-                    raw_output=None,
-                    called_llm=False,
-                )
-
-            try:
-                raw_output = await claim.profile.client.generate(messages)
             except asyncio.CancelledError:
+                self._handle_cancelled_execution(db, claim)
                 raise
             except LLMError:
                 return self._handle_running_failure(
@@ -1033,52 +1281,15 @@ class HistoryReviewService:
                     raw_output=None,
                     called_llm=True,
                 )
-            except Exception:
-                return self._handle_running_failure(
-                    db,
-                    claim,
-                    session_id=session_id,
-                    review_id=review_id,
-                    error_code=INTERNAL_ERROR,
-                    raw_output=None,
-                    called_llm=True,
-                )
-
-            if not isinstance(raw_output, str):
-                return self._handle_running_failure(
-                    db,
-                    claim,
-                    session_id=session_id,
-                    review_id=review_id,
-                    error_code=LLM_NON_STRING_RESPONSE,
-                    raw_output=None,
-                    called_llm=True,
-                )
-            if not raw_output.strip():
-                return self._handle_running_failure(
-                    db,
-                    claim,
-                    session_id=session_id,
-                    review_id=review_id,
-                    error_code=LLM_EMPTY_RESPONSE,
-                    raw_output=None,
-                    called_llm=True,
-                )
-
-            try:
-                parsed = parse_history_review_output(
-                    raw_output=raw_output,
-                    source_seq_by_id=claim.source_seq_by_id,
-                )
-            except HistoryReviewOutputError as exc:
+            except HistoryReviewPipelineError as exc:
                 return self._handle_running_failure(
                     db,
                     claim,
                     session_id=session_id,
                     review_id=review_id,
                     error_code=exc.code,
-                    raw_output=raw_output,
-                    called_llm=True,
+                    raw_output=exc.audit_raw_output,
+                    called_llm=exc.called_llm,
                 )
             except Exception:
                 return self._handle_running_failure(
@@ -1087,13 +1298,16 @@ class HistoryReviewService:
                     session_id=session_id,
                     review_id=review_id,
                     error_code=INTERNAL_ERROR,
-                    raw_output=raw_output,
+                    raw_output=None,
                     called_llm=True,
                 )
 
             try:
                 finalized = self._finalize_success(
-                    db, claim, parsed, raw_output
+                    db,
+                    claim,
+                    pipeline_result.parsed,
+                    pipeline_result.audit_raw_output,
                 )
             except SQLAlchemyError as original_exc:
                 try:
@@ -1101,7 +1315,7 @@ class HistoryReviewService:
                         db,
                         claim,
                         error_code=FINALIZE_FAILED,
-                        raw_output=raw_output,
+                        raw_output=pipeline_result.audit_raw_output,
                         called_llm=True,
                     )
                 except Exception:
@@ -1134,11 +1348,12 @@ class HistoryReviewService:
         mode_switch_event_id: int,
         acknowledge_remote_history: bool,
         db: Session,
+        retry_failed: bool = False,
     ) -> HistoryReviewPreparationResult:
         """Prepare a pending review and fixed source rows.
 
-        No LLM call, prompt text, JSON parsing, findings, retry, or
-        HTTP mapping is performed here.
+        No LLM call, prompt text, JSON parsing, findings, model retry,
+        or HTTP mapping is performed here.
         """
         session_id = self._require_positive_int("session_id", session_id)
         mode_switch_event_id = self._require_positive_int(
@@ -1147,6 +1362,7 @@ class HistoryReviewService:
         acknowledge_remote_history = self._require_bool(
             "acknowledge_remote_history", acknowledge_remote_history
         )
+        retry_failed = self._require_bool("retry_failed", retry_failed)
 
         async with self._lock_registry.session_lock(session_id):
             try:
@@ -1158,11 +1374,13 @@ class HistoryReviewService:
                     db, session_id, mode_switch_event_id
                 )
                 if existing is not None:
-                    return HistoryReviewPreparationResult(
-                        review=existing,
-                        sources=self._load_sources(db, existing.id),
-                        created=False,
+                    return self._prepare_existing_review(
+                        db,
+                        existing,
+                        retry_failed=retry_failed,
                     )
+                if retry_failed:
+                    raise HistoryReviewRetryNotAllowed()
 
                 if event.history_boundary_version != HISTORY_BOUNDARY_VERSION:
                     raise HistoryReviewBoundaryUnavailable()
@@ -1245,7 +1463,7 @@ class HistoryReviewService:
                     reviewer_llm_profile_id_snapshot=reviewer.id,
                     reviewer_llm_profile_kind_snapshot=reviewer.kind,
                     reviewer_llm_model_snapshot=reviewer.model,
-                    prompt_version_snapshot=HISTORY_REVIEW_PROMPT_VERSION,
+                    prompt_version_snapshot=HISTORY_REVIEW_PIPELINE_VERSION,
                     budget_version_snapshot=(
                         selection.budget_version
                     ),
@@ -1289,10 +1507,10 @@ class HistoryReviewService:
                     db, session_id, mode_switch_event_id
                 )
                 if existing is not None:
-                    return HistoryReviewPreparationResult(
-                        review=existing,
-                        sources=self._load_sources(db, existing.id),
-                        created=False,
+                    return self._prepare_existing_review(
+                        db,
+                        existing,
+                        retry_failed=retry_failed,
                     )
                 raise
             except Exception:

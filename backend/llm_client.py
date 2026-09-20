@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Literal, Protocol, TypedDict
 
 import httpx
@@ -34,7 +35,14 @@ class LLMClient(Protocol):
     be synchronous or asynchronous — callers should ``await`` it.
     """
 
-    async def generate(self, messages: list[LLMMessage]) -> str: ...
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        *,
+        response_format: dict[str, object] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str: ...
 
 
 # ---------------------------------------------------------------------------
@@ -50,12 +58,66 @@ class FakeLLMClient:
     '测试回复：你好'
     """
 
-    async def generate(self, messages: list[LLMMessage]) -> str:
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        *,
+        response_format: dict[str, object] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
         """Return a test reply based on the last user message."""
+        _validate_generate_options(
+            response_format=response_format,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         for msg in reversed(messages):
             if msg["role"] == "user":
                 return f"测试回复：{msg['content']}"
         return "测试回复："
+
+
+# ---------------------------------------------------------------------------
+# Per-call option validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_generate_options(
+    *,
+    response_format: dict[str, object] | None,
+    temperature: float | None,
+    max_tokens: int | None,
+) -> None:
+    """Validate optional per-call generation settings.
+
+    Invalid values are rejected before any network request is made and
+    are deliberately not wrapped in ``LLMError``.
+    """
+
+    if response_format is not None and not isinstance(response_format, dict):
+        raise ValueError("response_format must be a dict or None")
+
+    if temperature is not None:
+        if isinstance(temperature, bool) or not isinstance(
+            temperature, (int, float)
+        ):
+            raise ValueError("temperature must be a number or None")
+        if isinstance(temperature, int):
+            # Avoid math.isfinite() overflow for arbitrarily large ints.
+            if temperature < 0 or temperature > 2:
+                raise ValueError("temperature must be between 0 and 2")
+        else:
+            if not math.isfinite(temperature):
+                raise ValueError("temperature must be finite")
+            if temperature < 0 or temperature > 2:
+                raise ValueError("temperature must be between 0 and 2")
+
+    if max_tokens is not None:
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int):
+            raise ValueError("max_tokens must be an integer or None")
+        if max_tokens <= 0:
+            raise ValueError("max_tokens must be greater than 0")
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +178,21 @@ class OpenAICompatibleLLMClient:
                 )
             self._reasoning_effort = self._reasoning_effort.lower()
 
-    async def generate(self, messages: list[LLMMessage]) -> str:
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        *,
+        response_format: dict[str, object] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
         """Send *messages* to the upstream API and return the reply."""
+        _validate_generate_options(
+            response_format=response_format,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
         url = f"{self._base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -128,6 +203,12 @@ class OpenAICompatibleLLMClient:
         }
         if self._reasoning_effort:
             payload["reasoning_effort"] = self._reasoning_effort
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
 
         client_kwargs: dict = {"timeout": self._timeout}
         if self._transport is not None:

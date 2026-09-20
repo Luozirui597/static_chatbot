@@ -10,7 +10,11 @@ import httpx
 import pytest
 
 from backend.exceptions import LLMError
-from backend.llm_client import LLMMessage, OpenAICompatibleLLMClient
+from backend.llm_client import (
+    FakeLLMClient,
+    LLMMessage,
+    OpenAICompatibleLLMClient,
+)
 
 # Fixed test parameters
 TEST_KEY = "test-key"
@@ -68,8 +72,12 @@ async def test_normal_response():
         # system prompt.
         assert body["messages"] == input_messages
 
-        # reasoning_effort must NOT be present when not explicitly set
+        # Per-call options and reasoning_effort must NOT be present when
+        # not explicitly set.
         assert "reasoning_effort" not in body
+        assert "response_format" not in body
+        assert "temperature" not in body
+        assert "max_tokens" not in body
 
         return httpx.Response(200, json={
             "choices": [{"message": {"content": "你好！"}}],
@@ -287,3 +295,202 @@ async def test_reasoning_effort_extra_fields_ignored():
     )
     result = await client.generate([_user_msg("hi")])
     assert result == "the answer"
+
+
+# ---------------------------------------------------------------------------
+# Per-call generation options
+# ---------------------------------------------------------------------------
+
+
+def _payload_capture_client(**kwargs):
+    captured: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "ok"}}],
+        })
+
+    client = _make_client(
+        transport=httpx.MockTransport(handler),
+        **kwargs,
+    )
+    return client, captured
+
+
+@pytest.mark.anyio
+async def test_generate_options_are_sent_for_this_call():
+    client, captured = _payload_capture_client()
+
+    result = await client.generate(
+        [_user_msg("hi")],
+        response_format={"type": "json_object"},
+        temperature=0,
+        max_tokens=1024,
+    )
+
+    assert result == "ok"
+    assert captured == [{
+        "model": TEST_MODEL,
+        "messages": [_user_msg("hi")],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+        "max_tokens": 1024,
+    }]
+
+
+@pytest.mark.anyio
+async def test_generate_options_coexist_with_reasoning_effort():
+    client, captured = _payload_capture_client(reasoning_effort="low")
+
+    await client.generate(
+        [_user_msg("hi")],
+        response_format={"type": "json_object"},
+        temperature=0,
+        max_tokens=1,
+    )
+
+    assert captured[0]["reasoning_effort"] == "low"
+    assert captured[0]["response_format"] == {"type": "json_object"}
+    assert captured[0]["temperature"] == 0
+    assert captured[0]["max_tokens"] == 1
+
+
+@pytest.mark.anyio
+async def test_generate_options_do_not_leak_to_next_call():
+    client, captured = _payload_capture_client()
+
+    await client.generate(
+        [_user_msg("first")],
+        response_format={"type": "json_object"},
+        temperature=0,
+        max_tokens=1024,
+    )
+    await client.generate([_user_msg("second")])
+
+    first, second = captured
+    assert first["response_format"] == {"type": "json_object"}
+    assert first["temperature"] == 0
+    assert first["max_tokens"] == 1024
+    assert "response_format" not in second
+    assert "temperature" not in second
+    assert "max_tokens" not in second
+
+
+@pytest.mark.anyio
+async def test_generate_option_boundary_values_are_accepted():
+    client, captured = _payload_capture_client()
+
+    await client.generate(
+        [_user_msg("hi")],
+        temperature=2,
+        max_tokens=1,
+    )
+
+    assert captured[0]["temperature"] == 2
+    assert captured[0]["max_tokens"] == 1
+
+
+@pytest.mark.anyio
+async def test_fake_client_accepts_generate_options():
+    client = FakeLLMClient()
+
+    result = await client.generate(
+        [_user_msg("hello")],
+        response_format={"type": "json_object"},
+        temperature=0,
+        max_tokens=1024,
+    )
+
+    assert result == "测试回复：hello"
+
+
+# ---------------------------------------------------------------------------
+# Per-call option validation (must happen before network access)
+# ---------------------------------------------------------------------------
+
+
+def _client_with_forbidden_network() -> OpenAICompatibleLLMClient:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("network request must not be made")
+
+    return _make_client(transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "response_format",
+    ["json_object", ["json_object"], 123, object()],
+)
+async def test_response_format_must_be_dict_or_none(response_format):
+    client = _client_with_forbidden_network()
+    with pytest.raises(ValueError):
+        await client.generate(
+            [_user_msg("hi")],
+            response_format=response_format,
+        )
+
+
+@pytest.mark.anyio
+async def test_none_options_are_accepted_as_default():
+    client, captured = _payload_capture_client()
+
+    await client.generate(
+        [_user_msg("hi")],
+        response_format=None,
+        temperature=None,
+        max_tokens=None,
+    )
+
+    body = captured[0]
+    assert "response_format" not in body
+    assert "temperature" not in body
+    assert "max_tokens" not in body
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "temperature",
+    [
+        True,
+        False,
+        "0",
+        [],
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        -0.1,
+        2.1,
+        10**1000,
+        -(10**1000),
+    ],
+)
+async def test_temperature_validation_rejects_invalid_values(temperature):
+    client = _client_with_forbidden_network()
+    with pytest.raises(ValueError):
+        await client.generate(
+            [_user_msg("hi")],
+            temperature=temperature,
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "max_tokens",
+    [
+        True,
+        1.0,
+        1.5,
+        0,
+        -1,
+        "1",
+        [],
+    ],
+)
+async def test_max_tokens_validation_rejects_invalid_values(max_tokens):
+    client = _client_with_forbidden_network()
+    with pytest.raises(ValueError):
+        await client.generate(
+            [_user_msg("hi")],
+            max_tokens=max_tokens,
+        )

@@ -554,6 +554,27 @@ describe("history review payload and ack parsing", function () {
     assert.equal(buildHistoryReviewCreatePayload(5, "false"), null);
   });
 
+  it("adds retry_failed only for explicit retry requests", function () {
+    assert.deepEqual(
+      buildHistoryReviewCreatePayload(5, false, false),
+      {
+        mode_switch_event_id: 5,
+        acknowledge_remote_history: false,
+      },
+    );
+    assert.deepEqual(
+      buildHistoryReviewCreatePayload(5, true, true),
+      {
+        mode_switch_event_id: 5,
+        acknowledge_remote_history: true,
+        retry_failed: true,
+      },
+    );
+    assert.equal(buildHistoryReviewCreatePayload(5, false, "true"), null);
+    assert.equal(buildHistoryReviewCreatePayload(5, false, 1), null);
+    assert.equal(buildHistoryReviewCreatePayload(5, false, null), null);
+  });
+
   it("parses a valid ack-required envelope", function () {
     const parsed = parseHistoryReviewAckRequired(makeAckEnvelope());
     assert.deepEqual(parsed, {
@@ -840,6 +861,59 @@ describe("history review controller", function () {
     assert.equal(detailCalls, 1);
   });
 
+  it("retry performs exactly one POST with retry_failed=true", async function () {
+    const posts = [];
+    const detail = makeDetail();
+    const controller = createHistoryReviewController(makeControllerDeps({
+      postReview: async function (sessionId, payload) {
+        posts.push({ sessionId: sessionId, payload: payload });
+        return detail;
+      },
+    }));
+
+    const outcome = await controller.retry(makeOperation());
+
+    assert.equal(outcome.status, "authoritative");
+    assert.equal(outcome.detail, detail);
+    assert.equal(posts.length, 1);
+    assert.deepEqual(posts[0].payload, {
+      mode_switch_event_id: 5,
+      acknowledge_remote_history: false,
+      retry_failed: true,
+    });
+  });
+
+  it("ack-required retry preserves retry_failed=true", async function () {
+    const posts = [];
+    const detail = makeDetail();
+    const controller = createHistoryReviewController(makeControllerDeps({
+      postReview: async function (sessionId, payload) {
+        posts.push(payload);
+        if (payload.acknowledge_remote_history === false) {
+          throw httpError(
+            409,
+            "history_review_remote_ack_required",
+            "ack",
+            makeAckEnvelope(),
+          );
+        }
+        return detail;
+      },
+      confirmRemoteHistory: async function () { return true; },
+    }));
+
+    const outcome = await controller.retry(makeOperation());
+
+    assert.equal(outcome.status, "authoritative");
+    assert.equal(posts.length, 2);
+    assert.equal(posts[0].retry_failed, true);
+    assert.deepEqual(posts[1], {
+      mode_switch_event_id: 5,
+      acknowledge_remote_history: true,
+      retry_failed: true,
+    });
+  });
+
   it("accepts each authoritative review status in recheck", async function () {
     for (const status of ["pending", "running", "completed", "failed"]) {
       const summary = makeSummary({
@@ -914,6 +988,57 @@ describe("history review controller", function () {
     assert.equal(first.targetSessionId, 1);
     assert.equal(first.modeSwitchEventId, 5);
     assert.equal(first.generation, 1);
+    assert.equal(first.detail.session_id, 1);
+    assert.equal(controller.isActive(1), false);
+    assert.equal(controller.isActive(2), false);
+  });
+
+  it("isolates Retry busy state per session on one controller", async function () {
+    let releaseFirst;
+    const firstGate = new Promise(function (resolve) {
+      releaseFirst = resolve;
+    });
+    const posts = [];
+    const controller = createHistoryReviewController(makeControllerDeps({
+      postReview: async function (sessionId, payload) {
+        posts.push({ sessionId: sessionId, payload: payload });
+        if (sessionId === 1) {
+          await firstGate;
+        }
+        return makeDetail({ session_id: sessionId });
+      },
+    }));
+
+    const firstPromise = controller.retry(makeOperation({
+      targetSessionId: 1,
+      modeSwitchEventId: 5,
+      generation: 1,
+    }));
+    const second = await controller.retry(makeOperation({
+      targetSessionId: 2,
+      modeSwitchEventId: 5,
+      generation: 2,
+    }));
+    const duplicate = await controller.retry(makeOperation({
+      targetSessionId: 1,
+      modeSwitchEventId: 5,
+      generation: 3,
+    }));
+
+    assert.equal(second.status, "authoritative");
+    assert.equal(second.targetSessionId, 2);
+    assert.equal(second.detail.session_id, 2);
+    assert.equal(duplicate.status, "busy");
+    assert.equal(duplicate.targetSessionId, 1);
+    assert.equal(controller.isActive(1), true);
+    assert.equal(controller.isActive(2), false);
+    assert.equal(posts.length, 2);
+    assert.equal(posts[0].payload.retry_failed, true);
+    assert.equal(posts[1].payload.retry_failed, true);
+
+    releaseFirst();
+    const first = await firstPromise;
+    assert.equal(first.status, "authoritative");
     assert.equal(first.detail.session_id, 1);
     assert.equal(controller.isActive(1), false);
     assert.equal(controller.isActive(2), false);
@@ -1303,6 +1428,8 @@ describe("history review 2F-4 helpers", function () {
     });
     assert.equal(pendingModel.continueVisible, true);
     assert.equal(pendingModel.actionKind, "none");
+    assert.equal(pendingModel.actionEventId, null);
+    assert.equal(pendingModel.actionLabel, null);
 
     const running = makeSummary({ id: 11, mode_switch_event_id: 6, status: "running", findings_count: 0 });
     const runningModel = buildHistoryReviewPanelModel({
@@ -1334,6 +1461,147 @@ describe("history review 2F-4 helpers", function () {
     });
     assert.equal(loadErrorModel.actionKind, "reload");
     assert.equal(loadErrorModel.actionEventId, null);
+  });
+
+  it("offers Retry only for interrupted failed reviews", function () {
+    const baseState = {
+      events: [],
+      eventsStatus: "ready",
+      summaries: [],
+      summariesStatus: "ready",
+      detailsById: Object.create(null),
+      selectedReviewId: null,
+      proposalDismissedEventId: null,
+      uncertainEventId: null,
+      operation: null,
+      panelError: null,
+      collapsed: false,
+    };
+    const interrupted = makeSummary({
+      id: 12,
+      mode_switch_event_id: 6,
+      status: "failed",
+      error_code: "history_review_execution_interrupted",
+      error_message: "History review execution was interrupted.",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+      completed_at: "2026-08-06T12:00:03",
+    });
+    const interruptedModel = buildHistoryReviewPanelModel({
+      sessionId: 1,
+      state: Object.assign({}, baseState, {
+        summaries: [interrupted],
+        selectedReviewId: 12,
+      }),
+      currentMode: CORRECTIVE_MODE,
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    assert.equal(interruptedModel.actionKind, "retry");
+    assert.equal(interruptedModel.actionLabel, "Retry");
+    assert.equal(interruptedModel.actionEventId, 6);
+    assert.equal(interruptedModel.badgeText, "Interrupted");
+
+    const otherFailed = makeSummary({
+      id: 13,
+      mode_switch_event_id: 7,
+      status: "failed",
+      error_code: "history_review_llm_upstream_error",
+      error_message: "LLM request failed.",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+    });
+    const otherModel = buildHistoryReviewPanelModel({
+      sessionId: 1,
+      state: Object.assign({}, baseState, {
+        summaries: [otherFailed],
+        selectedReviewId: 13,
+      }),
+      currentMode: CORRECTIVE_MODE,
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    assert.equal(otherModel.actionKind, "recheck");
+    assert.equal(otherModel.actionLabel, "Recheck");
+  });
+
+  it("marks Retry as a busy-sensitive write action while Recheck stays read-only", function () {
+    const baseState = {
+      events: [],
+      eventsStatus: "ready",
+      summaries: [],
+      summariesStatus: "ready",
+      detailsById: Object.create(null),
+      selectedReviewId: null,
+      proposalDismissedEventId: null,
+      uncertainEventId: null,
+      operation: null,
+      panelError: null,
+      collapsed: false,
+    };
+    const interrupted = makeSummary({
+      id: 12,
+      mode_switch_event_id: 6,
+      status: "failed",
+      error_code: "history_review_execution_interrupted",
+      error_message: "History review execution was interrupted.",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+      completed_at: "2026-08-06T12:00:03",
+    });
+    const running = makeSummary({
+      id: 11,
+      mode_switch_event_id: 7,
+      status: "running",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+      started_at: "2026-08-06T12:00:01",
+      completed_at: null,
+      updated_at: "2026-08-06T12:00:01",
+    });
+
+    const retryWithRunningModel = buildHistoryReviewPanelModel({
+      sessionId: 1,
+      state: Object.assign({}, baseState, {
+        summaries: [interrupted, running],
+        selectedReviewId: 12,
+      }),
+      currentMode: CORRECTIVE_MODE,
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    assert.equal(retryWithRunningModel.actionKind, "retry");
+    assert.equal(retryWithRunningModel.busy, true);
+
+    const recheckBusyModel = buildHistoryReviewPanelModel({
+      sessionId: 1,
+      state: Object.assign({}, baseState, {
+        summaries: [interrupted, running],
+        selectedReviewId: 11,
+      }),
+      currentMode: CORRECTIVE_MODE,
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    assert.equal(recheckBusyModel.actionKind, "recheck");
+    assert.equal(recheckBusyModel.busy, true);
+
+    const loneRetryModel = buildHistoryReviewPanelModel({
+      sessionId: 1,
+      state: Object.assign({}, baseState, {
+        summaries: [interrupted],
+        selectedReviewId: 12,
+      }),
+      currentMode: CORRECTIVE_MODE,
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    assert.equal(loneRetryModel.actionKind, "retry");
+    assert.equal(loneRetryModel.busy, false);
   });
 
   it("passes a copied operation snapshot to the confirmation dependency", async function () {
@@ -1519,7 +1787,8 @@ describe("history review dialog copy", function () {
     const copy = HISTORY_REVIEW_DIALOG_COPY;
     assert.notEqual(copy, undefined);
     for (const key of ["startTitle", "startBody",
-                       "continueTitle", "continueBody"]) {
+                       "continueTitle", "continueBody",
+                       "retryTitle", "retryBody"]) {
       assert.equal(typeof copy[key], "string", key);
       assert.equal(copy[key].trim().length > 0, true, key);
     }
@@ -1527,10 +1796,17 @@ describe("history review dialog copy", function () {
     // repeating the same sentence is exactly the bug being fixed.
     assert.notEqual(copy.startTitle.trim(), copy.startBody.trim());
     assert.notEqual(copy.continueTitle.trim(), copy.continueBody.trim());
+    assert.notEqual(copy.retryTitle.trim(), copy.retryBody.trim());
     assert.notEqual(copy.startTitle, copy.continueTitle);
+    assert.notEqual(copy.continueTitle, copy.retryTitle);
     assert.notEqual(copy.startBody, copy.continueBody);
+    assert.notEqual(copy.continueBody, copy.retryBody);
     assert.equal(copy.startTitle.endsWith("?"), true);
     assert.equal(copy.continueTitle.endsWith("?"), true);
+    assert.equal(copy.retryTitle.endsWith("?"), true);
+    assert.match(copy.retryBody, /duplicate/i);
+    assert.match(copy.retryBody, /cost|fee|charged/i);
+    assert.match(copy.retryBody, /frozen sources/i);
     // Continue must not describe the first-start flow.
     assert.equal(/frozen at this mode switch/i.test(copy.continueBody), false);
     assert.equal(/frozen when it started/i.test(copy.continueBody), true);
@@ -1543,7 +1819,8 @@ describe("history review dialog copy", function () {
       /sk-[A-Za-z0-9]/, /base[_ -]?url/i, /\{\{/, /\$\{/,
     ];
     for (const key of ["startTitle", "startBody",
-                       "continueTitle", "continueBody"]) {
+                       "continueTitle", "continueBody",
+                       "retryTitle", "retryBody"]) {
       for (const pattern of forbidden) {
         assert.equal(pattern.test(copy[key]), false,
           key + " must not contain " + pattern);

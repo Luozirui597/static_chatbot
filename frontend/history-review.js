@@ -56,6 +56,7 @@ var FINDING_FIELDS = [
 ];
 
 var ACK_REQUIRED_CODE = "history_review_remote_ack_required";
+var INTERRUPTED_ERROR_CODE = "history_review_execution_interrupted";
 
 /**
  * Dialog copy shared by the browser bundle and the Node tests.
@@ -77,6 +78,12 @@ var HISTORY_REVIEW_DIALOG_COPY = {
     "The pending review resumes with the teaching history that was " +
     "already frozen when it started. The completed report appears " +
     "here.",
+  retryTitle: "Retry this history review?",
+  retryBody:
+    "The previous attempt was interrupted. It may already have " +
+    "reached the model. Retrying sends the same frozen sources " +
+    "again, and a remote model may produce a duplicate call or cost. " +
+    "Continue only if you want to retry.",
 };
 
 var UNCERTAIN_MESSAGE =
@@ -694,6 +701,9 @@ function buildHistoryReviewPanelModel(options) {
     var selectedStatus = selectedSummary === null
       ? null
       : selectedSummary.status;
+    var selectedErrorCode = selectedSummary === null
+      ? null
+      : selectedSummary.error_code;
     var selectedDetailMissing =
       selectedSummary !== null &&
       selectedSummary.status === "completed" &&
@@ -713,7 +723,9 @@ function buildHistoryReviewPanelModel(options) {
       actionKind = "recheck";
       actionEventId = selectedSummary.mode_switch_event_id;
     } else if (selectedSummary !== null && selectedStatus === "failed") {
-      actionKind = "recheck";
+      actionKind = selectedErrorCode === INTERRUPTED_ERROR_CODE
+        ? "retry"
+        : "recheck";
       actionEventId = selectedSummary.mode_switch_event_id;
     } else if (selectedDetailError || selectedDetailMissing) {
       actionKind = "reload";
@@ -741,7 +753,9 @@ function buildHistoryReviewPanelModel(options) {
     } else if (selectedStatus === "completed") {
       badgeText = "Completed";
     } else if (selectedStatus === "failed") {
-      badgeText = "Failed";
+      badgeText = selectedErrorCode === INTERRUPTED_ERROR_CODE
+        ? "Interrupted"
+        : "Failed";
     } else if (state.uncertainEventId !== null &&
                state.uncertainEventId !== undefined) {
       badgeText = "Uncertain";
@@ -842,7 +856,9 @@ function buildHistoryReviewPanelModel(options) {
       actionReviewId: actionReviewId,
       actionLabel: actionKind === "recheck"
         ? "Recheck"
-        : (actionKind === "reload" ? "Reload" : null),
+        : (actionKind === "retry"
+          ? "Retry"
+          : (actionKind === "reload" ? "Reload" : null)),
       busy: operation !== null ||
         isHistoryReviewTargetBusy(sessionId, state, validateTimestamp),
       collapsed: state.collapsed === true,
@@ -945,14 +961,22 @@ function selectLatestHistoryReviewProposal(options) {
 }
 
 function buildHistoryReviewCreatePayload(
-  modeSwitchEventId, acknowledgeRemoteHistory
+  modeSwitchEventId, acknowledgeRemoteHistory, retryFailed
 ) {
   if (_isPositiveSafeInteger(modeSwitchEventId) === false) return null;
   if (_isStrictBoolean(acknowledgeRemoteHistory) === false) return null;
-  return {
+  if (retryFailed !== undefined &&
+      _isStrictBoolean(retryFailed) === false) {
+    return null;
+  }
+  var payload = {
     mode_switch_event_id: modeSwitchEventId,
     acknowledge_remote_history: acknowledgeRemoteHistory,
   };
+  if (retryFailed === true) {
+    payload.retry_failed = true;
+  }
+  return payload;
 }
 
 function parseHistoryReviewAckRequired(value) {
@@ -1313,9 +1337,11 @@ function createHistoryReviewController(dependencies) {
     return _authoritativeOutcome(operation, detail, true);
   }
 
-  async function _attemptPost(operation, acknowledge, alreadyConfirmed) {
+  async function _attemptPost(
+    operation, acknowledge, alreadyConfirmed, retryFailed
+  ) {
     var payload = buildHistoryReviewCreatePayload(
-      operation.modeSwitchEventId, acknowledge
+      operation.modeSwitchEventId, acknowledge, retryFailed === true
     );
     if (payload === null) {
       return _failedOutcome(operation, null, FAILED_MESSAGE);
@@ -1367,7 +1393,9 @@ function createHistoryReviewController(dependencies) {
           if (confirmed !== true) {
             return _cancelledOutcome(operation);
           }
-          return await _attemptPost(operation, true, true);
+          return await _attemptPost(
+            operation, true, true, retryFailed === true
+          );
         }
         if (error.code === "history_review_execution_conflict") {
           return await _reconcile(operation);
@@ -1436,6 +1464,29 @@ function createHistoryReviewController(dependencies) {
     }
   }
 
+  async function retry(operation) {
+    var captured;
+    try {
+      captured = _captureOperation(operation);
+    } catch (_) {
+      return _invalidRequestOutcome();
+    }
+    if (captured === null) return _invalidRequestOutcome();
+
+    var key = _sessionKey(captured);
+    if (activeBySession[key] === true) {
+      return _busyOutcome(captured);
+    }
+    activeBySession[key] = true;
+    try {
+      return await _attemptPost(captured, false, false, true);
+    } catch (_) {
+      return _failedOutcome(captured, null, FAILED_MESSAGE);
+    } finally {
+      delete activeBySession[key];
+    }
+  }
+
   async function recheck(operation) {
     var captured;
     try {
@@ -1466,6 +1517,7 @@ function createHistoryReviewController(dependencies) {
 
   return {
     start: start,
+    retry: retry,
     recheck: recheck,
     isActive: isActive,
   };
@@ -1479,6 +1531,7 @@ if (typeof module !== "undefined" && module.exports) {
     HISTORY_REVIEW_STATUSES: HISTORY_REVIEW_STATUSES,
     HISTORY_REVIEW_VERDICTS: HISTORY_REVIEW_VERDICTS,
     HISTORY_REVIEW_DIALOG_COPY: HISTORY_REVIEW_DIALOG_COPY,
+    INTERRUPTED_ERROR_CODE: INTERRUPTED_ERROR_CODE,
     isValidHistoryReviewStatus: isValidHistoryReviewStatus,
     isValidHistoryReviewVerdict: isValidHistoryReviewVerdict,
     isValidHistoryReviewFinding: isValidHistoryReviewFinding,

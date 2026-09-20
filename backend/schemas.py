@@ -290,6 +290,7 @@ class HistoryReviewCreateRequest(BaseModel):
 
     mode_switch_event_id: int = Field(strict=True, gt=0)
     acknowledge_remote_history: bool = Field(default=False, strict=True)
+    retry_failed: bool = Field(default=False, strict=True)
 
     model_config = ConfigDict(extra="forbid")
 

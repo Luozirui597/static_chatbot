@@ -29,7 +29,7 @@ from backend.history_review_selection import (
     HISTORY_REVIEW_SELECTION_POLICY_VERSION,
     HistoryReviewSourceMessageTooLarge,
 )
-from backend.history_review_prompt import HISTORY_REVIEW_PROMPT_VERSION
+from backend.history_review_stages import HISTORY_REVIEW_PIPELINE_VERSION
 from backend.history_review_service import (
     HistoryReviewPreparationResult,
     HistoryReviewService,
@@ -53,7 +53,14 @@ class SpyClient:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def generate(self, messages):
+    async def generate(
+        self,
+        messages,
+        *,
+        response_format=None,
+        temperature=None,
+        max_tokens=None,
+    ):
         self.calls += 1
         return "unused"
 
@@ -642,7 +649,10 @@ class TestReviewerProfile:
         assert result.review.reviewer_llm_profile_kind_snapshot == kind
         assert result.review.reviewer_llm_model_snapshot == model
         assert result.review.prompt_version_snapshot == (
-            HISTORY_REVIEW_PROMPT_VERSION
+            HISTORY_REVIEW_PIPELINE_VERSION
+        )
+        assert result.review.prompt_version_snapshot == (
+            "history-review-pipeline-v1"
         )
         assert result.review.budget_version_snapshot == (
             HISTORY_REVIEW_BUDGET_VERSION
@@ -908,7 +918,7 @@ def _make_review_row(
         reviewer_llm_profile_id_snapshot="default",
         reviewer_llm_profile_kind_snapshot="fake",
         reviewer_llm_model_snapshot=FAKE_MODEL,
-        prompt_version_snapshot=HISTORY_REVIEW_PROMPT_VERSION,
+        prompt_version_snapshot=HISTORY_REVIEW_PIPELINE_VERSION,
         budget_version_snapshot=HISTORY_REVIEW_BUDGET_VERSION,
         selection_policy_version=HISTORY_REVIEW_SELECTION_POLICY_VERSION,
         attempt_count=1,

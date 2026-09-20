@@ -17,7 +17,13 @@ from backend.chat_service import (
     SessionLockRegistry,
     SessionNotFoundError,
 )
-from backend.database import create_tables, engine, get_db, run_migrations
+from backend.database import (
+    SessionLocal,
+    create_tables,
+    engine,
+    get_db,
+    run_migrations,
+)
 from backend.exceptions import (
     HistoryReviewBoundaryUnavailable,
     HistoryReviewEventNotFound,
@@ -37,6 +43,7 @@ from backend.history_review_selection import HistoryReviewSourceMessageTooLarge
 from backend.history_review_service import (
     HistoryReviewExecutionConflict,
     HistoryReviewExecutionNotFound,
+    HistoryReviewRetryNotAllowed,
     HistoryReviewService,
 )
 from backend.interaction_modes import CORRECTIVE_MODE, RECEIVE_TEACHING_MODE
@@ -203,9 +210,11 @@ def _build_mode_switch_event_response(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Create database tables and run migrations on startup."""
+    """Create database tables and recover abandoned reviews on startup."""
     create_tables()
     run_migrations(engine)
+    with SessionLocal() as db:
+        history_review_service.recover_abandoned_running_reviews(db)
     yield
 
 
@@ -537,6 +546,9 @@ _HISTORY_REVIEW_SAFE_MESSAGES = {
     "history_review_execution_conflict": (
         "History review execution conflict."
     ),
+    "history_review_retry_not_allowed": (
+        "This history review cannot be retried."
+    ),
     "history_review_internal_error": (
         "History review processing failed."
     ),
@@ -758,6 +770,7 @@ async def create_history_review(
             mode_switch_event_id=request.mode_switch_event_id,
             acknowledge_remote_history=request.acknowledge_remote_history,
             db=db,
+            retry_failed=request.retry_failed,
         )
     except HistoryReviewSessionNotFound:
         raise _history_review_error(
@@ -791,6 +804,10 @@ async def create_history_review(
         raise _history_review_error(
             409, "history_review_reviewer_conflict"
         ) from None
+    except HistoryReviewRetryNotAllowed:
+        raise _history_review_error(
+            409, "history_review_retry_not_allowed"
+        ) from None
     except HTTPException:
         raise
     except HistoryReviewRemoteAckRequired as exc:
@@ -813,13 +830,19 @@ async def create_history_review(
         raise _history_review_internal_error(db) from None
 
     review_id = preparation.review.id
+    should_execute = (
+        not request.retry_failed
+        or preparation.review.status == "failed"
+    )
 
     try:
-        await history_review_service.execute_history_review(
-            session_id=session_id,
-            review_id=review_id,
-            db=db,
-        )
+        if should_execute:
+            await history_review_service.execute_history_review(
+                session_id=session_id,
+                review_id=review_id,
+                db=db,
+                retry_failed=request.retry_failed,
+            )
     except HistoryReviewExecutionNotFound:
         raise _history_review_error(
             404, "history_review_not_found"
@@ -827,6 +850,10 @@ async def create_history_review(
     except HistoryReviewExecutionConflict:
         raise _history_review_error(
             409, "history_review_execution_conflict"
+        ) from None
+    except HistoryReviewRetryNotAllowed:
+        raise _history_review_error(
+            409, "history_review_retry_not_allowed"
         ) from None
     except HTTPException:
         raise

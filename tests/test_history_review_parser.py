@@ -99,6 +99,49 @@ def test_multiple_sources_and_same_source_multiple_findings():
     assert result.findings[2].explanation_text == "why"
 
 
+def test_multi_claim_source_followed_by_other_sources_is_accepted():
+    result = parse_history_review_output(
+        raw_output=_raw(
+            findings=[
+                _finding(
+                    101,
+                    "incorrect",
+                    claim_text="claim one",
+                    correction_text="correction one",
+                    explanation_text="explanation one",
+                ),
+                _finding(
+                    101,
+                    "correct",
+                    claim_text="claim two",
+                ),
+                _finding(
+                    102,
+                    "incorrect",
+                    claim_text="claim three",
+                    correction_text="correction three",
+                    explanation_text="explanation three",
+                ),
+                _finding(103, "not_a_claim", claim_text="no factual claim"),
+            ]
+        ),
+        source_seq_by_id={101: 1, 102: 2, 103: 3},
+    )
+
+    assert [finding.source_message_id for finding in result.findings] == [
+        101,
+        101,
+        102,
+        103,
+    ]
+    assert [finding.verdict for finding in result.findings] == [
+        "incorrect",
+        "correct",
+        "incorrect",
+        "not_a_claim",
+    ]
+
+
 def test_all_four_verdicts_are_accepted():
     result = parse_history_review_output(
         raw_output=_raw(

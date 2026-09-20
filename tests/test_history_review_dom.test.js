@@ -1926,4 +1926,414 @@ describe("history review app.js execution path", function () {
     assert.equal(Object.hasOwn(harness.reviewStateBySession, "3"), false);
     assert.equal(harness.reviewStateBySession["1"], seeded.state);
   });
+
+  function seedInterruptedRetryState() {
+    const state = harness.ensureReviewState(1);
+    state.events = [];
+    state.eventsStatus = "ready";
+    state.eventsError = null;
+    state.summaries = [makeSummary({
+      id: 10,
+      mode_switch_event_id: 5,
+      status: "failed",
+      error_code: "history_review_execution_interrupted",
+      error_message: "History review execution was interrupted.",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+      completed_at: "2026-08-06T12:00:02",
+      updated_at: "2026-08-06T12:00:02",
+    })];
+    state.summariesStatus = "ready";
+    state.summariesError = null;
+    state.detailsById = Object.create(null);
+    state.detailErrorByReviewId = Object.create(null);
+    state.selectedReviewId = 10;
+    state.operation = null;
+    state.panelError = null;
+    harness.renderHistoryReviewPanel();
+    return state;
+  }
+
+  it("cancels Retry without POST, no Working, and restores focus", async function () {
+    const state = seedInterruptedRetryState();
+    harness.setupStartFlow();
+    let posts = 0;
+    harness.setController(makeStartController(async function () {
+      posts += 1;
+      throw new Error("POST must not run before Retry confirmation");
+    }));
+    const trigger = harness.elements.historyReviewRecheckBtn;
+
+    const pending = harness.startHistoryReview("retry", 5, trigger);
+
+    assert.equal(state.operation.phase, "confirming_start");
+    assert.equal(harness.reviewTargetBusy(1), true);
+    assert.equal(posts, 0);
+    const model = renderedModel();
+    assert.equal(model.actionKind, "retry");
+    assert.equal(model.workingVisible, false);
+    assert.equal(model.badgeText, "Interrupted");
+
+    harness.elements.hrsCancel.dispatchEvent({ type: "click" });
+    await flushAsync();
+    await pending;
+
+    assert.equal(posts, 0);
+    assert.equal(state.operation, null);
+    assert.equal(trigger.focusCount, 1);
+    assert.equal(renderedModel().workingVisible, false);
+  });
+
+  it("shows Working and posts exactly once after Retry is confirmed", async function () {
+    const state = seedInterruptedRetryState();
+    harness.setupStartFlow();
+    const payload = makeDetail({
+      id: 10,
+      mode_switch_event_id: 5,
+      status: "completed",
+      summary: "retry finished",
+      coverage_note: null,
+      findings_count: 1,
+      findings: [makeFinding()],
+      completed_at: "2026-08-06T12:10:00",
+      updated_at: "2026-08-06T12:10:00",
+    });
+    let posts = 0;
+    let resolvePost = null;
+    let requestBody = null;
+    harness.setController(makeStartController(function (sessionId, body) {
+      posts += 1;
+      requestBody = body;
+      return new Promise(function (resolve) { resolvePost = resolve; });
+    }));
+
+    const pending = harness.startHistoryReview(
+      "retry", 5, harness.elements.historyReviewRecheckBtn);
+
+    assert.equal(state.operation.phase, "confirming_start");
+    assert.equal(posts, 0);
+    assert.equal(renderedModel().workingVisible, false);
+
+    harness.elements.hrsStart.dispatchEvent({ type: "click" });
+    await flushAsync();
+
+    assert.equal(state.operation.phase, "posting");
+    assert.equal(posts, 1);
+    assert.equal(renderedModel().workingVisible, true);
+    assert.equal(renderedModel().badgeText, "Working");
+    assert.equal(requestBody.retry_failed, true);
+    assert.equal(requestBody.mode_switch_event_id, 5);
+
+    routeCompletedPayload(payload);
+    resolvePost(payload);
+    await flushAsync();
+    await pending;
+
+    assert.equal(posts, 1);
+    assert.equal(state.operation, null);
+  });
+
+
+  it("shows Continue and hides Recheck for pending reviews", function () {
+    const state = harness.ensureReviewState(1);
+    state.events = [];
+    state.eventsStatus = "ready";
+    state.eventsError = null;
+    state.summaries = [makeSummary({
+      id: 10,
+      mode_switch_event_id: 5,
+      status: "pending",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+      started_at: null,
+      completed_at: null,
+    })];
+    state.summariesStatus = "ready";
+    state.summariesError = null;
+    state.detailsById = Object.create(null);
+    state.detailErrorByReviewId = Object.create(null);
+    state.selectedReviewId = 10;
+    state.operation = null;
+    state.panelError = null;
+
+    const model = harness.renderHistoryReviewPanel();
+
+    assert.equal(model.actionKind, "none");
+    assert.equal(model.continueVisible, true);
+    assert.equal(harness.elements.historyReviewContinueBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewContinueBtn.disabled, false);
+    assert.equal(harness.elements.historyReviewRecheckBtn.hidden, true);
+  });
+
+  it("disables Retry while another review is running but keeps Recheck usable", function () {
+    const state = harness.ensureReviewState(1);
+    state.events = [];
+    state.eventsStatus = "ready";
+    state.eventsError = null;
+    state.detailsById = Object.create(null);
+    state.detailErrorByReviewId = Object.create(null);
+    state.operation = null;
+    state.panelError = null;
+    state.summariesStatus = "ready";
+    state.summariesError = null;
+
+    const interrupted = makeSummary({
+      id: 10,
+      mode_switch_event_id: 5,
+      status: "failed",
+      error_code: "history_review_execution_interrupted",
+      error_message: "History review execution was interrupted.",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+      completed_at: "2026-08-06T12:00:03",
+    });
+    const running = makeSummary({
+      id: 11,
+      mode_switch_event_id: 6,
+      status: "running",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+      started_at: "2026-08-06T12:00:01",
+      completed_at: null,
+      updated_at: "2026-08-06T12:00:01",
+    });
+
+    state.summaries = [interrupted, running];
+    state.selectedReviewId = 10;
+    let model = harness.renderHistoryReviewPanel();
+    assert.equal(model.actionKind, "retry");
+    assert.equal(model.busy, true);
+    assert.equal(harness.elements.historyReviewRecheckBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewRecheckBtn.disabled, true);
+
+    state.selectedReviewId = 11;
+    model = harness.renderHistoryReviewPanel();
+    assert.equal(model.actionKind, "recheck");
+    assert.equal(model.busy, true);
+    assert.equal(harness.elements.historyReviewRecheckBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewRecheckBtn.disabled, false);
+
+    state.summaries = [interrupted];
+    state.selectedReviewId = 10;
+    model = harness.renderHistoryReviewPanel();
+    assert.equal(model.actionKind, "retry");
+    assert.equal(model.busy, false);
+    assert.equal(harness.elements.historyReviewRecheckBtn.disabled, false);
+
+    state.operation = {
+      kind: "retry",
+      eventId: 5,
+      generation: 1,
+      phase: "posting",
+    };
+    model = harness.renderHistoryReviewPanel();
+    assert.equal(model.busy, true);
+    assert.equal(harness.elements.historyReviewRecheckBtn.disabled, true);
+    assert.equal(harness.elements.historyReviewStartBtn.hidden, true);
+    assert.equal(harness.elements.historyReviewDismissBtn.hidden, true);
+    assert.equal(harness.elements.historyReviewContinueBtn.hidden, true);
+  });
+
+
+  it("disables Start and keeps Dismiss enabled while another review is running", function () {
+    harness.setCurrentMode(CORRECTIVE_MODE);
+    const state = harness.ensureReviewState(1);
+    state.events = [makeEvent({ id: 5, mode_switch_event_id: 5 })];
+    state.eventsStatus = "ready";
+    state.eventsError = null;
+    state.summaries = [makeSummary({
+      id: 11,
+      mode_switch_event_id: 6,
+      status: "running",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+      started_at: "2026-08-06T12:00:01",
+      completed_at: null,
+      updated_at: "2026-08-06T12:00:01",
+    })];
+    state.summariesStatus = "ready";
+    state.summariesError = null;
+    state.detailsById = Object.create(null);
+    state.detailErrorByReviewId = Object.create(null);
+    state.selectedReviewId = 11;
+    state.operation = null;
+    state.proposalDismissedEventId = null;
+    state.panelError = null;
+
+    const model = harness.renderHistoryReviewPanel();
+
+    assert.equal(model.startVisible, true);
+    assert.equal(model.dismissVisible, true);
+    assert.equal(model.busy, true);
+    assert.equal(harness.elements.historyReviewStartBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewStartBtn.disabled, true);
+    assert.equal(harness.elements.historyReviewDismissBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewDismissBtn.disabled, false);
+    assert.equal(harness.elements.historyReviewRecheckBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewRecheckBtn.disabled, false);
+  });
+
+  it("enables Start when the proposal has no busy review", function () {
+    harness.setCurrentMode(CORRECTIVE_MODE);
+    const state = harness.ensureReviewState(1);
+    state.events = [makeEvent({ id: 5, mode_switch_event_id: 5 })];
+    state.eventsStatus = "ready";
+    state.eventsError = null;
+    state.summaries = [];
+    state.summariesStatus = "ready";
+    state.summariesError = null;
+    state.detailsById = Object.create(null);
+    state.detailErrorByReviewId = Object.create(null);
+    state.selectedReviewId = null;
+    state.operation = null;
+    state.proposalDismissedEventId = null;
+    state.panelError = null;
+
+    const model = harness.renderHistoryReviewPanel();
+
+    assert.equal(model.startVisible, true);
+    assert.equal(model.busy, false);
+    assert.equal(harness.elements.historyReviewStartBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewStartBtn.disabled, false);
+    assert.equal(harness.elements.historyReviewDismissBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewDismissBtn.disabled, false);
+    assert.equal(harness.elements.historyReviewRecheckBtn.hidden, true);
+  });
+
+  it("disables pending Continue while another review is running", function () {
+    const state = harness.ensureReviewState(1);
+    state.events = [];
+    state.eventsStatus = "ready";
+    state.eventsError = null;
+    state.summaries = [
+      makeSummary({
+        id: 10,
+        mode_switch_event_id: 5,
+        status: "pending",
+        summary: null,
+        coverage_note: null,
+        findings_count: 0,
+        started_at: null,
+        completed_at: null,
+      }),
+      makeSummary({
+        id: 11,
+        mode_switch_event_id: 6,
+        status: "running",
+        summary: null,
+        coverage_note: null,
+        findings_count: 0,
+        started_at: "2026-08-06T12:00:01",
+        completed_at: null,
+        updated_at: "2026-08-06T12:00:01",
+      }),
+    ];
+    state.summariesStatus = "ready";
+    state.summariesError = null;
+    state.detailsById = Object.create(null);
+    state.detailErrorByReviewId = Object.create(null);
+    state.selectedReviewId = 10;
+    state.operation = null;
+    state.panelError = null;
+
+    const model = harness.renderHistoryReviewPanel();
+
+    assert.equal(model.continueVisible, true);
+    assert.equal(model.busy, true);
+    assert.equal(harness.elements.historyReviewContinueBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewContinueBtn.disabled, true);
+    assert.equal(harness.elements.historyReviewRecheckBtn.hidden, true);
+  });
+
+  it("keeps Recheck enabled in uncertain state", function () {
+    const state = harness.ensureReviewState(1);
+    state.events = [];
+    state.eventsStatus = "ready";
+    state.eventsError = null;
+    state.summaries = [];
+    state.summariesStatus = "ready";
+    state.summariesError = null;
+    state.detailsById = Object.create(null);
+    state.detailErrorByReviewId = Object.create(null);
+    state.selectedReviewId = null;
+    state.operation = null;
+    state.uncertainEventId = 9;
+    state.panelError = null;
+
+    const model = harness.renderHistoryReviewPanel();
+
+    assert.equal(model.actionKind, "recheck");
+    assert.equal(model.busy, true);
+    assert.equal(harness.elements.historyReviewRecheckBtn.hidden, false);
+    assert.equal(harness.elements.historyReviewRecheckBtn.disabled, false);
+  });
+
+  it("retains defensive busy checks for blocked Start and Continue clicks", async function () {
+    harness.setCurrentMode(CORRECTIVE_MODE);
+    let posts = 0;
+    harness.setController(makeStartController(async function () {
+      posts += 1;
+      throw new Error("blocked write action must not POST");
+    }));
+
+    const state = harness.ensureReviewState(1);
+    state.events = [makeEvent({ id: 5, mode_switch_event_id: 5 })];
+    state.eventsStatus = "ready";
+    state.eventsError = null;
+    state.summaries = [makeSummary({
+      id: 11,
+      mode_switch_event_id: 6,
+      status: "running",
+      summary: null,
+      coverage_note: null,
+      findings_count: 0,
+      started_at: "2026-08-06T12:00:01",
+      completed_at: null,
+      updated_at: "2026-08-06T12:00:01",
+    })];
+    state.summariesStatus = "ready";
+    state.summariesError = null;
+    state.selectedReviewId = 11;
+    state.operation = null;
+    state.panelError = null;
+    harness.renderHistoryReviewPanel();
+
+    harness.elements.historyReviewStartBtn.dispatchEvent({ type: "click" });
+    await flushAsync();
+
+    assert.equal(posts, 0);
+    assert.equal(state.operation, null);
+    assert.equal(renderedModel().workingVisible, false);
+
+    state.events = [];
+    state.summaries = [
+      makeSummary({
+        id: 10,
+        mode_switch_event_id: 5,
+        status: "pending",
+        summary: null,
+        coverage_note: null,
+        findings_count: 0,
+        started_at: null,
+        completed_at: null,
+      }),
+      state.summaries[0],
+    ];
+    state.selectedReviewId = 10;
+    state.operation = null;
+    harness.renderHistoryReviewPanel();
+
+    harness.elements.historyReviewContinueBtn.dispatchEvent({ type: "click" });
+    await flushAsync();
+
+    assert.equal(posts, 0);
+    assert.equal(state.operation, null);
+    assert.equal(renderedModel().workingVisible, false);
+  });
+
 });

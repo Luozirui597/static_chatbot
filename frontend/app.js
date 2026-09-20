@@ -25,6 +25,12 @@
         "The pending review resumes with the teaching history that was " +
         "already frozen when it started. The completed report appears " +
         "here.",
+      retryTitle: "Retry this history review?",
+      retryBody:
+        "The previous attempt was interrupted. It may already have " +
+        "reached the model. Retrying sends the same frozen sources " +
+        "again, and a remote model may produce a duplicate call or " +
+        "cost. Continue only if you want to retry.",
     };
     try {
       if (typeof HISTORY_REVIEW_DIALOG_COPY === "object" &&
@@ -566,10 +572,14 @@
     historyReviewErrorEl.hidden = errorText ? false : true;
 
     const operationActive = state.operation !== null;
-    historyReviewStartBtn.disabled = operationActive;
+    const writeActionBlocked = operationActive || model.busy === true;
+    const retryAction = model.actionKind === "retry";
+    historyReviewStartBtn.disabled = writeActionBlocked;
     historyReviewDismissBtn.disabled = operationActive;
-    historyReviewContinueBtn.disabled = operationActive;
-    historyReviewRecheckBtn.disabled = operationActive || model.actionKind === "none";
+    historyReviewContinueBtn.disabled = writeActionBlocked;
+    historyReviewRecheckBtn.disabled = operationActive ||
+      model.actionKind === "none" ||
+      (retryAction && model.busy === true);
     historyReviewStartBtn.hidden = model.startVisible ? false : true;
     historyReviewDismissBtn.hidden = model.dismissVisible ? false : true;
     historyReviewContinueBtn.hidden = model.continueVisible ? false : true;
@@ -789,12 +799,17 @@
         // The heading is the confirmation question and the body explains
         // the operation; the two never repeat the same sentence.
         const isContinue = kind === "continue";
-        const dialogTitle = isContinue
-          ? historyReviewDialogCopy.continueTitle
-          : historyReviewDialogCopy.startTitle;
-        const message = isContinue
-          ? historyReviewDialogCopy.continueBody
-          : historyReviewDialogCopy.startBody;
+        const isRetry = kind === "retry";
+        const dialogTitle = isRetry
+          ? historyReviewDialogCopy.retryTitle
+          : (isContinue
+            ? historyReviewDialogCopy.continueTitle
+            : historyReviewDialogCopy.startTitle);
+        const message = isRetry
+          ? historyReviewDialogCopy.retryBody
+          : (isContinue
+            ? historyReviewDialogCopy.continueBody
+            : historyReviewDialogCopy.startBody);
         const confirmed = historyReviewStartConfirmer === null
           ? false
           : await confirmWithReviewFocus(
@@ -820,7 +835,9 @@
       };
       const outcome = kind === "recheck"
         ? await historyReviewController.recheck(operation)
-        : await historyReviewController.start(operation);
+        : (kind === "retry"
+          ? await historyReviewController.retry(operation)
+          : await historyReviewController.start(operation));
       const captured = {
         targetSessionId: sessionId, stateIdentity: state,
         epoch: reviewEpoch(sessionId), generation: generation,
@@ -914,7 +931,11 @@
       }
       return;
     }
-    if (model.actionKind === "recheck" && Number.isSafeInteger(model.actionEventId)) {
+    if (model.actionKind === "retry" &&
+        Number.isSafeInteger(model.actionEventId)) {
+      startHistoryReview("retry", model.actionEventId, historyReviewRecheckBtn);
+    } else if (model.actionKind === "recheck" &&
+               Number.isSafeInteger(model.actionEventId)) {
       startHistoryReview("recheck", model.actionEventId, historyReviewRecheckBtn);
     }
   }

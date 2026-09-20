@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select, update
+from sqlalchemy import text as sa_text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
@@ -29,13 +30,20 @@ from backend.exceptions import (
     HistoryReviewNoReviewableHistory,
     HistoryReviewRemoteAckRequired,
     HistoryReviewSessionNotFound,
+    LLMError,
     SessionProfileConflictError,
     SessionProfileUnavailableError,
 )
 from backend.history_boundary import HISTORY_BOUNDARY_VERSION
-from backend.history_review_prompt import HISTORY_REVIEW_SYSTEM_PROMPT
+from backend.history_review_stages import (
+    HISTORY_REVIEW_STAGE_1_SYSTEM_PROMPT,
+    HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT,
+    STAGE1_RESERVED_OUTPUT_TOKENS,
+    STAGE2_RESERVED_OUTPUT_TOKENS,
+)
 from backend.history_review_selection import HistoryReviewSourceMessageTooLarge
 from backend.history_review_service import (
+    HISTORY_REVIEW_EXECUTION_INTERRUPTED,
     HistoryReviewExecutionConflict,
     HistoryReviewExecutionNotFound,
     HistoryReviewService,
@@ -46,6 +54,7 @@ from backend.models import (
     ChatSession,
     HistoryReview,
     HistoryReviewFinding,
+    HistoryReviewSource,
     Message,
     ModeSwitchEvent,
     utc_now,
@@ -67,6 +76,8 @@ FORBIDDEN_KEYS = {
     "reviewer_llm_profile_kind_snapshot",
     "reviewer_llm_model_snapshot",
     "prompt_version_snapshot",
+    "pipeline_version",
+    "attempts",
     "budget_version_snapshot",
     "selection_policy_version",
     "remote_history_acknowledged",
@@ -75,44 +86,132 @@ FORBIDDEN_KEYS = {
 }
 
 
-def _valid_review_json(messages) -> str:
+def _history_review_stage(messages) -> str | None:
+    """Classify a request as chat, Stage 1, or Stage 2.
+
+    Repair retries reuse the frozen Stage prompt but append a suffix
+    after a newline, so a strict prefix boundary is sufficient.
+    """
+    if not messages:
+        return None
+    system = messages[0].get("content")
+    if not isinstance(system, str):
+        return None
+    if (
+        system == HISTORY_REVIEW_STAGE_1_SYSTEM_PROMPT
+        or system.startswith(HISTORY_REVIEW_STAGE_1_SYSTEM_PROMPT + "\n")
+    ):
+        return "stage1"
+    if (
+        system == HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT
+        or system.startswith(HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT + "\n")
+    ):
+        return "stage2"
+    return None
+
+
+_HISTORY_REVIEW_BASE_PROMPTS = {
+    "stage1": HISTORY_REVIEW_STAGE_1_SYSTEM_PROMPT,
+    "stage2": HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT,
+}
+
+
+def _default_stage1_response(messages) -> str:
     user_data = json.loads(messages[1]["content"])
-    findings = []
+    sources = []
     for source in user_data["sources"]:
-        findings.append({
+        content = source["content"]
+        quote = content.strip()[:256]
+        claims = []
+        if quote:
+            claims.append({
+                "claim_text": quote,
+                "source_quote": quote,
+            })
+        sources.append({
             "source_message_id": source["source_message_id"],
-            "verdict": "correct",
-            "claim_text": "claim text",
-            "correction_text": None,
-            "explanation_text": None,
+            "claims": claims,
         })
     return json.dumps({
-        "summary": "review summary",
-        "coverage_note": None,
-        "findings": findings,
+        "overflow": False,
+        "sources": sources,
+    }, ensure_ascii=False)
+
+
+def _default_stage2_response(messages) -> str:
+    user_data = json.loads(messages[1]["content"])
+    return json.dumps({
+        "claims": [
+            {
+                "claim_id": claim["claim_id"],
+                "verdict": "correct",
+                "correction_text": None,
+                "explanation_text": None,
+            }
+            for claim in user_data["claims"]
+        ],
     }, ensure_ascii=False)
 
 
 class ApiSpyLLM:
     def __init__(self) -> None:
-        self.calls: list[list[dict]] = []
+        self.calls: list[dict] = []
         self.chat_response = "chat reply"
         self.review_response: Any = None
         self.review_error: Exception | None = None
+        self.chat_calls = 0
         self.review_calls = 0
+        self.stage1_calls = 0
+        self.stage2_calls = 0
+        self.repair_calls = 0
 
-    async def generate(self, messages):
-        self.calls.append(copy.deepcopy(messages))
-        if messages and messages[0]["content"] == HISTORY_REVIEW_SYSTEM_PROMPT:
-            self.review_calls += 1
-            if self.review_error is not None:
-                raise self.review_error
-            if self.review_response is not None:
-                if callable(self.review_response):
-                    return self.review_response(messages)
-                return self.review_response
-            return _valid_review_json(messages)
-        return self.chat_response
+    async def generate(
+        self,
+        messages,
+        *,
+        response_format=None,
+        temperature=None,
+        max_tokens=None,
+    ):
+        stage = _history_review_stage(messages)
+        base_prompt = _HISTORY_REVIEW_BASE_PROMPTS.get(stage)
+        is_repair = bool(
+            base_prompt is not None
+            and messages
+            and messages[0]["content"] != base_prompt
+        )
+        self.calls.append({
+            "messages": copy.deepcopy(messages),
+            "stage": stage,
+            "repair": is_repair,
+            "response_format": response_format,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        })
+
+        if stage is None:
+            self.chat_calls += 1
+            if callable(self.chat_response):
+                return self.chat_response(messages)
+            return self.chat_response
+
+        self.review_calls += 1
+        if stage == "stage1":
+            self.stage1_calls += 1
+        else:
+            self.stage2_calls += 1
+        if is_repair:
+            self.repair_calls += 1
+
+        if self.review_error is not None:
+            raise self.review_error
+        if self.review_response is not None:
+            if callable(self.review_response):
+                return self.review_response(messages)
+            return self.review_response
+        if stage == "stage1":
+            return _default_stage1_response(messages)
+        return _default_stage2_response(messages)
 
 
 @dataclass
@@ -258,13 +357,17 @@ def _post_review(
     event_id: int,
     *,
     acknowledge: bool = False,
+    retry_failed: bool = False,
 ):
+    payload = {
+        "mode_switch_event_id": event_id,
+        "acknowledge_remote_history": acknowledge,
+    }
+    if retry_failed:
+        payload["retry_failed"] = True
     return harness.client.post(
         f"/api/sessions/{session_id}/history-reviews",
-        json={
-            "mode_switch_event_id": event_id,
-            "acknowledge_remote_history": acknowledge,
-        },
+        json=payload,
     )
 
 
@@ -278,6 +381,24 @@ def _all_keys(value: Any) -> set[str]:
         for item in value:
             keys |= _all_keys(item)
     return keys
+
+
+def _expected_summary(
+    *, correct=0, incorrect=0, uncertain=0, no_claim=0,
+):
+    factual = correct + incorrect + uncertain
+    return (
+        f"Reviewed {factual} factual claims: {correct} correct, "
+        f"{incorrect} incorrect, {uncertain} uncertain; {no_claim} "
+        f"source(s) contained no verifiable factual claim."
+    )
+
+
+def _review_call_records(harness: ApiHarness) -> list[dict]:
+    return [
+        call for call in harness.spy.calls
+        if call["stage"] is not None
+    ]
 
 
 def _seed_cross_profile_source(harness: ApiHarness) -> tuple[int, int]:
@@ -336,8 +457,11 @@ def test_post_creates_review_returns_201_and_detail(api_harness):
     assert body["findings"][0]["seq"] == 1
     assert body["findings"][0]["source_message_id"] == user_message["id"]
     assert body["findings"][0]["verdict"] == "correct"
-    assert body["summary"] == "review summary"
-    assert api_harness.spy.review_calls == 1
+    assert body["findings"][0]["claim_text"] == "teaching claim"
+    assert body["summary"] == _expected_summary(correct=1)
+    assert api_harness.spy.review_calls == 2
+    assert api_harness.spy.stage1_calls == 1
+    assert api_harness.spy.stage2_calls == 1
 
 
 def test_post_reuses_review_returns_200_without_extra_llm(api_harness):
@@ -350,7 +474,7 @@ def test_post_reuses_review_returns_200_without_extra_llm(api_harness):
     assert second.status_code == 200
     assert second.json()["id"] == first.json()["id"]
     assert second.json()["findings"] == first.json()["findings"]
-    assert api_harness.spy.review_calls == 1
+    assert api_harness.spy.review_calls == 2
 
 
 def test_post_existing_pending_executes_without_creating_new_review(
@@ -389,7 +513,7 @@ def test_post_existing_pending_executes_without_creating_new_review(
     assert second.json()["id"] == review_id, second.json()
     assert second.json()["status"] == "completed", second.json()
     assert second.json()["findings_count"] == 1
-    assert api_harness.spy.review_calls == 2
+    assert api_harness.spy.review_calls == 4
 
 
 def test_post_running_idempotent_without_llm(api_harness):
@@ -416,7 +540,7 @@ def test_post_running_idempotent_without_llm(api_harness):
     body = response.json()
     assert body["status"] == "running"
     assert body["findings"] == []
-    assert api_harness.spy.review_calls == 1
+    assert api_harness.spy.review_calls == 2
 
 
 def test_post_failed_idempotent_without_retry(api_harness):
@@ -455,7 +579,7 @@ def test_post_failed_idempotent_without_retry(api_harness):
     assert body["status"] == "failed"
     assert body["error_code"] == "history_review_llm_upstream_error"
     assert body["findings"] == []
-    assert api_harness.spy.review_calls == 1
+    assert api_harness.spy.review_calls == 2
 
 
 def test_post_execution_failed_is_normal_review_body(api_harness):
@@ -467,9 +591,19 @@ def test_post_execution_failed_is_normal_review_body(api_harness):
     assert response.status_code == 201
     body = response.json()
     assert body["status"] == "failed"
-    assert body["error_code"] == "history_review_json_syntax_error"
+    assert body["error_code"] == (
+        "history_review_extraction_json_syntax_error"
+    )
     assert body["findings"] == []
     assert body["findings_count"] == 0
+    assert api_harness.spy.review_calls == 2
+    assert api_harness.spy.stage1_calls == 2
+    assert api_harness.spy.stage2_calls == 0
+    assert api_harness.spy.repair_calls == 1
+    assert [
+        (record["stage"], record["repair"])
+        for record in _review_call_records(api_harness)
+    ] == [("stage1", False), ("stage1", True)]
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +625,7 @@ def test_get_list_returns_summaries_without_findings(api_harness):
     assert body[0]["findings_count"] == 1
     assert "findings" not in body[0]
     assert body[0]["id"] == created["id"]
+    assert api_harness.spy.review_calls == 2
 
 
 def test_get_detail_returns_findings_and_matching_count(api_harness):
@@ -506,6 +641,7 @@ def test_get_detail_returns_findings_and_matching_count(api_harness):
     assert body["findings_count"] == len(body["findings"])
     assert [f["seq"] for f in body["findings"]] == [1]
     assert body["findings"][0]["source_message_id"] == user_message["id"]
+    assert api_harness.spy.review_calls == 2
 
 
 def test_post_body_and_get_detail_match_after_refresh(api_harness):
@@ -603,6 +739,8 @@ def test_positive_review_path_validation(api_harness, bad_review_id):
         {"mode_switch_event_id": "1"},
         {"mode_switch_event_id": 1, "acknowledge_remote_history": "false"},
         {"mode_switch_event_id": 1, "acknowledge_remote_history": 1},
+        {"mode_switch_event_id": 1, "retry_failed": "true"},
+        {"mode_switch_event_id": 1, "retry_failed": 1},
         {
             "mode_switch_event_id": 1,
             "acknowledge_remote_history": False,
@@ -792,7 +930,7 @@ def test_ack_required_then_acknowledged(api_harness):
     assert accepted.status_code == 201
     assert accepted.json()["status"] == "completed"
     assert accepted.json()["findings_count"] == 1
-    assert api_harness.spy.review_calls == 1
+    assert api_harness.spy.review_calls == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1112,3 +1250,493 @@ def test_mode_switch_event_response_requires_explicit_boolean():
             reviewable_user_message_count=1,
             review_supported=1,
         )
+
+
+def test_zero_claim_http_path_skips_stage2(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+
+    def zero_claim_response(messages):
+        assert _history_review_stage(messages) == "stage1"
+        user_data = json.loads(messages[1]["content"])
+        return json.dumps({
+            "overflow": False,
+            "sources": [
+                {
+                    "source_message_id": source["source_message_id"],
+                    "claims": [],
+                }
+                for source in user_data["sources"]
+            ],
+        }, ensure_ascii=False)
+
+    api_harness.spy.review_response = zero_claim_response
+
+    response = _post_review(api_harness, session_id, event["id"])
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["findings_count"] == 1
+    assert body["findings"][0]["source_message_id"] == user_message["id"]
+    assert body["findings"][0]["verdict"] == "not_a_claim"
+    assert body["findings"][0]["claim_text"] == "teaching claim"
+    assert api_harness.spy.review_calls == 1
+    assert api_harness.spy.stage1_calls == 1
+    assert api_harness.spy.stage2_calls == 0
+    assert not (_all_keys(body) & FORBIDDEN_KEYS)
+
+
+def test_chat_and_review_calls_are_classified_separately(api_harness):
+    session_id = _create_session(api_harness.client)
+
+    chat_body = _send_message(api_harness.client, session_id, "hello there")
+
+    assert chat_body["assistant_message"]["content"] == (
+        api_harness.spy.chat_response
+    )
+    assert api_harness.spy.chat_calls == 1
+    assert api_harness.spy.review_calls == 0
+
+    event = _switch_to_corrective(
+        api_harness.client, session_id
+    )["switch_event"]
+    assert api_harness.spy.chat_calls == 1
+    assert api_harness.spy.review_calls == 0
+
+    response = _post_review(api_harness, session_id, event["id"])
+
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "completed"
+    assert api_harness.spy.chat_calls == 1
+    assert api_harness.spy.review_calls == 2
+    assert api_harness.spy.stage1_calls == 1
+    assert api_harness.spy.stage2_calls == 1
+    assert [call["stage"] for call in api_harness.spy.calls] == [
+        None,
+        "stage1",
+        "stage2",
+    ]
+    assert [call["repair"] for call in api_harness.spy.calls] == [
+        False,
+        False,
+        False,
+    ]
+
+
+def test_api_review_call_options_match_pipeline(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+
+    response = _post_review(api_harness, session_id, event["id"])
+
+    assert response.status_code == 201, response.text
+    review_records = _review_call_records(api_harness)
+    assert [record["stage"] for record in review_records] == [
+        "stage1",
+        "stage2",
+    ]
+    assert all(record["repair"] is False for record in review_records)
+    assert [record["response_format"] for record in review_records] == [
+        {"type": "json_object"},
+        {"type": "json_object"},
+    ]
+    assert [record["temperature"] for record in review_records] == [0, 0]
+    assert review_records[0]["max_tokens"] == (
+        STAGE1_RESERVED_OUTPUT_TOKENS
+    )
+    assert review_records[1]["max_tokens"] == (
+        STAGE2_RESERVED_OUTPUT_TOKENS
+    )
+    assert api_harness.spy.review_calls == 2
+
+
+def test_stage2_repair_success_end_to_end(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    stage2_attempts = []
+
+    def respond(messages):
+        stage = _history_review_stage(messages)
+        assert stage is not None
+        if stage == "stage1":
+            return _default_stage1_response(messages)
+        stage2_attempts.append(messages)
+        if len(stage2_attempts) == 1:
+            return "not json"
+        user_data = json.loads(messages[1]["content"])
+        return json.dumps({
+            "claims": [
+                {
+                    "claim_id": claim["claim_id"],
+                    "verdict": "correct",
+                    "correction_text": None,
+                    "explanation_text": None,
+                }
+                for claim in user_data["claims"]
+            ],
+        }, ensure_ascii=False)
+
+    api_harness.spy.review_response = respond
+
+    response = _post_review(api_harness, session_id, event["id"])
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["findings_count"] == 1
+    assert body["findings"][0]["verdict"] == "correct"
+    assert api_harness.spy.review_calls == 3
+    assert api_harness.spy.stage1_calls == 1
+    assert api_harness.spy.stage2_calls == 2
+    assert api_harness.spy.repair_calls == 1
+
+    records = _review_call_records(api_harness)
+    assert [(record["stage"], record["repair"]) for record in records] == [
+        ("stage1", False),
+        ("stage2", False),
+        ("stage2", True),
+    ]
+    assert records[1]["messages"][1]["content"] == (
+        records[2]["messages"][1]["content"]
+    )
+    assert records[2]["messages"][0]["content"].startswith(
+        HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT + "\n"
+    )
+    assert not (_all_keys(body) & FORBIDDEN_KEYS)
+    assert "raw_output" not in response.text
+
+
+def test_review_llm_error_fails_on_first_call_without_retry(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    api_harness.spy.review_error = LLMError(
+        detail="upstream boom", status_code=502,
+    )
+
+    response = _post_review(api_harness, session_id, event["id"])
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "history_review_llm_upstream_error"
+    assert body["findings"] == []
+    assert body["findings_count"] == 0
+    assert api_harness.spy.review_calls == 1
+    assert api_harness.spy.stage1_calls == 1
+    assert api_harness.spy.stage2_calls == 0
+
+
+def test_public_review_json_does_not_leak_audit_values(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    created = _post_review(api_harness, session_id, event["id"]).json()
+    list_body = api_harness.client.get(
+        f"/api/sessions/{session_id}/history-reviews"
+    ).json()
+    detail_body = api_harness.client.get(
+        f"/api/sessions/{session_id}/history-reviews/{created['id']}"
+    ).json()
+
+    public_text = json.dumps(
+        [created, list_body, detail_body], ensure_ascii=False
+    )
+    with api_harness.session_factory() as db:
+        stored_raw = db.get(HistoryReview, created["id"]).raw_output
+
+    assert stored_raw is not None
+    assert stored_raw not in public_text
+    assert "history-review-pipeline-v1" not in public_text
+    assert HISTORY_REVIEW_STAGE_1_SYSTEM_PROMPT not in public_text
+    assert HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT not in public_text
+    assert "raw_output" not in public_text
+    assert "attempts" not in public_text
+    assert "api_key" not in public_text
+    assert "base_url" not in public_text
+
+
+def _mark_review_interrupted(harness, review_id, *, attempt_count=1):
+    now = utc_now()
+    with harness.session_factory() as db:
+        db.execute(
+            update(HistoryReview)
+            .where(HistoryReview.id == review_id)
+            .values(
+                status="failed",
+                error_code=HISTORY_REVIEW_EXECUTION_INTERRUPTED,
+                error_message="History review execution was interrupted.",
+                summary=None,
+                coverage_note=None,
+                raw_output=None,
+                raw_output_truncated=False,
+                attempt_count=attempt_count,
+                started_at=now,
+                completed_at=now,
+                updated_at=now,
+            )
+        )
+        db.execute(
+            delete(HistoryReviewFinding).where(
+                HistoryReviewFinding.review_id == review_id
+            )
+        )
+        db.commit()
+
+
+def _review_row(harness, review_id):
+    with harness.session_factory() as db:
+        return db.get(HistoryReview, review_id)
+
+
+def _source_count(harness, review_id):
+    with harness.session_factory() as db:
+        return db.execute(
+            select(func.count())
+            .select_from(HistoryReviewSource)
+            .where(HistoryReviewSource.review_id == review_id)
+        ).scalar()
+
+
+def _finding_count(harness, review_id):
+    with harness.session_factory() as db:
+        return db.execute(
+            select(func.count())
+            .select_from(HistoryReviewFinding)
+            .where(HistoryReviewFinding.review_id == review_id)
+        ).scalar()
+
+
+def test_post_retry_no_existing_review_returns_409(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+
+    response = _post_review(
+        api_harness, session_id, event["id"], retry_failed=True,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == (
+        "history_review_retry_not_allowed"
+    )
+    assert api_harness.spy.review_calls == 0
+    with api_harness.session_factory() as db:
+        assert db.execute(
+            select(func.count()).select_from(HistoryReview)
+        ).scalar() == 0
+
+
+def test_post_retry_other_failed_returns_409_and_keeps_state(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    api_harness.spy.review_response = "not json"
+    first = _post_review(api_harness, session_id, event["id"])
+    assert first.status_code == 201
+    review_id = first.json()["id"]
+    calls_before = api_harness.spy.review_calls
+    row_before = _review_row(api_harness, review_id)
+
+    response = _post_review(
+        api_harness, session_id, event["id"], retry_failed=True,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == (
+        "history_review_retry_not_allowed"
+    )
+    assert api_harness.spy.review_calls == calls_before
+    row_after = _review_row(api_harness, review_id)
+    assert row_after.status == "failed"
+    assert row_after.error_code == "history_review_extraction_json_syntax_error"
+    assert row_after.attempt_count == row_before.attempt_count
+
+
+def test_post_retry_interrupted_reuses_review_and_source_rows(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    first = _post_review(api_harness, session_id, event["id"])
+    assert first.status_code == 201
+    review_id = first.json()["id"]
+    source_count_before = _source_count(api_harness, review_id)
+    _mark_review_interrupted(api_harness, review_id)
+    calls_before = api_harness.spy.review_calls
+
+    response = _post_review(
+        api_harness, session_id, event["id"], retry_failed=True,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == review_id
+    assert body["status"] == "completed"
+    assert body["findings_count"] == 1
+    assert api_harness.spy.review_calls == calls_before + 2
+    row = _review_row(api_harness, review_id)
+    assert row.status == "completed"
+    assert row.attempt_count == 2
+    assert _source_count(api_harness, review_id) == source_count_before
+    assert _finding_count(api_harness, review_id) == 1
+    assert not (_all_keys(body) & FORBIDDEN_KEYS)
+    with api_harness.session_factory() as db:
+        stored_raw = db.get(HistoryReview, review_id).raw_output
+    assert stored_raw is not None
+    assert stored_raw not in response.text
+    assert "history-review-pipeline-v1" not in response.text
+    assert HISTORY_REVIEW_STAGE_1_SYSTEM_PROMPT not in response.text
+    assert HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT not in response.text
+    assert "raw_output" not in response.text
+    assert "api_key" not in response.text
+    assert "base_url" not in response.text
+
+
+def test_post_retry_completed_is_noop(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    first = _post_review(api_harness, session_id, event["id"])
+    assert first.status_code == 201
+    review_id = first.json()["id"]
+    calls_before = api_harness.spy.review_calls
+
+    response = _post_review(
+        api_harness, session_id, event["id"], retry_failed=True,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == review_id
+    assert response.json()["status"] == "completed"
+    assert api_harness.spy.review_calls == calls_before
+    assert _review_row(api_harness, review_id).attempt_count == 1
+
+
+def test_post_retry_running_and_pending_are_authoritative_noops(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    first = _post_review(api_harness, session_id, event["id"])
+    review_id = first.json()["id"]
+
+    with api_harness.session_factory() as db:
+        db.execute(
+            update(HistoryReview)
+            .where(HistoryReview.id == review_id)
+            .values(status="running", started_at=utc_now())
+        )
+        db.commit()
+    calls_before = api_harness.spy.review_calls
+
+    running = _post_review(
+        api_harness, session_id, event["id"], retry_failed=True,
+    )
+    assert running.status_code == 200, running.text
+    assert running.json()["status"] == "running"
+    assert api_harness.spy.review_calls == calls_before
+
+    with api_harness.session_factory() as db:
+        db.execute(
+            update(HistoryReview)
+            .where(HistoryReview.id == review_id)
+            .values(
+                status="pending",
+                started_at=None,
+                completed_at=None,
+                summary=None,
+                coverage_note=None,
+                raw_output=None,
+                raw_output_truncated=False,
+                error_code=None,
+                error_message=None,
+            )
+        )
+        db.commit()
+    calls_before = api_harness.spy.review_calls
+
+    pending = _post_review(
+        api_harness, session_id, event["id"], retry_failed=True,
+    )
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["status"] == "pending"
+    assert api_harness.spy.review_calls == calls_before
+
+
+def test_get_list_and_detail_are_read_only(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    created = _post_review(api_harness, session_id, event["id"]).json()
+    review_id = created["id"]
+    calls_before = api_harness.spy.review_calls
+
+    with api_harness.engine.begin() as conn:
+        conn.execute(sa_text(
+            "CREATE TRIGGER fail_review_update "
+            "BEFORE UPDATE ON history_reviews "
+            "BEGIN SELECT RAISE(FAIL, 'review update must not happen'); END"
+        ))
+    try:
+        list_response = api_harness.client.get(
+            f"/api/sessions/{session_id}/history-reviews"
+        )
+        detail_response = api_harness.client.get(
+            f"/api/sessions/{session_id}/history-reviews/{review_id}"
+        )
+    finally:
+        with api_harness.engine.begin() as conn:
+            conn.execute(sa_text("DROP TRIGGER IF EXISTS fail_review_update"))
+
+    assert list_response.status_code == 200, list_response.text
+    assert detail_response.status_code == 200, detail_response.text
+    assert api_harness.spy.review_calls == calls_before
+    assert detail_response.json()["id"] == review_id
+
+
+@pytest.mark.anyio
+async def test_lifespan_recovers_abandoned_running_without_llm(
+    api_harness, monkeypatch,
+):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    created = _post_review(api_harness, session_id, event["id"]).json()
+    review_id = created["id"]
+    with api_harness.session_factory() as db:
+        db.execute(
+            update(HistoryReview)
+            .where(HistoryReview.id == review_id)
+            .values(
+                status="running",
+                error_code=None,
+                error_message=None,
+                started_at=utc_now(),
+                completed_at=None,
+            )
+        )
+        db.commit()
+    calls_before = api_harness.spy.review_calls
+
+    monkeypatch.setattr(main_module, "create_tables", lambda: None)
+    monkeypatch.setattr(
+        main_module, "run_migrations", lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        main_module, "SessionLocal", api_harness.session_factory,
+    )
+
+    async with main_module.lifespan(main_module.app):
+        pass
+
+    row = _review_row(api_harness, review_id)
+    assert row.status == "failed"
+    assert row.error_code == HISTORY_REVIEW_EXECUTION_INTERRUPTED
+    assert row.summary is None
+    assert row.raw_output is None
+    assert _finding_count(api_harness, review_id) == 0
+    assert api_harness.spy.review_calls == calls_before
+
+
+@pytest.mark.anyio
+async def test_lifespan_recovery_failure_fails_fast(
+    api_harness, monkeypatch,
+):
+    def _raise(db):
+        raise SQLAlchemyError("simulated startup recovery failure")
+
+    monkeypatch.setattr(
+        api_harness.history_review_service,
+        "recover_abandoned_running_reviews",
+        _raise,
+    )
+    monkeypatch.setattr(main_module, "create_tables", lambda: None)
+    monkeypatch.setattr(
+        main_module, "run_migrations", lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        main_module, "SessionLocal", api_harness.session_factory,
+    )
+
+    with pytest.raises(SQLAlchemyError, match="startup recovery failure"):
+        async with main_module.lifespan(main_module.app):
+            pass
