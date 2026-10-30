@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -574,9 +575,32 @@ def _history_review_error(
     )
 
 
+def _log_history_review_internal_error_safely() -> None:
+    """Log bounded metadata for an internal error without a traceback."""
+    try:
+        exc = sys.exc_info()[1]
+        name = (
+            type(exc).__name__
+            if exc is not None
+            else "unknown"
+        )
+        if not isinstance(name, str) or not name:
+            name = "unknown"
+        safe_name = "".join(
+            char for char in name[:64]
+            if char.isalnum() or char == "_"
+        ) or "unknown"
+        logger.error(
+            "history_review_internal_error exception_type=%s",
+            safe_name,
+        )
+    except Exception:
+        return
+
+
 def _history_review_internal_error(db: Session) -> HTTPException:
     db.rollback()
-    logger.exception("Unexpected history review internal error")
+    _log_history_review_internal_error_safely()
     return _history_review_error(
         500,
         "history_review_internal_error",

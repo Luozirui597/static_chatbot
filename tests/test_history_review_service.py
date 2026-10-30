@@ -60,6 +60,7 @@ class SpyClient:
         response_format=None,
         temperature=None,
         max_tokens=None,
+        diagnostics=None,
     ):
         self.calls += 1
         return "unused"
@@ -652,7 +653,7 @@ class TestReviewerProfile:
             HISTORY_REVIEW_PIPELINE_VERSION
         )
         assert result.review.prompt_version_snapshot == (
-            "history-review-pipeline-v1"
+            "history-review-pipeline-v2"
         )
         assert result.review.budget_version_snapshot == (
             HISTORY_REVIEW_BUDGET_VERSION

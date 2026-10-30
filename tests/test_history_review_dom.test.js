@@ -195,9 +195,9 @@ describe("history review DOM contract", function () {
 
   it("bumps the style and app cache-busting query", function () {
     assert.equal(
-      indexHtml.includes('style.css?v=20260914-history-review3'), true);
+      indexHtml.includes('style.css?v=20261001-markdown1'), true);
     assert.equal(
-      indexHtml.includes('app.js?v=20260914-history-review3'), true);
+      indexHtml.includes('app.js?v=20261001-markdown1'), true);
     // app.js depends on the confirmer's setTitle support, so the module
     // that carries it must be cache-busted too.
     assert.equal(

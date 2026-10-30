@@ -1782,7 +1782,33 @@
   }
 
   /**
-   * Append a single message bubble using textContent (XSS-safe).
+   * Try to render an assistant message through the isolated Markdown
+   * renderer.  Returns true only when the renderer reports success.  A
+   * missing module, a renderer exception or a false result all leave
+   * the caller on the plain-text fallback path.
+   */
+  function applyAssistantMarkdown(contentDiv, content) {
+    var renderer = window.TeachableMarkdownRenderer;
+    if (renderer === null || renderer === undefined) return false;
+
+    var apply = renderer.apply;
+    if (typeof apply === "function") {
+      try {
+        return apply.call(renderer, contentDiv, content) === true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Append a single message bubble.
+   *
+   * Assistant messages are rendered from Markdown by the vendored
+   * markdown-renderer module.  User messages and any renderer failure
+   * use textContent, preserving exact plain-text newlines.
    *
    * Removes the welcome / empty-state placeholder on the first real
    * message so it never coexists with message bubbles.
@@ -1795,7 +1821,12 @@
 
     var contentDiv = document.createElement("div");
     contentDiv.className = "message-content";
-    contentDiv.textContent = content;
+    var assistantRendered = role === "assistant" &&
+      applyAssistantMarkdown(contentDiv, content);
+    if (assistantRendered === false) {
+      contentDiv.classList.remove("message-content--markdown");
+      contentDiv.textContent = content;
+    }
 
     wrapper.appendChild(contentDiv);
 

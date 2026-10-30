@@ -6,25 +6,39 @@ real network requests are ever made.
 
 import asyncio
 import copy
+import json
+import logging
 from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
+import backend.chat_service as chat_service_module
 from backend.chat_service import (
     MAX_HISTORY_MESSAGES,
     ChatService,
     SessionLockRegistry,
     SessionNotFoundError,
+    _project_history_for_mode,
+    _serialize_receive_teaching_history,
 )
-from backend.interaction_modes import RECEIVE_TEACHING_PROMPT
+from backend.interaction_modes import (
+    CORRECTIVE_MODE,
+    CORRECTIVE_PROMPT,
+    CORRECTIVE_PROMPT_VERSION,
+    RECEIVE_TEACHING_HISTORY_CONTEXT_VERSION,
+    RECEIVE_TEACHING_MODE,
+    RECEIVE_TEACHING_PROMPT,
+    RECEIVE_TEACHING_PROMPT_VERSION,
+)
 from backend.database import create_database_engine, create_tables
 from backend.exceptions import (
     LLMError,
     LLMInvalidResponseError,
     UnknownLLMProfileError,
 )
+from backend.review_diagnostics import ErrorCategory, LLMCallDiagnostics
 from backend.llm_client import LLMMessage
 from backend.llm_profiles import SessionProfileStatus
 from backend.models import ChatSession, Message
@@ -56,10 +70,51 @@ class SpyLLMClient:
         self.response = response
         self.error = error
 
-    async def generate(self, messages: list[LLMMessage]) -> str:
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        *,
+        response_format=None,
+        temperature=None,
+        max_tokens=None,
+        diagnostics=None,
+    ) -> str:
         self.calls.append(copy.deepcopy(messages))
         if self.error is not None:
             raise self.error
+        return self.response
+
+
+class KwargSpyLLMClient:
+    """Spy that records exactly which generate options were supplied."""
+
+    _UNSET = object()
+
+    def __init__(self, response: str = "test reply") -> None:
+        self.calls: list[list[LLMMessage]] = []
+        self.generate_kwargs: list[dict[str, object]] = []
+        self.response = response
+
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        *,
+        response_format=_UNSET,
+        temperature=_UNSET,
+        max_tokens=_UNSET,
+        diagnostics=_UNSET,
+    ) -> str:
+        self.calls.append(copy.deepcopy(messages))
+        supplied = {}
+        for name, value in (
+            ("response_format", response_format),
+            ("temperature", temperature),
+            ("max_tokens", max_tokens),
+            ("diagnostics", diagnostics),
+        ):
+            if value is not self._UNSET:
+                supplied[name] = value
+        self.generate_kwargs.append(supplied)
         return self.response
 
 
@@ -117,6 +172,19 @@ def _create_session(db_session_ref) -> ChatSession:
     return s
 
 
+def _chat_failure_payloads(caplog) -> list[dict]:
+    """Return decoded chat failure payloads from caplog records."""
+    payloads = []
+    prefix = "chat_llm_failure "
+    for record in caplog.records:
+        if record.name != "backend.chat_service":
+            continue
+        message = record.getMessage()
+        if message.startswith(prefix):
+            payloads.append(json.loads(message[len(prefix):]))
+    return payloads
+
+
 def _add_messages(
     db_session_ref,
     session_id: int,
@@ -135,6 +203,23 @@ def _add_messages(
             )
         )
     db_session_ref.commit()
+
+
+def _decode_receive_history_background(messages):
+    """Decode the one background block from a Receive history call."""
+    assert [m["role"] for m in messages] == ["system", "user", "user"]
+    background = messages[1]
+    assert background["role"] == "user"
+    payload = json.loads(background["content"])
+    assert payload["type"] == "receive_teaching_history_background"
+    assert payload["version"] == RECEIVE_TEACHING_HISTORY_CONTEXT_VERSION
+    assert isinstance(payload["note"], str)
+    assert payload["note"] != ""
+    items = payload["messages"]
+    assert [item["index"] for item in items] == list(
+        range(1, len(items) + 1)
+    )
+    return [item["content"] for item in items]
 
 
 # ============================================================================
@@ -275,8 +360,8 @@ class TestHandleSessionMessageBasic:
 
 class TestMultiTurnHistory:
     @pytest.mark.anyio
-    async def test_second_round_includes_first_round(self, db_session, spy_llm):
-        """Round 2 sends first round's user + assistant as context."""
+    async def test_second_round_includes_first_round_user_only(self, db_session, spy_llm):
+        """Receive Round 2 sends Round 1 user history but no assistant."""
         chat_session = _create_session(db_session)
         service = ChatService(spy_llm)
 
@@ -285,11 +370,15 @@ class TestMultiTurnHistory:
         # Round 2
         await service.handle_session_message(chat_session.id, "q2", db_session)
 
+        assert len(spy_llm.calls) == 2
         msgs = spy_llm.calls[1]
-        roles = [m["role"] for m in msgs]
-        contents = [m["content"] for m in msgs]
-        assert roles == ["system", "user", "assistant", "user"]
-        assert contents == [RECEIVE_TEACHING_PROMPT, "q1", "test reply", "q2"]
+        assert [m["role"] for m in msgs] == ["system", "user", "user"]
+        assert msgs[0] == {
+            "role": "system",
+            "content": RECEIVE_TEACHING_PROMPT,
+        }
+        assert msgs[-1] == {"role": "user", "content": "q2"}
+        assert _decode_receive_history_background(msgs) == ["q1"]
 
     @pytest.mark.anyio
     async def test_history_ordered_by_id_asc(self, db_session, spy_llm):
@@ -304,10 +393,57 @@ class TestMultiTurnHistory:
 
         await service.handle_session_message(chat_session.id, "q4", db_session)
 
-        # Non-system messages in order
-        msgs = spy_llm.calls[0][1:]  # skip system
-        contents = [m["content"] for m in msgs]
-        assert contents == ["q1", "a1", "q2", "a2", "q3", "a3", "q4"]
+        msgs = spy_llm.calls[0]
+        assert [m["role"] for m in msgs] == ["system", "user", "user"]
+        assert msgs[-1] == {"role": "user", "content": "q4"}
+        assert _decode_receive_history_background(msgs) == [
+            "q1",
+            "q2",
+            "q3",
+        ]
+
+    @pytest.mark.anyio
+    async def test_receive_background_round_trips_tricky_content(
+        self, db_session, spy_llm,
+    ):
+        raw_history = "第一行\n第二行\r\n引号\" 反斜杠\\ 花括号{}"
+        chat_session = _create_session(db_session)
+        _add_messages(
+            db_session,
+            chat_session.id,
+            [(raw_history, "a1")],
+        )
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, "current request", db_session,
+        )
+
+        assert len(spy_llm.calls) == 1
+        msgs = spy_llm.calls[0]
+        assert msgs[-1] == {"role": "user", "content": "current request"}
+        assert _decode_receive_history_background(msgs) == [raw_history]
+
+    @pytest.mark.anyio
+    async def test_receive_background_is_session_scoped(
+        self, db_session, spy_llm,
+    ):
+        session_a = _create_session(db_session)
+        session_b = _create_session(db_session)
+        _add_messages(db_session, session_a.id, [("qa1", "aa1")])
+        _add_messages(db_session, session_b.id, [("qb1", "ab1")])
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(session_a.id, "qa2", db_session)
+        await service.handle_session_message(session_b.id, "qb2", db_session)
+
+        assert len(spy_llm.calls) == 2
+        session_b_call = spy_llm.calls[1]
+        assert session_b_call[-1] == {"role": "user", "content": "qb2"}
+        assert _decode_receive_history_background(session_b_call) == ["qb1"]
+        assert "qa1" not in session_b_call[1]["content"]
+
+
 
     @pytest.mark.anyio
     async def test_max_20_history_messages(self, db_session, spy_llm):
@@ -320,9 +456,16 @@ class TestMultiTurnHistory:
 
         await service.handle_session_message(chat_session.id, "current", db_session)
 
-        non_system = spy_llm.calls[0][1:]  # skip system prompt
-        # 20 history + 1 current user = 21 non-system messages
-        assert len(non_system) == MAX_HISTORY_MESSAGES + 1
+        assert len(spy_llm.calls) == 1
+        msgs = spy_llm.calls[0]
+        # Query keeps the last 20 stored rows, then Receive projection
+        # removes all assistant rows.  With 25 pairs, the window starts
+        # at q15 and yields 10 historical user rows plus the current message.
+        assert [m["role"] for m in msgs] == ["system", "user", "user"]
+        assert msgs[-1] == {"role": "user", "content": "current"}
+        assert _decode_receive_history_background(msgs) == [
+            f"q{i}" for i in range(15, 25)
+        ]
 
     @pytest.mark.anyio
     async def test_current_user_not_counted_in_history_limit(self, db_session, spy_llm):
@@ -335,11 +478,15 @@ class TestMultiTurnHistory:
 
         await service.handle_session_message(chat_session.id, "current", db_session)
 
-        non_system = spy_llm.calls[0][1:]
-        # 20 history + 1 current = 21
-        assert len(non_system) == 21
+        msgs = spy_llm.calls[0]
+        # 20 stored history rows -> 10 historical user rows after
+        # projection, plus the current user message.
+        assert [m["role"] for m in msgs] == ["system", "user", "user"]
+        assert _decode_receive_history_background(msgs) == [
+            f"q{i}" for i in range(10)
+        ]
         # Last must be the current user
-        assert non_system[-1] == {"role": "user", "content": "current"}
+        assert msgs[-1] == {"role": "user", "content": "current"}
 
     @pytest.mark.anyio
     async def test_oldest_history_excluded_when_over_limit(self, db_session, spy_llm):
@@ -352,10 +499,10 @@ class TestMultiTurnHistory:
 
         await service.handle_session_message(chat_session.id, "current", db_session)
 
-        non_system = spy_llm.calls[0][1:]
-        # First non-system message should be q15 (oldest 5 pairs = 10 msgs dropped)
-        assert non_system[0]["content"] == "q15"
-        assert non_system[0]["role"] == "user"
+        msgs = spy_llm.calls[0]
+        # First background item should be q15 (oldest 5 pairs = 10 msgs dropped)
+        historical = _decode_receive_history_background(msgs)
+        assert historical[0] == "q15"
 
     @pytest.mark.anyio
     async def test_database_saves_all_messages(self, db_session, spy_llm):
@@ -506,6 +653,173 @@ class TestLLMErrorHandling:
 
         assert db_session.in_transaction() is False
 
+        rows = (
+            db_session.execute(
+                select(Message).where(
+                    Message.session_id == chat_session.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].role == "user"
+
+
+# ============================================================================
+# Tests — chat LLM failure logging
+# ============================================================================
+
+
+class TestChatLLMFailureLogging:
+    @pytest.mark.anyio
+    async def test_timeout_failure_logs_session_and_saved_message_once(
+        self, db_session, caplog
+    ):
+        chat_session = _create_session(db_session)
+        diagnostics = LLMCallDiagnostics(
+            error_category=ErrorCategory.UPSTREAM_READ_TIMEOUT,
+            exception_type="ReadTimeout",
+            timeout_configured_seconds=30.0,
+            call_elapsed_ms=30012,
+            http_status=None,
+            upstream_request_id="synthetic-request-123",
+        )
+        error = LLMError(
+            "synthetic detail placeholder",
+            status_code=504,
+            diagnostics=diagnostics,
+        )
+        spy = SpyLLMClient(error=error)
+        service = ChatService(spy)
+
+        with caplog.at_level(logging.WARNING, logger="backend.chat_service"):
+            with pytest.raises(LLMError) as excinfo:
+                await service.handle_session_message(
+                    chat_session.id, "hello", db_session
+                )
+
+        assert excinfo.value is error
+        assert excinfo.value.status_code == 504
+        assert len(spy.calls) == 1
+        assert db_session.in_transaction() is False
+
+        rows = (
+            db_session.execute(
+                select(Message).where(
+                    Message.session_id == chat_session.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].role == "user"
+        assert rows[0].content == "hello"
+
+        payloads = _chat_failure_payloads(caplog)
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert payload["event"] == "chat_llm_failure"
+        assert payload["timestamp_utc"].endswith("+00:00")
+        assert payload["session_id"] == chat_session.id
+        assert payload["user_message_id"] == rows[0].id
+        assert payload["local_http_status"] == 504
+        assert payload["error_category"] == "upstream_read_timeout"
+        assert payload["exception_type"] == "ReadTimeout"
+        assert payload["timeout_configured_seconds"] == 30.0
+        assert payload["call_elapsed_ms"] == 30012
+        assert payload["upstream_http_status"] is None
+        assert payload["upstream_request_id"] == "synthetic-request-123"
+        assert "synthetic detail placeholder" not in caplog.text
+
+    @pytest.mark.anyio
+    async def test_failure_without_diagnostics_keeps_diagnostic_fields_null(
+        self, db_session, caplog
+    ):
+        chat_session = _create_session(db_session)
+        error = LLMError("synthetic detail placeholder", status_code=502)
+        spy = SpyLLMClient(error=error)
+        service = ChatService(spy)
+
+        with caplog.at_level(logging.WARNING, logger="backend.chat_service"):
+            with pytest.raises(LLMError):
+                await service.handle_session_message(
+                    chat_session.id, "hello", db_session
+                )
+
+        payloads = _chat_failure_payloads(caplog)
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert payload["local_http_status"] == 502
+        assert payload["upstream_http_status"] is None
+        for key in (
+            "error_category",
+            "exception_type",
+            "timeout_configured_seconds",
+            "call_elapsed_ms",
+            "upstream_request_id",
+        ):
+            assert payload[key] is None
+
+    @pytest.mark.anyio
+    async def test_success_path_emits_no_failure_event(
+        self, db_session, caplog
+    ):
+        chat_session = _create_session(db_session)
+        spy = SpyLLMClient(response="test reply")
+        service = ChatService(spy)
+
+        with caplog.at_level(logging.WARNING, logger="backend.chat_service"):
+            await service.handle_session_message(
+                chat_session.id, "hello", db_session
+            )
+
+        assert _chat_failure_payloads(caplog) == []
+        assert len(spy.calls) == 1
+
+    @pytest.mark.anyio
+    async def test_failure_log_omits_synthetic_sensitive_placeholders(
+        self, db_session, caplog
+    ):
+        chat_session = _create_session(db_session)
+        marker = "SYNTHETIC_CHAT_SECRET_7f2a"
+        error = LLMError(marker, status_code=504)
+        spy = SpyLLMClient(error=error)
+        service = ChatService(spy)
+
+        with caplog.at_level(logging.WARNING, logger="backend.chat_service"):
+            with pytest.raises(LLMError):
+                await service.handle_session_message(
+                    chat_session.id, marker, db_session
+                )
+
+        assert marker not in caplog.text
+        assert len(_chat_failure_payloads(caplog)) == 1
+
+    @pytest.mark.anyio
+    async def test_logging_failure_does_not_replace_original_error(
+        self, db_session, monkeypatch
+    ):
+        chat_session = _create_session(db_session)
+        error = LLMError("synthetic detail placeholder", status_code=504)
+        spy = SpyLLMClient(error=error)
+        service = ChatService(spy)
+
+        def _raising_warning(*args, **kwargs):
+            raise RuntimeError("synthetic logger failure")
+
+        monkeypatch.setattr(
+            chat_service_module.logger, "warning", _raising_warning
+        )
+
+        with pytest.raises(LLMError) as excinfo:
+            await service.handle_session_message(
+                chat_session.id, "hello", db_session
+            )
+
+        assert excinfo.value is error
+        assert db_session.in_transaction() is False
         rows = (
             db_session.execute(
                 select(Message).where(
@@ -796,8 +1110,9 @@ class TestMessageProvenanceSnapshots:
     async def test_null_snapshot_history_not_backfilled(
         self, db_session, spy_llm,
     ):
-        """Pre-existing NULL-snapshot history enters the LLM context in
-        order and is NOT rewritten or backfilled in the database."""
+        """Pre-existing NULL-snapshot user history enters the LLM
+        context in order, assistant history is projected out, and old
+        rows are NOT rewritten or backfilled in the database."""
         chat_session = _create_session(db_session)
         _add_messages(db_session, chat_session.id, [("q1", "a1")])
         service = ChatService(spy_llm)
@@ -806,9 +1121,10 @@ class TestMessageProvenanceSnapshots:
             chat_session.id, "q2", db_session,
         )
 
-        # History was sent as plain role/content
-        contents = [m["content"] for m in spy_llm.calls[0][1:]]
-        assert contents == ["q1", "a1", "q2"]
+        # Receive projection keeps the user row and drops the assistant.
+        msgs = spy_llm.calls[0]
+        assert msgs[-1] == {"role": "user", "content": "q2"}
+        assert _decode_receive_history_background(msgs) == ["q1"]
 
         # The old rows keep NULL snapshots; only the new round has them
         rows = self._read_messages(db_session, chat_session.id)
@@ -1004,8 +1320,10 @@ class TestSwitchSessionProfile:
         )
         await service.handle_session_message(session.id, "new q", db_session)
 
-        contents = [m["content"] for m in self.local_spy.calls[0][1:]]
-        assert contents == ["old q", "old a", "new q"]
+        # Receive projection keeps user history only.
+        msgs = self.local_spy.calls[0]
+        assert msgs[-1] == {"role": "user", "content": "new q"}
+        assert _decode_receive_history_background(msgs) == ["old q"]
 
     @pytest.mark.anyio
     async def test_existing_messages_not_rewritten(self, db_session):
@@ -1819,19 +2137,16 @@ class TestSwitchHistoryBoundary:
         )
         await service.handle_session_message(session.id, "new-q", db_session)
 
-        # The new client saw: system + exactly 20 history + new user.
+        # The new client saw: system + one history background + new user.
+        # The query still keeps the last 20 stored rows, starting at q2.
+        # Receive projection then removes all assistant rows, leaving
+        # the historical user messages q2..q11.
         msgs = new_spy.calls[0]
         assert msgs[0] == {"role": "system", "content": RECEIVE_TEACHING_PROMPT}
-        history = msgs[1:-1]
-        assert len(history) == MAX_HISTORY_MESSAGES
-
-        expected = []
-        # 12 pairs = 24 messages; the oldest 4 (q0,a0,q1,a1) are out of
-        # the window.  The newest 20 start at q2.
-        for i in range(2, 12):
-            expected.append({"role": "user", "content": f"q{i}"})
-            expected.append({"role": "assistant", "content": f"a{i}"})
-        assert history == expected
+        assert [m["role"] for m in msgs] == ["system", "user", "user"]
+        history_contents = _decode_receive_history_background(msgs)
+        assert len(history_contents) == MAX_HISTORY_MESSAGES // 2
+        assert history_contents == [f"q{i}" for i in range(2, 12)]
         assert msgs[-1] == {"role": "user", "content": "new-q"}
 
         # Old messages untouched; new round carries the new profile.
@@ -1853,3 +2168,699 @@ class TestSwitchHistoryBoundary:
             assert msg.llm_profile_id_snapshot == "local"
             assert msg.llm_profile_kind_snapshot == "local"
             assert msg.llm_model_snapshot == "qwen3.5:4b"
+
+# ============================================================================
+# Receive teaching history projection (pure)
+# ============================================================================
+
+
+class TestHistoryProjectionForMode:
+    @staticmethod
+    def _message(role, content, *, mode=None, version=None):
+        return Message(
+            session_id=1,
+            role=role,
+            content=content,
+            interaction_mode_snapshot=mode,
+            prompt_version_snapshot=version,
+        )
+
+    def test_receive_projection_keeps_only_users(self):
+        user_v3 = self._message(
+            "user", "u-v3",
+            mode=RECEIVE_TEACHING_MODE, version="receive-teaching-v3",
+        )
+        user_legacy = self._message("user", "u-legacy")
+        user_corrective = self._message(
+            "user", "u-corrective",
+            mode=CORRECTIVE_MODE, version=CORRECTIVE_PROMPT_VERSION,
+        )
+        assistant_v3 = self._message(
+            "assistant", "a-v3",
+            mode=RECEIVE_TEACHING_MODE, version="receive-teaching-v3",
+        )
+        assistant_v4 = self._message(
+            "assistant", "a-v4",
+            mode=RECEIVE_TEACHING_MODE,
+            version=RECEIVE_TEACHING_PROMPT_VERSION,
+        )
+        assistant_corrective = self._message(
+            "assistant", "a-corrective",
+            mode=CORRECTIVE_MODE, version=CORRECTIVE_PROMPT_VERSION,
+        )
+        assistant_legacy = self._message("assistant", "a-legacy")
+
+        history = [
+            user_v3,
+            assistant_v3,
+            assistant_v4,
+            assistant_corrective,
+            user_legacy,
+            assistant_legacy,
+            user_corrective,
+        ]
+        history_before = list(history)
+        attributes_before = [
+            (
+                message.role,
+                message.content,
+                message.interaction_mode_snapshot,
+                message.prompt_version_snapshot,
+            )
+            for message in history
+        ]
+
+        projected = _project_history_for_mode(
+            history,
+            interaction_mode=RECEIVE_TEACHING_MODE,
+        )
+
+        assert projected == [user_v3, user_legacy, user_corrective]
+        assert projected[0] is user_v3
+        assert projected[1] is user_legacy
+        assert projected[2] is user_corrective
+        assert history == history_before
+        assert attributes_before == [
+            (
+                message.role,
+                message.content,
+                message.interaction_mode_snapshot,
+                message.prompt_version_snapshot,
+            )
+            for message in history
+        ]
+
+    def test_corrective_projection_returns_full_copy_in_original_order(self):
+        user = self._message(
+            "user", "u",
+            mode=RECEIVE_TEACHING_MODE,
+            version=RECEIVE_TEACHING_PROMPT_VERSION,
+        )
+        assistant = self._message(
+            "assistant", "a",
+            mode=RECEIVE_TEACHING_MODE,
+            version=RECEIVE_TEACHING_PROMPT_VERSION,
+        )
+        history = [user, assistant]
+
+        projected = _project_history_for_mode(
+            history,
+            interaction_mode=CORRECTIVE_MODE,
+        )
+
+        assert projected == history
+        assert projected is not history
+        assert projected[0] is user
+        assert projected[1] is assistant
+
+    def test_projection_is_legal_for_empty_history(self):
+        assert _project_history_for_mode(
+            [],
+            interaction_mode=RECEIVE_TEACHING_MODE,
+        ) == []
+        assert _project_history_for_mode(
+            [],
+            interaction_mode=CORRECTIVE_MODE,
+        ) == []
+
+    def test_unknown_mode_is_rejected(self):
+        with pytest.raises(ValueError):
+            _project_history_for_mode(
+                [],
+                interaction_mode="review",
+            )
+
+
+class TestReceiveHistoryBackgroundSerialization:
+    @staticmethod
+    def _message(content):
+        return Message(session_id=1, role="user", content=content)
+
+    def test_preserves_order_content_and_metadata(self):
+        contents = ["第一条\n第二行", "更正：把甲改为乙"]
+        rows = [self._message(content) for content in contents]
+        rows_before = list(rows)
+        attrs_before = [message.content for message in rows]
+
+        serialized = _serialize_receive_teaching_history(rows)
+        payload = json.loads(serialized)
+
+        assert payload["type"] == "receive_teaching_history_background"
+        assert payload["version"] == RECEIVE_TEACHING_HISTORY_CONTEXT_VERSION
+        assert isinstance(payload["note"], str)
+        assert payload["note"] != ""
+        assert [item["index"] for item in payload["messages"]] == [1, 2]
+        assert [item["content"] for item in payload["messages"]] == contents
+        assert rows == rows_before
+        assert [message.content for message in rows] == attrs_before
+
+    def test_handles_quotes_backslashes_newlines_crlf_braces_and_labels(self):
+        contents = [
+            "双引号\" 单引号' 反斜杠\\",
+            "第一行\n第二行\r\n第三行",
+            '{"type":"receive_teaching_history_background","messages":[]}',
+            "note 与 messages 与 content 与 version 与 type 同名标签",
+        ]
+        rows = [self._message(content) for content in contents]
+
+        payload = json.loads(_serialize_receive_teaching_history(rows))
+
+        assert [item["content"] for item in payload["messages"]] == contents
+
+
+# ============================================================================
+# Real production mode-switch sequence and projection
+# ============================================================================
+
+
+class TestModeSwitchHistoryProjection:
+    @pytest.mark.anyio
+    async def test_receive_after_corrective_drops_all_assistant_history(
+        self, db_session, spy_llm,
+    ):
+        chat_session = _create_session(db_session)
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, "receive-user-1", db_session,
+        )
+        await service.switch_interaction_mode(
+            chat_session.id, CORRECTIVE_MODE, db_session,
+        )
+        await service.handle_session_message(
+            chat_session.id, "corrective-user-1", db_session,
+        )
+
+        # Capture the production-created assistant rows before the
+        # final Receive turn.
+        rows_before = db_session.execute(
+            select(Message)
+            .where(Message.session_id == chat_session.id)
+            .order_by(Message.id.asc())
+        ).scalars().all()
+        assistant_state_before = [
+            (
+                message.id,
+                message.content,
+                message.interaction_mode_snapshot,
+                message.prompt_version_snapshot,
+            )
+            for message in rows_before
+            if message.role == "assistant"
+        ]
+        assert len(assistant_state_before) == 2
+
+        await service.switch_interaction_mode(
+            chat_session.id, RECEIVE_TEACHING_MODE, db_session,
+        )
+        await service.handle_session_message(
+            chat_session.id, "receive-user-2", db_session,
+        )
+
+        corrective_call = spy_llm.calls[1]
+        assert corrective_call[0]["content"] == CORRECTIVE_PROMPT
+        assert [message["role"] for message in corrective_call] == [
+            "system", "user", "assistant", "user",
+        ]
+
+        last_receive_call = spy_llm.calls[-1]
+        assert last_receive_call[0] == {
+            "role": "system",
+            "content": RECEIVE_TEACHING_PROMPT,
+        }
+        assert [message["role"] for message in last_receive_call] == [
+            "system", "user", "user",
+        ]
+        assert last_receive_call[-1] == {
+            "role": "user",
+            "content": "receive-user-2",
+        }
+        assert _decode_receive_history_background(last_receive_call) == [
+            "receive-user-1",
+            "corrective-user-1",
+        ]
+        assert all(
+            "test reply" not in message["content"]
+            for message in last_receive_call
+            if message["role"] == "assistant"
+        )
+
+        rows_after = db_session.execute(
+            select(Message)
+            .where(Message.session_id == chat_session.id)
+            .order_by(Message.id.asc())
+        ).scalars().all()
+        assistant_state_after = [
+            (
+                message.id,
+                message.content,
+                message.interaction_mode_snapshot,
+                message.prompt_version_snapshot,
+            )
+            for message in rows_after
+            if message.role == "assistant"
+        ]
+        for old_state in assistant_state_before:
+            assert old_state in assistant_state_after
+
+        assistant_rows_after = [
+            message for message in rows_after
+            if message.role == "assistant"
+        ]
+        assert assistant_rows_after[0].interaction_mode_snapshot == (
+            RECEIVE_TEACHING_MODE
+        )
+        assert assistant_rows_after[0].prompt_version_snapshot == (
+            RECEIVE_TEACHING_PROMPT_VERSION
+        )
+        assert assistant_rows_after[1].interaction_mode_snapshot == (
+            CORRECTIVE_MODE
+        )
+        assert assistant_rows_after[1].prompt_version_snapshot == (
+            CORRECTIVE_PROMPT_VERSION
+        )
+        assert assistant_rows_after[2].interaction_mode_snapshot == (
+            RECEIVE_TEACHING_MODE
+        )
+        assert assistant_rows_after[2].prompt_version_snapshot == (
+            RECEIVE_TEACHING_PROMPT_VERSION
+        )
+
+
+# ============================================================================
+# Receive teaching reply-language assembly
+# ============================================================================
+
+
+class TestReceiveTeachingLanguageFollowingAssembly:
+    """Production message assembly for reply-language following.
+
+    These tests prove the *inputs* sent to the model: the current
+    request is last and byte-for-byte unchanged, history is ordered and
+    unchanged, and the reply-language rule is in the actual system
+    prompt.  They cannot prove that a real model obeys the rule.
+    """
+
+    ENGLISH_MATH = (
+        "What is the difference between y_i and y_hat_i?\n"
+        "Use only the meanings I taught you."
+    )
+    CHINESE_WITH_ACTION = (
+        "请说明 action A 在流程里的作用，变量 n 保持不变。"
+    )
+    CODE_AND_QUOTES = (
+        'Keep `dL/dw`, `y_i`, and "y_hat_i = w * x_i + b" '
+        "exactly as written."
+    )
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "current",
+        (
+            ENGLISH_MATH,
+            CHINESE_WITH_ACTION,
+            "y_hat_i = w * x_i + b",
+            CODE_AND_QUOTES,
+        ),
+    )
+    async def test_no_history_request_is_last_and_unchanged(
+        self, db_session, spy_llm, current,
+    ):
+        chat_session = _create_session(db_session)
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, current, db_session,
+        )
+
+        assert len(spy_llm.calls) == 1
+        messages = spy_llm.calls[0]
+        assert [message["role"] for message in messages] == [
+            "system", "user",
+        ]
+        assert messages[0] == {
+            "role": "system",
+            "content": RECEIVE_TEACHING_PROMPT,
+        }
+        assert messages[-1] == {"role": "user", "content": current}
+
+        stored_content = db_session.execute(
+            select(Message.content).where(
+                Message.session_id == chat_session.id,
+                Message.role == "user",
+            )
+        ).scalars().all()
+        assert stored_content == [current]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("history_users", "current"),
+        (
+            (
+                (
+                    "我教你：动作甲之后是动作乙。",
+                    "更正：动作乙之后是动作丙。",
+                ),
+                ENGLISH_MATH,
+            ),
+            (
+                (
+                    "I am teaching you: action A comes before action B.",
+                    "Correction: action B comes before action C.",
+                ),
+                CHINESE_WITH_ACTION,
+            ),
+        ),
+    )
+    async def test_history_language_does_not_change_current_request(
+        self, db_session, spy_llm, history_users, current,
+    ):
+        chat_session = _create_session(db_session)
+        _add_messages(
+            db_session,
+            chat_session.id,
+            [(text, "assistant reply") for text in history_users],
+        )
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, current, db_session,
+        )
+
+        assert len(spy_llm.calls) == 1
+        messages = spy_llm.calls[0]
+        assert [message["role"] for message in messages] == [
+            "system", "user", "user",
+        ]
+        assert messages[0] == {
+            "role": "system",
+            "content": RECEIVE_TEACHING_PROMPT,
+        }
+        assert messages[-1] == {"role": "user", "content": current}
+        assert _decode_receive_history_background(messages) == list(
+            history_users
+        )
+
+        stored_user_content = db_session.execute(
+            select(Message.content)
+            .where(
+                Message.session_id == chat_session.id,
+                Message.role == "user",
+            )
+            .order_by(Message.id.asc())
+        ).scalars().all()
+        assert stored_user_content == [*history_users, current]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("history_users", "current"),
+        (
+            (
+                (
+                    "For this conversation, please answer in English.",
+                    "我教你：动作 A 之后是动作 B；只有 C 出现时才执行 D。",
+                ),
+                "请告诉我：D 在什么条件下执行？",
+            ),
+            (
+                (
+                    "For this conversation, please answer in English.",
+                    "我教你：动作 A 之后是动作 B。",
+                ),
+                "这一次请用中文解释：A 和 B 的顺序是什么？",
+            ),
+            (
+                (
+                    "For this conversation, please answer in English.",
+                    "I am teaching you: D is performed only when C is present.",
+                    "从这条消息开始，后续请都用中文回答。",
+                ),
+                "What is the condition for performing D?",
+            ),
+        ),
+    )
+    async def test_persistent_and_one_turn_language_context_is_verbatim(
+        self, db_session, spy_llm, history_users, current,
+    ):
+        chat_session = _create_session(db_session)
+        _add_messages(
+            db_session,
+            chat_session.id,
+            [(text, "assistant reply") for text in history_users],
+        )
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, current, db_session,
+        )
+
+        assert len(spy_llm.calls) == 1
+        messages = spy_llm.calls[0]
+        assert [message["role"] for message in messages] == [
+            "system", "user", "user",
+        ]
+        assert messages[0] == {
+            "role": "system",
+            "content": RECEIVE_TEACHING_PROMPT,
+        }
+        assert messages[-1] == {"role": "user", "content": current}
+        assert _decode_receive_history_background(messages) == list(
+            history_users
+        )
+
+        stored_user_content = db_session.execute(
+            select(Message.content)
+            .where(
+                Message.session_id == chat_session.id,
+                Message.role == "user",
+            )
+            .order_by(Message.id.asc())
+        ).scalars().all()
+        assert stored_user_content == [*history_users, current]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("history_user", "formula"),
+        (
+            (
+                "I am teaching you: y_i is the target value; "
+                "y_hat_i is the predicted value; "
+                "y_hat_i = w * x_i + b.",
+                "y_hat_i = w * x_i + b",
+            ),
+            (
+                "我教你：y_i 是目标值；y_hat_i 是预测值；"
+                "y_hat_i = w * x_i + b。",
+                "y_hat_i = w * x_i + b",
+            ),
+        ),
+    )
+    async def test_formula_only_current_sends_raw_history_verbatim(
+        self, db_session, spy_llm, history_user, formula,
+    ):
+        chat_session = _create_session(db_session)
+        _add_messages(
+            db_session, chat_session.id, [(history_user, "assistant reply")],
+        )
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, formula, db_session,
+        )
+
+        assert len(spy_llm.calls) == 1
+        messages = spy_llm.calls[0]
+        assert [message["role"] for message in messages] == [
+            "system", "user", "user",
+        ]
+        assert messages[-1] == {"role": "user", "content": formula}
+        assert _decode_receive_history_background(messages) == [history_user]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("current", "history_user"),
+        (
+            (
+                "请用英文总结我刚才教的内容。",
+                "我教你：y_i 是目标值；y_hat_i 是预测值。",
+            ),
+            (
+                "Please explain this in Chinese.",
+                "I am teaching you: y_i is the target value.",
+            ),
+        ),
+    )
+    async def test_explicit_language_request_is_not_rewritten(
+        self, db_session, spy_llm, current, history_user,
+    ):
+        chat_session = _create_session(db_session)
+        _add_messages(
+            db_session, chat_session.id, [(history_user, "assistant reply")],
+        )
+        service = ChatService(spy_llm)
+
+        await service.handle_session_message(
+            chat_session.id, current, db_session,
+        )
+
+        assert len(spy_llm.calls) == 1
+        messages = spy_llm.calls[0]
+        assert messages[-1] == {"role": "user", "content": current}
+        assert _decode_receive_history_background(messages) == [history_user]
+
+    @pytest.mark.anyio
+    async def test_api_and_local_receive_get_identical_messages(
+        self, db_session,
+    ):
+        api_spy = KwargSpyLLMClient(response="api reply")
+        local_spy = KwargSpyLLMClient(response="local reply")
+        registry = _switch_registry(
+            default_client=api_spy,
+            default_kind="api",
+            default_model="remote-m1",
+            extras=[{
+                "id": "local",
+                "label": "Local",
+                "kind": "local",
+                "model": "qwen3.5:9b",
+                "client": local_spy,
+            }],
+        )
+        service = ChatService(profiles=registry)
+        api_session = _make_bound_session(db_session, "default", "remote-m1")
+        local_session = _make_bound_session(
+            db_session, "local", "qwen3.5:9b",
+        )
+        for chat_session in (api_session, local_session):
+            _add_messages(
+                db_session,
+                chat_session.id,
+                [("我教你：动作甲之后是动作乙。", "assistant reply")],
+            )
+
+        await service.handle_session_message(
+            api_session.id, self.ENGLISH_MATH, db_session,
+        )
+        await service.handle_session_message(
+            local_session.id, self.ENGLISH_MATH, db_session,
+        )
+
+        assert api_spy.calls == local_spy.calls
+        assert api_spy.calls[0][0] == {
+            "role": "system",
+            "content": RECEIVE_TEACHING_PROMPT,
+        }
+        assert api_spy.calls[0][-1] == {
+            "role": "user", "content": self.ENGLISH_MATH,
+        }
+        assert api_spy.generate_kwargs == [{}]
+        assert local_spy.generate_kwargs == [{"temperature": 0.0}]
+
+
+# ============================================================================
+# Local Receive temperature routing
+# ============================================================================
+
+
+class TestReceiveTeachingTemperatureRouting:
+    def _registry(self):
+        api_spy = KwargSpyLLMClient(response="api reply")
+        local_spy = KwargSpyLLMClient(response="local reply")
+        registry = _switch_registry(
+            default_client=api_spy,
+            default_kind="api",
+            default_model="remote-m1",
+            extras=[{
+                "id": "local",
+                "label": "Local",
+                "kind": "local",
+                "model": "qwen3.5:4b",
+                "client": local_spy,
+            }],
+        )
+        return registry, api_spy, local_spy
+
+    @pytest.mark.anyio
+    async def test_local_receive_passes_temperature_zero(self, db_session):
+        registry, api_spy, local_spy = self._registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", "qwen3.5:4b")
+
+        await service.handle_session_message(session.id, "hello", db_session)
+
+        assert local_spy.calls[0][0] == {
+            "role": "system",
+            "content": RECEIVE_TEACHING_PROMPT,
+        }
+        assert local_spy.generate_kwargs == [{"temperature": 0.0}]
+        assert api_spy.generate_kwargs == []
+
+    @pytest.mark.anyio
+    async def test_api_receive_omits_temperature(self, db_session):
+        registry, api_spy, local_spy = self._registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        await service.handle_session_message(session.id, "hello", db_session)
+
+        assert api_spy.calls[0][0] == {
+            "role": "system",
+            "content": RECEIVE_TEACHING_PROMPT,
+        }
+        assert api_spy.generate_kwargs == [{}]
+        assert local_spy.generate_kwargs == []
+
+    @pytest.mark.anyio
+    async def test_local_corrective_omits_temperature(self, db_session):
+        registry, api_spy, local_spy = self._registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", "qwen3.5:4b")
+
+        await service.switch_interaction_mode(
+            session.id, CORRECTIVE_MODE, db_session,
+        )
+        await service.handle_session_message(session.id, "hello", db_session)
+
+        assert local_spy.generate_kwargs == [{}]
+        assert api_spy.generate_kwargs == []
+
+    @pytest.mark.anyio
+    async def test_api_corrective_omits_temperature(self, db_session):
+        registry, api_spy, local_spy = self._registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "default", "remote-m1")
+
+        await service.switch_interaction_mode(
+            session.id, CORRECTIVE_MODE, db_session,
+        )
+        await service.handle_session_message(session.id, "hello", db_session)
+
+        assert api_spy.generate_kwargs == [{}]
+        assert local_spy.generate_kwargs == []
+
+    @pytest.mark.anyio
+    async def test_temperature_is_not_persisted_between_calls(self, db_session):
+        registry, api_spy, local_spy = self._registry()
+        service = ChatService(profiles=registry)
+        session = _make_bound_session(db_session, "local", "qwen3.5:4b")
+
+        await service.handle_session_message(session.id, "receive-1", db_session)
+        await service.switch_interaction_mode(
+            session.id, CORRECTIVE_MODE, db_session,
+        )
+        await service.handle_session_message(
+            session.id, "corrective-1", db_session,
+        )
+        await service.switch_interaction_mode(
+            session.id, RECEIVE_TEACHING_MODE, db_session,
+        )
+        await service.handle_session_message(
+            session.id, "receive-2", db_session,
+        )
+
+        assert local_spy.generate_kwargs == [
+            {"temperature": 0.0},
+            {},
+            {"temperature": 0.0},
+        ]
+        assert api_spy.generate_kwargs == []

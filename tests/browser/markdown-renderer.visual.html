@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Markdown visual acceptance fixture</title>
+  <link rel="stylesheet" href="/frontend/style.css">
+</head>
+<body>
+  <div class="app-layout" id="visual-shell">
+    <main class="chat-area" id="visual-chat">
+      <div class="chat-session-header">
+        <span class="session-title">Markdown layout acceptance fixture</span>
+      </div>
+      <div class="chat-messages" id="visual-messages"></div>
+    </main>
+  </div>
+
+  <script src="/frontend/vendor/marked.umd.js"></script>
+  <script src="/frontend/vendor/purify.min.js"></script>
+  <script src="/frontend/markdown-renderer.js"></script>
+  <script src="./markdown-renderer.visual.js"></script>
+</body>
+</html>

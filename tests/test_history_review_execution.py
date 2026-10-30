@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from dataclasses import FrozenInstanceError
 from datetime import datetime
 
@@ -11,16 +12,29 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
+import backend.history_review_pipeline as pipeline_module
 import backend.history_review_service as execution_module
 from backend.database import create_database_engine, create_tables, run_migrations
 from backend.exceptions import LLMError
-from backend.history_review_pipeline import HistoryReviewPipelineError
+from backend.history_review_pipeline import (
+    AUDIT_MODE_EMPTY_CONFIRMATION,
+    AUDIT_MODE_INITIAL,
+    HistoryReviewPipelineError,
+)
 from backend.history_review_stages import (
     HISTORY_REVIEW_PIPELINE_VERSION,
     HISTORY_REVIEW_STAGE_1_SYSTEM_PROMPT,
     HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT,
     STAGE1_RESERVED_OUTPUT_TOKENS,
     STAGE2_RESERVED_OUTPUT_TOKENS,
+    HistoryReviewStage2InputTooLargeError,
+)
+from backend.review_diagnostics import (
+    ErrorCategory,
+    FailureStage,
+    LLMCallDiagnostics,
+    ReviewMode,
+    ReviewStage,
 )
 from backend.history_review_service import (
     FINALIZE_FAILED,
@@ -66,6 +80,8 @@ class SpyClient:
         self.response = None
         self.error: Exception | None = None
         self.before_generate = None
+        self.response_http_status = None
+        self.response_finish_reason = None
 
     async def generate(
         self,
@@ -74,6 +90,7 @@ class SpyClient:
         response_format=None,
         temperature=None,
         max_tokens=None,
+        diagnostics=None,
     ):
         self.messages.append(messages)
         self.calls.append({
@@ -82,6 +99,11 @@ class SpyClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         })
+        if diagnostics is not None:
+            if self.response_http_status is not None:
+                diagnostics.http_status = self.response_http_status
+            if self.response_finish_reason is not None:
+                diagnostics.finish_reason = self.response_finish_reason
         if self.before_generate is not None:
             self.before_generate()
         if self.error is not None:
@@ -426,6 +448,10 @@ def _findings_for_review(db, review_id):
         .where(HistoryReviewFinding.review_id == review_id)
         .order_by(HistoryReviewFinding.seq.asc())
     ).scalars().all())
+
+
+def _raise_logging_warning(*args, **kwargs):
+    raise RuntimeError("synthetic history review logger failure")
 
 
 @pytest.mark.anyio
@@ -1457,11 +1483,12 @@ async def test_raw_output_truncation_on_too_large(
             "attempts": [
                 {
                     "attempt": 1,
+                    "mode": AUDIT_MODE_INITIAL,
                     "raw_output": huge,
                     "stage": "stage1",
                 },
             ],
-            "pipeline_version": "history-review-pipeline-v1",
+            "pipeline_version": HISTORY_REVIEW_PIPELINE_VERSION,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -1647,6 +1674,71 @@ async def test_finalize_and_failed_write_both_fail_reraises(
     stored = _refresh_review(db, review.id)
     assert stored.status == "running"
     assert _findings_for_review(db, review.id) == []
+
+
+@pytest.mark.anyio
+async def test_finalize_and_failure_record_and_logging_errors_preserve_original(
+    service, db, api_client, monkeypatch,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.response = _valid_response
+    api_client.response_http_status = 200
+    api_client.response_finish_reason = "stop"
+
+    original_finalize_error = SQLAlchemyError(
+        "synthetic finalize save failure A"
+    )
+    original_failed_write_error = SQLAlchemyError(
+        "synthetic failed write failure B"
+    )
+    logging_error = RuntimeError("synthetic logging failure L")
+
+    finalize_attempts = []
+    failure_record_attempts = []
+    logging_attempts = []
+
+    def _fail_finalize(*args, **kwargs):
+        finalize_attempts.append(True)
+        raise original_finalize_error
+
+    def _fail_failure_record(*args, **kwargs):
+        failure_record_attempts.append(True)
+        raise original_failed_write_error
+
+    def _fail_logging(*args, **kwargs):
+        logging_attempts.append(True)
+        raise logging_error
+
+    monkeypatch.setattr(service, "_finalize_success", _fail_finalize)
+    monkeypatch.setattr(
+        service, "_record_running_failure", _fail_failure_record,
+    )
+    monkeypatch.setattr(
+        execution_module.logger, "warning", _fail_logging,
+    )
+
+    with pytest.raises(SQLAlchemyError) as exc_info:
+        await service.execute_history_review(
+            session_id=session.id,
+            review_id=review.id,
+            db=db,
+        )
+
+    assert exc_info.value is original_finalize_error
+    assert len(finalize_attempts) == 1
+    assert len(logging_attempts) == 1
+    assert len(failure_record_attempts) == 1
+    assert len(api_client.messages) == 2
+
+    stored = _refresh_review(db, review.id)
+    assert stored.status == "running"
+    assert stored.error_code is None
+    assert stored.error_details is None
+    assert stored.completed_at is None
+    assert _findings_for_review(db, review.id) == []
+    assert len(service._lock_registry._entries) == 0
 
 
 @pytest.mark.anyio
@@ -1928,7 +2020,7 @@ async def test_authoritative_reload_before_generate_has_called_llm_false(
 
 
 @pytest.mark.anyio
-async def test_zero_claim_completes_without_stage2_and_stage1_only_audit(
+async def test_zero_claim_confirmation_twice_completes_without_stage2(
     service, db, api_client,
 ):
     contents = ("just a menu", "please summarize")
@@ -1960,7 +2052,7 @@ async def test_zero_claim_completes_without_stage2_and_stage1_only_audit(
 
     assert result.status == "completed"
     assert result.called_llm is True
-    assert len(api_client.messages) == 1
+    assert len(api_client.messages) == 2
     assert [f.seq for f in result.findings] == [1, 2]
     assert [f.source_message_id for f in result.findings] == [
         messages[0].id,
@@ -1980,8 +2072,12 @@ async def test_zero_claim_completes_without_stage2_and_stage1_only_audit(
     audit = json.loads(stored.raw_output)
     assert audit["pipeline_version"] == HISTORY_REVIEW_PIPELINE_VERSION
     assert [
-        attempt["stage"] for attempt in audit["attempts"]
-    ] == ["stage1"]
+        (attempt["stage"], attempt["attempt"], attempt["mode"])
+        for attempt in audit["attempts"]
+    ] == [
+        ("stage1", 1, AUDIT_MODE_INITIAL),
+        ("stage1", 2, AUDIT_MODE_EMPTY_CONFIRMATION),
+    ]
     assert [row.verdict for row in _findings_for_review(
         db, review.id
     )] == ["not_a_claim", "not_a_claim"]
@@ -2252,6 +2348,7 @@ async def _make_interrupted_review(
     stored.status = "failed"
     stored.error_code = error_code
     stored.error_message = execution_module._safe_error_message(error_code)
+    stored.error_details = '{"old":true}'
     stored.summary = "old summary"
     stored.coverage_note = "old coverage"
     stored.raw_output = "old audit"
@@ -2276,7 +2373,7 @@ async def _make_interrupted_review(
 
 @pytest.mark.anyio
 async def test_cancelled_cleanup_failure_does_not_mask_cancellation(
-    service, db, api_client, monkeypatch,
+    service, db, api_client, monkeypatch, caplog,
 ):
     session, event, messages, review, sources = await _prepare_pending(
         service, db,
@@ -2288,15 +2385,26 @@ async def test_cancelled_cleanup_failure_does_not_mask_cancellation(
 
     monkeypatch.setattr(service, "_record_running_failure", _fail_cleanup)
 
-    with pytest.raises(asyncio.CancelledError):
-        await service.execute_history_review(
-            session_id=session.id,
-            review_id=review.id,
-            db=db,
-        )
+    with caplog.at_level(
+        "WARNING", logger="backend.history_review_service",
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await service.execute_history_review(
+                session_id=session.id,
+                review_id=review.id,
+                db=db,
+            )
 
     stored = _refresh_review(db, review.id)
     assert stored.status == "running"
+    failure_logs = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith("{")
+        and json.loads(record.getMessage()).get("event")
+        == "history_review_failure"
+    ]
+    assert len(failure_logs) == 1
 
 
 def test_recover_abandoned_running_reviews_noop(service, db):
@@ -2339,6 +2447,13 @@ async def test_recover_abandoned_running_reviews_marks_interrupted(
     assert stored.raw_output_truncated is False
     assert stored.started_at is not None
     assert stored.completed_at is not None
+    details = json.loads(stored.error_details)
+    assert details["failure_stage"] is None
+    assert details["failure_attempt"] is None
+    assert details["failure_mode"] is None
+    assert details["llm_call_index"] is None
+    assert details["llm"] is None
+    assert details["review_elapsed_ms"] is None
     assert _findings_for_review(db, review.id) == []
     assert api_client.messages == []
 
@@ -2355,6 +2470,15 @@ async def test_recover_abandoned_running_reviews_failure_raises(
     stored = _refresh_review(db, review.id)
     stored.status = "running"
     stored.started_at = utc_now()
+    db.add(HistoryReviewFinding(
+        review_id=review.id,
+        seq=1,
+        source_message_id=sources[0].message_id,
+        verdict="correct",
+        claim_text="rollback finding",
+        correction_text=None,
+        explanation_text=None,
+    ))
     db.commit()
 
     with engine.begin() as conn:
@@ -2372,6 +2496,80 @@ async def test_recover_abandoned_running_reviews_failure_raises(
             conn.execute(sa_text(
                 "DROP TRIGGER IF EXISTS fail_running_recovery"
             ))
+
+    refreshed = _refresh_review(db, review.id)
+    assert refreshed.status == "running"
+    assert refreshed.error_code is None
+    assert len(_findings_for_review(db, review.id)) == 1
+
+
+@pytest.mark.anyio
+async def test_recover_abandoned_running_reviews_cas_miss_keeps_state(
+    service, db, engine, api_client,
+):
+    session_a, event_a, messages_a, review_a, sources_a = (
+        await _prepare_pending(service, db)
+    )
+    session_b, event_b, messages_b, review_b, sources_b = (
+        await _prepare_pending(service, db)
+    )
+    stored_a = _refresh_review(db, review_a.id)
+    stored_b = _refresh_review(db, review_b.id)
+    stored_a.status = "running"
+    stored_a.started_at = utc_now()
+    stored_b.status = "running"
+    stored_b.started_at = utc_now()
+    stored_b.prompt_version_snapshot = "history-review-pipeline-v1"
+    db.add(HistoryReviewFinding(
+        review_id=review_a.id,
+        seq=1,
+        source_message_id=sources_a[0].message_id,
+        verdict="correct",
+        claim_text="recovery finding",
+        correction_text=None,
+        explanation_text=None,
+    ))
+    db.add(HistoryReviewFinding(
+        review_id=review_b.id,
+        seq=1,
+        source_message_id=sources_b[0].message_id,
+        verdict="correct",
+        claim_text="recovery finding",
+        correction_text=None,
+        explanation_text=None,
+    ))
+    db.commit()
+
+    with engine.begin() as conn:
+        conn.execute(sa_text(
+            "CREATE TRIGGER ignore_running_recovery_update "
+            "BEFORE UPDATE ON history_reviews "
+            "WHEN OLD.status = 'running' "
+            "  AND NEW.status = 'failed' "
+            "  AND NEW.id = " + str(review_b.id) + " "
+            "BEGIN SELECT RAISE(IGNORE); END"
+        ))
+    try:
+        recovered = service.recover_abandoned_running_reviews(db)
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sa_text(
+                "DROP TRIGGER IF EXISTS ignore_running_recovery_update"
+            ))
+
+    assert recovered == 1
+
+    refreshed_a = _refresh_review(db, review_a.id)
+    assert refreshed_a.status == "failed"
+    assert refreshed_a.error_code == HISTORY_REVIEW_EXECUTION_INTERRUPTED
+    assert _findings_for_review(db, review_a.id) == []
+
+    refreshed_b = _refresh_review(db, review_b.id)
+    assert refreshed_b.status == "running"
+    assert refreshed_b.error_code is None
+    assert refreshed_b.prompt_version_snapshot == "history-review-pipeline-v1"
+    assert len(_findings_for_review(db, review_b.id)) == 1
+    assert api_client.messages == []
 
 
 @pytest.mark.anyio
@@ -2440,6 +2638,7 @@ async def test_retry_interrupted_reuses_review_and_sources(
     assert refreshed.attempt_count == 2
     assert refreshed.error_code is None
     assert refreshed.error_message is None
+    assert refreshed.error_details is None
     assert refreshed.summary == _expected_summary(correct=1)
     assert refreshed.raw_output is not None
     assert refreshed.raw_output != "old audit"
@@ -2610,3 +2809,970 @@ async def test_retry_reset_failure_rolls_back(
     assert len(findings) == 1
     assert findings[0].claim_text == "old claim"
     assert api_client.messages == []
+
+
+@pytest.mark.anyio
+async def test_empty_confirmation_recovers_claim_through_service(
+    service, db, api_client,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    stage1_calls = []
+
+    def respond(msgs):
+        stage = _stage_for_messages(msgs)
+        if stage == "stage1":
+            stage1_calls.append(msgs)
+            if len(stage1_calls) == 1:
+                user_data = json.loads(msgs[1]["content"])
+                return json.dumps({
+                    "overflow": False,
+                    "sources": [
+                        {
+                            "source_message_id": source["source_message_id"],
+                            "claims": [],
+                        }
+                        for source in user_data["sources"]
+                    ],
+                }, ensure_ascii=False)
+        return _valid_response(msgs)
+
+    api_client.response = respond
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "completed"
+    assert [finding.verdict for finding in result.findings] == ["correct"]
+    assert len(api_client.messages) == 3
+    assert len(stage1_calls) == 2
+
+    stored = _refresh_review(db, review.id)
+    audit = json.loads(stored.raw_output)
+    assert audit["pipeline_version"] == HISTORY_REVIEW_PIPELINE_VERSION
+    assert [
+        (attempt["stage"], attempt["attempt"], attempt["mode"])
+        for attempt in audit["attempts"]
+    ] == [
+        ("stage1", 1, AUDIT_MODE_INITIAL),
+        ("stage1", 2, AUDIT_MODE_EMPTY_CONFIRMATION),
+        ("stage2", 1, AUDIT_MODE_INITIAL),
+    ]
+
+
+@pytest.mark.anyio
+async def test_pending_pipeline_v1_stays_unsupported_without_llm(
+    service, db, api_client,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    stored = _refresh_review(db, review.id)
+    stored.prompt_version_snapshot = "history-review-pipeline-v1"
+    db.commit()
+    api_client.response = lambda msgs: _valid_response(msgs)
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == PROMPT_VERSION_UNSUPPORTED
+    assert api_client.messages == []
+    refreshed = _refresh_review(db, review.id)
+    assert refreshed.prompt_version_snapshot == "history-review-pipeline-v1"
+    assert refreshed.status == "failed"
+    assert refreshed.error_code == PROMPT_VERSION_UNSUPPORTED
+
+
+@pytest.mark.anyio
+async def test_abandoned_running_pipeline_v1_becomes_unsupported(
+    service, db, api_client,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    stored = _refresh_review(db, review.id)
+    stored.status = "running"
+    stored.prompt_version_snapshot = "history-review-pipeline-v1"
+    stored.started_at = utc_now()
+    db.commit()
+
+    recovered = service.recover_abandoned_running_reviews(db)
+
+    assert recovered == 1
+    refreshed = _refresh_review(db, review.id)
+    assert refreshed.status == "failed"
+    assert refreshed.error_code == PROMPT_VERSION_UNSUPPORTED
+    assert refreshed.prompt_version_snapshot == "history-review-pipeline-v1"
+    assert api_client.messages == []
+
+
+@pytest.mark.anyio
+async def test_interrupted_pipeline_v1_retry_persists_unsupported(
+    service, db, api_client,
+):
+    session, event, messages, stored, sources, review = (
+        await _make_interrupted_review(service, db)
+    )
+    stored.prompt_version_snapshot = "history-review-pipeline-v1"
+    db.commit()
+    api_client.response = lambda msgs: _valid_response(msgs)
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+        retry_failed=True,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == PROMPT_VERSION_UNSUPPORTED
+    assert api_client.messages == []
+
+    refreshed = _refresh_review(db, review.id)
+    assert refreshed.status == "failed"
+    assert refreshed.error_code == PROMPT_VERSION_UNSUPPORTED
+    assert refreshed.prompt_version_snapshot == "history-review-pipeline-v1"
+    assert refreshed.attempt_count == 1
+    assert refreshed.summary == "old summary"
+    assert refreshed.coverage_note == "old coverage"
+    assert refreshed.raw_output == "old audit"
+
+
+# ---------------------------------------------------------------------------
+# LLM diagnostics end-to-end
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_llm_http_429_diagnostics_persisted(
+    service, db, api_client,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    diagnostics = LLMCallDiagnostics(
+        error_category=ErrorCategory.UPSTREAM_HTTP_429,
+        http_status=429,
+        retry_after_seconds=30.0,
+        timeout_configured_seconds=12.5,
+        call_elapsed_ms=5790,
+        upstream_request_id="req-1",
+    )
+    api_client.error = LLMError(
+        detail="upstream boom",
+        status_code=502,
+        diagnostics=diagnostics,
+    )
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == LLM_UPSTREAM_ERROR
+    stored = _assert_running_failure_shape(db, review.id)
+    assert "429" in stored.error_message
+    details = json.loads(stored.error_details)
+    assert details["error_category"] == "upstream_http_429"
+    assert details["failure_stage"] == "stage1"
+    assert details["failure_attempt"] == 1
+    assert details["failure_mode"] == "initial"
+    assert details["llm_call_index"] == 1
+    assert details["llm"]["http_status"] == 429
+    assert details["llm"]["retry_after_seconds"] == 30.0
+    assert details["llm"]["timeout_configured_seconds"] == 12.5
+    assert details["llm"]["call_elapsed_ms"] == 5790
+    assert details["llm"]["upstream_request_id"] == "req-1"
+
+
+@pytest.mark.anyio
+async def test_failure_log_contains_structured_diagnostics(
+    service, db, api_client, caplog,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    diagnostics = LLMCallDiagnostics(
+        error_category=ErrorCategory.UPSTREAM_HTTP_429,
+        http_status=429,
+        timeout_configured_seconds=30.0,
+        call_elapsed_ms=123,
+    )
+    api_client.error = LLMError(
+        detail="upstream boom",
+        status_code=502,
+        diagnostics=diagnostics,
+    )
+
+    with caplog.at_level(
+        "WARNING", logger="backend.history_review_service",
+    ):
+        await service.execute_history_review(
+            session_id=session.id,
+            review_id=review.id,
+            db=db,
+        )
+
+    messages_out = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith("{")
+    ]
+    failure_logs = [
+        item for item in messages_out
+        if item.get("event") == "history_review_failure"
+    ]
+    assert len(failure_logs) == 1
+    failure_log = failure_logs[0]
+    assert failure_log["failure_stage"] == "stage1"
+    assert failure_log["error_category"] == "upstream_http_429"
+    assert failure_log["llm"]["http_status"] == 429
+    assert failure_log["llm"]["call_elapsed_ms"] == 123
+    assert failure_log["llm"]["timeout_configured_seconds"] == 30.0
+
+
+@pytest.mark.anyio
+async def test_stage2_pre_call_budget_does_not_reuse_stage1(
+    service, db, api_client, monkeypatch,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+
+    def fail_stage2_budget(extraction):
+        raise HistoryReviewStage2InputTooLargeError()
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "validate_stage2_input_budget",
+        fail_stage2_budget,
+    )
+    api_client.response = _valid_response
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == (
+        "history_review_verification_input_too_large"
+    )
+    stored = _refresh_review(db, review.id)
+    details = json.loads(stored.error_details)
+    assert details["failure_stage"] == "stage2"
+    assert details["failure_attempt"] == 1
+    assert details["failure_mode"] is None
+    assert details["llm"] is None
+    assert details["llm_call_index"] is None
+    assert details["error_category"] == "review_input_too_large"
+
+
+@pytest.mark.anyio
+async def test_finalize_failure_preserves_stage2_diagnostics(
+    service, db, engine, api_client, caplog,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.response = _valid_response
+    api_client.response_http_status = 200
+    api_client.response_finish_reason = "stop"
+    with engine.begin() as conn:
+        conn.execute(sa_text(
+            "CREATE TRIGGER fail_history_review_finding_insert "
+            "BEFORE INSERT ON history_review_findings "
+            "BEGIN SELECT RAISE(FAIL, 'simulated finding failure'); END"
+        ))
+    with caplog.at_level(
+        "WARNING", logger="backend.history_review_service",
+    ):
+        try:
+            result = await service.execute_history_review(
+                session_id=session.id,
+                review_id=review.id,
+                db=db,
+            )
+        finally:
+            with engine.begin() as conn:
+                conn.execute(sa_text(
+                    "DROP TRIGGER IF EXISTS "
+                    "fail_history_review_finding_insert"
+                ))
+
+    assert result.status == "failed"
+    assert result.error_code == FINALIZE_FAILED
+    stored = _refresh_review(db, review.id)
+    details = json.loads(stored.error_details)
+    assert details["failure_stage"] == "finalize"
+    assert details["failure_attempt"] is None
+    assert details["failure_mode"] is None
+    assert details["llm_call_index"] == 2
+    assert details["llm"]["stage"] == "stage2"
+    assert details["llm"]["http_status"] == 200
+    assert details["llm"]["finish_reason"] == "stop"
+
+    failure_logs = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith("{")
+        and json.loads(record.getMessage()).get("event")
+        == "history_review_failure"
+    ]
+    assert len(failure_logs) == 1
+    failure_log = failure_logs[0]
+    assert failure_log["failure_stage"] == "finalize"
+    assert failure_log["llm"] == details["llm"]
+
+
+@pytest.mark.anyio
+async def test_finalize_failure_preserves_stage1_only_diagnostics(
+    service, db, engine, api_client,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+        contents=("Summarize this lesson.",),
+    )
+
+    def empty_stage1(messages):
+        user_data = json.loads(messages[1]["content"])
+        return json.dumps({
+            "overflow": False,
+            "sources": [
+                {
+                    "source_message_id": source["source_message_id"],
+                    "claims": [],
+                }
+                for source in user_data["sources"]
+            ],
+        }, ensure_ascii=False)
+
+    api_client.response = _stage_responder(
+        empty_stage1, lambda messages: "unused",
+    )
+    api_client.response_http_status = 200
+    api_client.response_finish_reason = "stop"
+    with engine.begin() as conn:
+        conn.execute(sa_text(
+            "CREATE TRIGGER fail_history_review_finding_insert "
+            "BEFORE INSERT ON history_review_findings "
+            "BEGIN SELECT RAISE(FAIL, 'simulated finding failure'); END"
+        ))
+    try:
+        result = await service.execute_history_review(
+            session_id=session.id,
+            review_id=review.id,
+            db=db,
+        )
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sa_text(
+                "DROP TRIGGER IF EXISTS fail_history_review_finding_insert"
+            ))
+
+    assert result.status == "failed"
+    assert result.error_code == FINALIZE_FAILED
+    stored = _refresh_review(db, review.id)
+    details = json.loads(stored.error_details)
+    assert details["failure_stage"] == "finalize"
+    assert details["llm_call_index"] == 2
+    assert details["llm"]["stage"] == "stage1"
+    assert details["llm"]["attempt"] == 2
+    assert details["llm"]["mode"] == "empty_confirmation"
+    assert details["llm"]["finish_reason"] == "stop"
+
+
+@pytest.mark.anyio
+async def test_success_clears_all_error_fields(service, db, api_client):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.response = _valid_response
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "completed"
+    stored = _refresh_review(db, review.id)
+    assert stored.error_code is None
+    assert stored.error_message is None
+    assert stored.error_details is None
+
+
+@pytest.mark.anyio
+async def test_length_claim_coverage_failure_is_not_json_syntax(
+    service, db, api_client,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.response = _stage_responder(
+        _valid_response,
+        lambda messages: json.dumps({"claims": []}),
+    )
+    api_client.response_finish_reason = "length"
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == (
+        "history_review_verification_claim_uncovered"
+    )
+    stored = _refresh_review(db, review.id)
+    assert "长度上限" in stored.error_message
+    assert "claim 覆盖校验失败" in stored.error_message
+    assert "JSON 无法解析" not in stored.error_message
+    details = json.loads(stored.error_details)
+    assert details["error_category"] == "review_output_truncated"
+    assert details["error_code"] == (
+        "history_review_verification_claim_uncovered"
+    )
+    assert details["llm"]["finish_reason"] == "length"
+
+
+@pytest.mark.anyio
+async def test_cancelled_execution_persists_known_diagnostics(
+    service, db, api_client, caplog,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.error = asyncio.CancelledError()
+
+    with caplog.at_level(
+        "WARNING", logger="backend.history_review_service",
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await service.execute_history_review(
+                session_id=session.id,
+                review_id=review.id,
+                db=db,
+            )
+
+    stored = _refresh_review(db, review.id)
+    assert stored.status == "failed"
+    assert stored.error_code == HISTORY_REVIEW_EXECUTION_INTERRUPTED
+    details = json.loads(stored.error_details)
+    assert details["error_category"] == "review_execution_interrupted"
+    assert details["failure_stage"] == "stage1"
+    assert details["failure_attempt"] == 1
+    assert details["failure_mode"] == "initial"
+    assert details["llm_call_index"] == 1
+    assert details["llm"]["stage"] == "stage1"
+
+    failure_logs = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith("{")
+        and json.loads(record.getMessage()).get("event")
+        == "history_review_failure"
+    ]
+    assert len(failure_logs) == 1
+    failure_log = failure_logs[0]
+    assert failure_log["error_code"] == stored.error_code
+    assert failure_log["failure_stage"] == details["failure_stage"]
+    assert failure_log["failure_attempt"] == details["failure_attempt"]
+    assert failure_log["failure_mode"] == details["failure_mode"]
+    assert failure_log["llm_call_index"] == details["llm_call_index"]
+    assert failure_log["llm"] == details["llm"]
+
+
+@pytest.mark.anyio
+async def test_cancelled_without_call_diagnostics_logs_nulls(
+    service, db, api_client, monkeypatch, caplog,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+
+    async def cancel_pipeline(*, client, sources):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        execution_module,
+        "run_history_review_pipeline",
+        cancel_pipeline,
+    )
+
+    with caplog.at_level(
+        "WARNING", logger="backend.history_review_service",
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await service.execute_history_review(
+                session_id=session.id,
+                review_id=review.id,
+                db=db,
+            )
+
+    stored = _refresh_review(db, review.id)
+    assert stored.status == "failed"
+    assert stored.error_code == HISTORY_REVIEW_EXECUTION_INTERRUPTED
+    details = json.loads(stored.error_details)
+    assert details["failure_stage"] is None
+    assert details["failure_attempt"] is None
+    assert details["failure_mode"] is None
+    assert details["llm_call_index"] is None
+    assert details["llm"] is None
+    assert isinstance(details["review_elapsed_ms"], int)
+    assert details["review_elapsed_ms"] >= 0
+
+    failure_logs = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith("{")
+        and json.loads(record.getMessage()).get("event")
+        == "history_review_failure"
+    ]
+    assert len(failure_logs) == 1
+    failure_log = failure_logs[0]
+    assert failure_log["failure_stage"] is None
+    assert failure_log["failure_attempt"] is None
+    assert failure_log["failure_mode"] is None
+    assert failure_log["llm_call_index"] is None
+    assert failure_log["llm"] is None
+    assert isinstance(failure_log["review_elapsed_ms"], int)
+    assert failure_log["review_elapsed_ms"] >= 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("category", "expected_code", "expected_fragment"),
+    [
+        (
+            ErrorCategory.UPSTREAM_RESPONSE_MISSING_CONTENT,
+            LLM_NON_STRING_RESPONSE,
+            "缺少 content 字段",
+        ),
+        (
+            ErrorCategory.UPSTREAM_RESPONSE_NULL_CONTENT,
+            LLM_NON_STRING_RESPONSE,
+            "content 为 null",
+        ),
+        (
+            ErrorCategory.UPSTREAM_RESPONSE_NON_STRING_CONTENT,
+            LLM_NON_STRING_RESPONSE,
+            "content 类型错误",
+        ),
+        (
+            ErrorCategory.UPSTREAM_RESPONSE_EMPTY_CONTENT,
+            LLM_EMPTY_RESPONSE,
+            "空内容",
+        ),
+    ],
+)
+async def test_content_categories_map_to_compatible_codes(
+    service, db, api_client, category, expected_code, expected_fragment,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    diagnostics = LLMCallDiagnostics(error_category=category)
+    api_client.error = LLMError(
+        detail="content category",
+        status_code=502,
+        diagnostics=diagnostics,
+    )
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == expected_code
+    stored = _refresh_review(db, review.id)
+    assert expected_fragment in stored.error_message
+    details = json.loads(stored.error_details)
+    assert details["error_category"] == category.value
+    assert details["llm"]["error_category"] == category.value
+
+
+@pytest.mark.anyio
+async def test_missing_finish_reason_does_not_infer_truncation(
+    service, db, api_client,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.response = _stage_responder(
+        _valid_response,
+        lambda messages: "{",
+    )
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == (
+        "history_review_verification_json_syntax_error"
+    )
+    stored = _refresh_review(db, review.id)
+    assert "长度上限" not in stored.error_message
+    details = json.loads(stored.error_details)
+    assert details["error_category"] == "review_json_syntax"
+    assert details["llm"]["finish_reason"] is None
+
+
+@pytest.mark.anyio
+async def test_empty_content_length_preserves_truncation_evidence(
+    service, db, api_client,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    diagnostics = LLMCallDiagnostics(
+        error_category=ErrorCategory.UPSTREAM_RESPONSE_EMPTY_CONTENT,
+        finish_reason="length",
+    )
+    api_client.error = LLMError(
+        detail="empty",
+        status_code=502,
+        diagnostics=diagnostics,
+    )
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == LLM_EMPTY_RESPONSE
+    stored = _refresh_review(db, review.id)
+    assert "长度截断" in stored.error_message
+    details = json.loads(stored.error_details)
+    assert details["llm"]["finish_reason"] == "length"
+    assert details["error_category"] == "upstream_response_empty_content"
+
+@pytest.mark.anyio
+async def test_llm_failure_persists_when_failure_log_warning_raises(
+    service, db, api_client, monkeypatch,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    diagnostics = LLMCallDiagnostics(
+        error_category=ErrorCategory.UPSTREAM_HTTP_429,
+        http_status=429,
+        timeout_configured_seconds=30.0,
+        call_elapsed_ms=123,
+    )
+    api_client.error = LLMError(
+        detail="upstream boom",
+        status_code=502,
+        diagnostics=diagnostics,
+    )
+    monkeypatch.setattr(
+        execution_module.logger, "warning", _raise_logging_warning,
+    )
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == LLM_UPSTREAM_ERROR
+    assert len(api_client.messages) == 1
+    stored = _refresh_review(db, review.id)
+    assert stored.status == "failed"
+    assert stored.error_code == LLM_UPSTREAM_ERROR
+    details = json.loads(stored.error_details)
+    assert details["llm"]["http_status"] == 429
+    assert details["llm"]["call_elapsed_ms"] == 123
+
+
+@pytest.mark.anyio
+async def test_parser_failure_persists_when_failure_log_warning_raises(
+    service, db, api_client, monkeypatch,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.response = "not json"
+    monkeypatch.setattr(
+        execution_module.logger, "warning", _raise_logging_warning,
+    )
+
+    result = await service.execute_history_review(
+        session_id=session.id,
+        review_id=review.id,
+        db=db,
+    )
+
+    expected_code = "history_review_extraction_json_syntax_error"
+    assert result.status == "failed"
+    assert result.error_code == expected_code
+    assert len(api_client.messages) == 2
+    stored = _assert_running_failure_shape(db, review.id)
+    assert stored.error_code == expected_code
+    assert stored.raw_output is not None
+    assert "not json" in stored.raw_output
+
+
+@pytest.mark.anyio
+async def test_finalize_failure_persists_when_failure_log_warning_raises(
+    service, db, engine, api_client, monkeypatch,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.response = _valid_response
+    api_client.response_http_status = 200
+    api_client.response_finish_reason = "stop"
+    with engine.begin() as conn:
+        conn.execute(sa_text(
+            "CREATE TRIGGER fail_history_review_finding_insert "
+            "BEFORE INSERT ON history_review_findings "
+            "BEGIN SELECT RAISE(FAIL, 'simulated finding failure'); END"
+        ))
+    monkeypatch.setattr(
+        execution_module.logger, "warning", _raise_logging_warning,
+    )
+    try:
+        result = await service.execute_history_review(
+            session_id=session.id,
+            review_id=review.id,
+            db=db,
+        )
+    finally:
+        with engine.begin() as conn:
+            conn.execute(sa_text(
+                "DROP TRIGGER IF EXISTS "
+                "fail_history_review_finding_insert"
+            ))
+
+    assert result.status == "failed"
+    assert result.error_code == FINALIZE_FAILED
+    assert len(api_client.messages) == 2
+    stored = _refresh_review(db, review.id)
+    assert stored.status == "failed"
+    assert stored.error_code == FINALIZE_FAILED
+    details = json.loads(stored.error_details)
+    assert details["failure_stage"] == "finalize"
+    assert details["failure_attempt"] is None
+    assert details["failure_mode"] is None
+    assert details["llm_call_index"] == 2
+    assert details["llm"]["stage"] == "stage2"
+
+
+@pytest.mark.anyio
+async def test_failure_record_error_and_log_error_preserve_original(
+    service, db, api_client, monkeypatch,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.error = LLMError(detail="upstream boom", status_code=502)
+    original_exc = SQLAlchemyError("synthetic database save failure")
+
+    def _fail_record(*args, **kwargs):
+        raise original_exc
+
+    monkeypatch.setattr(service, "_record_running_failure", _fail_record)
+    monkeypatch.setattr(
+        execution_module.logger, "warning", _raise_logging_warning,
+    )
+
+    with pytest.raises(SQLAlchemyError) as exc_info:
+        await service.execute_history_review(
+            session_id=session.id,
+            review_id=review.id,
+            db=db,
+        )
+
+    assert exc_info.value is original_exc
+
+
+@pytest.mark.anyio
+async def test_cancelled_execution_persists_when_failure_log_warning_raises(
+    service, db, api_client, monkeypatch,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.error = asyncio.CancelledError()
+    monkeypatch.setattr(
+        execution_module.logger, "warning", _raise_logging_warning,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute_history_review(
+            session_id=session.id,
+            review_id=review.id,
+            db=db,
+        )
+
+    stored = _refresh_review(db, review.id)
+    assert stored.status == "failed"
+    assert stored.error_code == HISTORY_REVIEW_EXECUTION_INTERRUPTED
+    details = json.loads(stored.error_details)
+    assert details["failure_stage"] == "stage1"
+    assert details["failure_attempt"] == 1
+    assert details["failure_mode"] == "initial"
+    assert details["llm"]["stage"] == "stage1"
+
+
+@pytest.mark.anyio
+async def test_cancelled_cleanup_and_logging_failures_preserve_cancellation(
+    service, db, api_client, monkeypatch,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.error = asyncio.CancelledError()
+
+    def _fail_cleanup(*args, **kwargs):
+        raise SQLAlchemyError("synthetic cleanup failure")
+
+    def _raise_logging_exception(*args, **kwargs):
+        raise RuntimeError("synthetic logger exception failure")
+
+    monkeypatch.setattr(service, "_record_running_failure", _fail_cleanup)
+    monkeypatch.setattr(
+        execution_module.logger, "warning", _raise_logging_warning,
+    )
+    monkeypatch.setattr(
+        execution_module.logger, "exception", _raise_logging_exception,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute_history_review(
+            session_id=session.id,
+            review_id=review.id,
+            db=db,
+        )
+
+    stored = _refresh_review(db, review.id)
+    assert stored.status == "running"
+
+
+@pytest.mark.anyio
+async def test_cancelled_cleanup_log_does_not_leak_exception_text(
+    service, db, api_client, monkeypatch, caplog,
+):
+    marker = "SYNTHETIC_PRIVATE_MARKER_7f2a"
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.error = asyncio.CancelledError()
+
+    def _fail_cleanup(*args, **kwargs):
+        raise SQLAlchemyError("cleanup failure " + marker)
+
+    monkeypatch.setattr(service, "_record_running_failure", _fail_cleanup)
+
+    with caplog.at_level(
+        logging.WARNING, logger="backend.history_review_service",
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await service.execute_history_review(
+                session_id=session.id,
+                review_id=review.id,
+                db=db,
+            )
+
+    assert marker not in caplog.text
+    assert "history_review_cleanup_failure" in caplog.text
+    assert "SQLAlchemyError" in caplog.text
+    assert all(
+        record.exc_info is None
+        for record in caplog.records
+        if record.name == "backend.history_review_service"
+    )
+
+
+@pytest.mark.anyio
+async def test_success_does_not_emit_history_review_failure_log(
+    service, db, api_client, caplog,
+):
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.response = _valid_response
+
+    with caplog.at_level(
+        logging.WARNING, logger="backend.history_review_service",
+    ):
+        result = await service.execute_history_review(
+            session_id=session.id,
+            review_id=review.id,
+            db=db,
+        )
+
+    assert result.status == "completed"
+    failure_logs = [
+        record
+        for record in caplog.records
+        if record.name == "backend.history_review_service"
+        and record.getMessage().startswith("{")
+        and json.loads(record.getMessage()).get("event")
+        == "history_review_failure"
+    ]
+    assert failure_logs == []
+    stored = _refresh_review(db, review.id)
+    assert stored.error_code is None
+    assert stored.error_message is None
+    assert stored.error_details is None
+
+
+def test_database_engine_hides_statement_parameters(engine):
+    assert engine.hide_parameters is True
+
+@pytest.mark.anyio
+async def test_parser_failure_log_does_not_leak_raw_output(
+    service, db, api_client, caplog,
+):
+    marker = "SYNTHETIC_PRIVATE_MARKER_7f2a"
+    session, event, messages, review, sources = await _prepare_pending(
+        service, db,
+    )
+    api_client.response = "not json " + marker
+
+    with caplog.at_level(
+        logging.WARNING, logger="backend.history_review_service",
+    ):
+        result = await service.execute_history_review(
+            session_id=session.id,
+            review_id=review.id,
+            db=db,
+        )
+
+    assert result.status == "failed"
+    stored = _refresh_review(db, review.id)
+    assert stored.raw_output is not None
+    assert marker in stored.raw_output
+    assert marker not in caplog.text
+    failure_logs = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "backend.history_review_service"
+        and record.getMessage().startswith("{")
+        and json.loads(record.getMessage()).get("event")
+        == "history_review_failure"
+    ]
+    assert len(failure_logs) == 1
+    assert "raw_output" not in failure_logs[0]

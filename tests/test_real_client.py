@@ -15,6 +15,12 @@ from backend.llm_client import (
     LLMMessage,
     OpenAICompatibleLLMClient,
 )
+from backend.review_diagnostics import (
+    ErrorCategory,
+    LLMCallDiagnostics,
+    clean_optional_string,
+    diagnostics_to_dict,
+)
 
 # Fixed test parameters
 TEST_KEY = "test-key"
@@ -494,3 +500,292 @@ async def test_max_tokens_validation_rejects_invalid_values(max_tokens):
             [_user_msg("hi")],
             max_tokens=max_tokens,
         )
+
+
+# ---------------------------------------------------------------------------
+# Structured diagnostics
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("http_status", "expected_category"),
+    [
+        (400, ErrorCategory.UPSTREAM_HTTP_400),
+        (401, ErrorCategory.UPSTREAM_HTTP_401),
+        (402, ErrorCategory.UPSTREAM_HTTP_402),
+        (429, ErrorCategory.UPSTREAM_HTTP_429),
+        (500, ErrorCategory.UPSTREAM_HTTP_5XX),
+        (503, ErrorCategory.UPSTREAM_HTTP_5XX),
+        (418, ErrorCategory.UPSTREAM_HTTP_OTHER),
+    ],
+)
+async def test_http_error_diagnostics(http_status, expected_category):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            http_status,
+            headers={
+                "x-request-id": "req-123",
+                "retry-after": "30",
+            },
+            json={
+                "error": {
+                    "code": "upstream-code",
+                    "type": "upstream-type",
+                    "message": "secret free text",
+                },
+            },
+        )
+
+    client = _make_client(transport=httpx.MockTransport(handler))
+    diagnostics = LLMCallDiagnostics()
+    with pytest.raises(LLMError) as exc_info:
+        await client.generate(
+            [_user_msg("hi")],
+            diagnostics=diagnostics,
+        )
+
+    error = exc_info.value
+    assert error.status_code == 502
+    assert error.diagnostics is diagnostics
+    assert diagnostics.http_status == http_status
+    assert diagnostics.error_category == expected_category
+    assert diagnostics.upstream_request_id == "req-123"
+    assert diagnostics.retry_after_seconds == 30.0
+    assert diagnostics.upstream_error_code == "upstream-code"
+    assert diagnostics.upstream_error_type == "upstream-type"
+    serialized = json.dumps(diagnostics_to_dict(diagnostics))
+    assert "secret free text" not in serialized
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("body", "expected_category"),
+    [
+        ({"choices": []}, ErrorCategory.UPSTREAM_RESPONSE_SHAPE_ERROR),
+        ({"choices": [{}]}, ErrorCategory.UPSTREAM_RESPONSE_SHAPE_ERROR),
+        (
+            {"choices": [{"message": {}}]},
+            ErrorCategory.UPSTREAM_RESPONSE_MISSING_CONTENT,
+        ),
+        (
+            {"choices": [{"message": {"content": None}}]},
+            ErrorCategory.UPSTREAM_RESPONSE_NULL_CONTENT,
+        ),
+        (
+            {"choices": [{"message": {"content": 123}}]},
+            ErrorCategory.UPSTREAM_RESPONSE_NON_STRING_CONTENT,
+        ),
+        (
+            {"choices": [{"message": {"content": ""}}]},
+            ErrorCategory.UPSTREAM_RESPONSE_EMPTY_CONTENT,
+        ),
+        (
+            {"choices": [{"message": {"content": "   "}}]},
+            ErrorCategory.UPSTREAM_RESPONSE_EMPTY_CONTENT,
+        ),
+    ],
+)
+async def test_content_diagnostics(body, expected_category):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    client = _make_client(transport=httpx.MockTransport(handler))
+    diagnostics = LLMCallDiagnostics()
+    with pytest.raises(LLMError):
+        await client.generate([_user_msg("hi")], diagnostics=diagnostics)
+
+    assert diagnostics.http_status == 200
+    assert diagnostics.error_category == expected_category
+    assert diagnostics.finish_reason is None
+
+
+@pytest.mark.anyio
+async def test_invalid_json_diagnostics():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json")
+
+    client = _make_client(transport=httpx.MockTransport(handler))
+    diagnostics = LLMCallDiagnostics()
+    with pytest.raises(LLMError):
+        await client.generate([_user_msg("hi")], diagnostics=diagnostics)
+
+    assert diagnostics.error_category == (
+        ErrorCategory.UPSTREAM_RESPONSE_INVALID_JSON
+    )
+
+
+@pytest.mark.anyio
+async def test_finish_reason_length_empty_and_non_empty():
+    bodies = [
+        (
+            {"choices": [{
+                "message": {"content": ""},
+                "finish_reason": "length",
+            }]},
+            True,
+        ),
+        (
+            {"choices": [{
+                "message": {"content": '{"overflow":'},
+                "finish_reason": "length",
+            }]},
+            False,
+        ),
+    ]
+    for body, raises in bodies:
+        async def handler(request: httpx.Request, body=body):
+            return httpx.Response(200, json=body)
+
+        client = _make_client(transport=httpx.MockTransport(handler))
+        diagnostics = LLMCallDiagnostics()
+        if raises:
+            with pytest.raises(LLMError):
+                await client.generate(
+                    [_user_msg("hi")], diagnostics=diagnostics,
+                )
+        else:
+            result = await client.generate(
+                [_user_msg("hi")], diagnostics=diagnostics,
+            )
+            assert result == '{"overflow":'
+        assert diagnostics.finish_reason == "length"
+        if raises:
+            assert diagnostics.error_category == (
+                ErrorCategory.UPSTREAM_RESPONSE_EMPTY_CONTENT
+            )
+
+
+@pytest.mark.anyio
+async def test_transport_exception_categories():
+    cases = [
+        (httpx.ConnectTimeout, ErrorCategory.UPSTREAM_CONNECT_TIMEOUT),
+        (httpx.ReadTimeout, ErrorCategory.UPSTREAM_READ_TIMEOUT),
+        (httpx.WriteTimeout, ErrorCategory.UPSTREAM_WRITE_TIMEOUT),
+        (httpx.PoolTimeout, ErrorCategory.UPSTREAM_POOL_TIMEOUT),
+        (httpx.ConnectError, ErrorCategory.UPSTREAM_CONNECT_ERROR),
+        (httpx.ReadError, ErrorCategory.UPSTREAM_READ_ERROR),
+        (httpx.WriteError, ErrorCategory.UPSTREAM_WRITE_ERROR),
+        (
+            httpx.RemoteProtocolError,
+            ErrorCategory.UPSTREAM_REMOTE_PROTOCOL_ERROR,
+        ),
+    ]
+    for exc_class, expected_category in cases:
+        async def handler(request: httpx.Request, exc_class=exc_class):
+            raise exc_class("boom", request=request)
+
+        client = _make_client(transport=httpx.MockTransport(handler))
+        diagnostics = LLMCallDiagnostics()
+        with pytest.raises(LLMError):
+            await client.generate(
+                [_user_msg("hi")], diagnostics=diagnostics,
+            )
+        assert diagnostics.error_category == expected_category
+        assert diagnostics.exception_type == exc_class.__name__
+
+
+@pytest.mark.anyio
+async def test_token_usage_and_no_reasoning_content():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "choices": [{
+                "message": {
+                    "content": "hello",
+                    "reasoning_content": "private reasoning",
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+            },
+        })
+
+    client = _make_client(transport=httpx.MockTransport(handler))
+    diagnostics = LLMCallDiagnostics()
+    assert await client.generate(
+        [_user_msg("hi")],
+        diagnostics=diagnostics,
+    ) == "hello"
+    assert diagnostics.finish_reason == "stop"
+    assert diagnostics.token_usage is not None
+    assert diagnostics.token_usage.prompt_tokens == 11
+    assert diagnostics.token_usage.completion_tokens == 7
+    assert diagnostics.token_usage.total_tokens == 18
+    serialized = json.dumps(diagnostics_to_dict(diagnostics))
+    assert "reasoning_content" not in serialized
+    assert "private reasoning" not in serialized
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic string cleaning
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "a\x00b",
+        "a\x01b",
+        "a\x1fb",
+        "a\x7fb",
+        "a\x80b",
+        "a\x85b",
+        "a\x9fb",
+        "a\u2028b",
+        "a\u2029b",
+    ],
+)
+def test_clean_optional_string_removes_control_characters(raw):
+    assert clean_optional_string(raw, max_length=64) == "ab"
+
+
+def test_clean_optional_string_all_removed_returns_none():
+    raw = "\x00\x1f\x7f\x80\x85\x9f\u2028\u2029"
+    assert clean_optional_string(raw, max_length=64) is None
+
+
+def test_clean_optional_string_preserves_normal_unicode():
+    raw = "堪培拉 ABC 123 😀"
+    assert clean_optional_string(raw, max_length=64) == raw
+
+
+@pytest.mark.parametrize("raw", [None, 123, b"abc", object()])
+def test_clean_optional_string_rejects_non_strings(raw):
+    assert clean_optional_string(raw, max_length=64) is None
+
+
+def test_clean_optional_string_truncates_after_cleaning():
+    assert clean_optional_string("a\x85bc", max_length=2) == "ab"
+
+
+@pytest.mark.anyio
+async def test_error_metadata_control_characters_are_sanitized():
+    sensitive_marker = "no-store-sensitive-9f3a"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={
+            "error": {
+                "code": "rate\u0085limit",
+                "type": "upstream\u009btype",
+                "message": sensitive_marker,
+            },
+        })
+
+    client = _make_client(transport=httpx.MockTransport(handler))
+    diagnostics = LLMCallDiagnostics()
+    with pytest.raises(LLMError):
+        await client.generate(
+            [_user_msg("hi")],
+            diagnostics=diagnostics,
+        )
+
+    assert diagnostics.error_category == ErrorCategory.UPSTREAM_HTTP_429
+    assert diagnostics.upstream_error_code == "ratelimit"
+    assert diagnostics.upstream_error_type == "upstreamtype"
+    serialized = json.dumps(diagnostics_to_dict(diagnostics))
+    assert "\x85" not in serialized
+    assert "\x9b" not in serialized
+    assert sensitive_marker not in serialized

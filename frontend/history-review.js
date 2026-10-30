@@ -87,7 +87,7 @@ var HISTORY_REVIEW_DIALOG_COPY = {
 };
 
 var UNCERTAIN_MESSAGE =
-  "The history review could not be confirmed. Use Recheck.";
+  "尚无法确认审查结果。请使用 Recheck 重新查询状态。";
 var FAILED_MESSAGE = "The history review operation failed.";
 
 function _hasOwn(value, key) {

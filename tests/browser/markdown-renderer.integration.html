@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Markdown renderer integration tests</title>
+  <link rel="stylesheet" href="/frontend/style.css">
+</head>
+<body>
+  <div
+    id="markdown-test-root"
+    style="position: fixed; left: -10000px; top: 0; width: 600px;"
+  ></div>
+
+  <script src="/frontend/vendor/marked.umd.js"></script>
+  <script src="/frontend/vendor/purify.min.js"></script>
+  <script src="/frontend/markdown-renderer.js"></script>
+  <script src="./markdown-renderer.integration.tests.js"></script>
+</body>
+</html>

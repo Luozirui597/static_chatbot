@@ -1,6 +1,10 @@
 """Application-level exceptions."""
 
+from __future__ import annotations
+
 from typing import Literal
+
+from backend.review_diagnostics import LLMCallDiagnostics
 
 
 class LLMError(Exception):
@@ -10,10 +14,17 @@ class LLMError(Exception):
     frontend.  *status_code* is the suggested HTTP status.
     """
 
-    def __init__(self, detail: str, status_code: int) -> None:
+    def __init__(
+        self,
+        detail: str,
+        status_code: int,
+        *,
+        diagnostics: LLMCallDiagnostics | None = None,
+    ) -> None:
         super().__init__(detail)
         self.detail = detail
         self.status_code = status_code
+        self.diagnostics = diagnostics
 
 
 class LLMInvalidResponseError(LLMError):

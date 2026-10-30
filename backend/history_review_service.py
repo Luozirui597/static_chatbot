@@ -11,7 +11,9 @@ tasks, and source selection reruns remain out of scope.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Literal
 
@@ -59,6 +61,15 @@ from backend.models import (
     Message,
     ModeSwitchEvent,
     utc_now,
+)
+from backend.review_diagnostics import (
+    ErrorCategory,
+    FailureStage,
+    HistoryReviewCancelledError,
+    HistoryReviewFailureDetails,
+    LLMCallDiagnostics,
+    ReviewMode,
+    diagnostics_to_dict,
 )
 
 logger = logging.getLogger(__name__)
@@ -179,6 +190,288 @@ def _safe_error_message(code: str) -> str:
         code,
         "History review execution failed.",
     )
+
+
+_STAGE_LABELS = {
+    FailureStage.STAGE1: "提取阶段",
+    FailureStage.STAGE2: "验证阶段",
+    FailureStage.FINALIZE: "结果保存阶段",
+    FailureStage.SERVICE: "审查服务",
+}
+
+
+def _stage_label(stage: FailureStage | None) -> str:
+    if stage is None:
+        return "审查"
+    return _STAGE_LABELS.get(stage, "审查")
+
+
+def _parser_category(code: str) -> ErrorCategory:
+    if code == "history_review_llm_empty_response":
+        return ErrorCategory.UPSTREAM_RESPONSE_EMPTY_CONTENT
+    if code == "history_review_llm_non_string_response":
+        return ErrorCategory.UPSTREAM_RESPONSE_SHAPE_ERROR
+    if code == "history_review_llm_upstream_error":
+        return ErrorCategory.UPSTREAM_TRANSPORT_ERROR_UNKNOWN
+    if code.endswith("_json_syntax_error"):
+        return ErrorCategory.REVIEW_JSON_SYNTAX
+    if code.endswith("_json_structure_error"):
+        return ErrorCategory.REVIEW_JSON_STRUCTURE
+    if code.endswith("_json_semantic_error"):
+        return ErrorCategory.REVIEW_JSON_SEMANTIC
+    if code.endswith("_source_invalid") or code.endswith(
+        "_source_uncovered"
+    ):
+        return ErrorCategory.REVIEW_SOURCE_COVERAGE
+    if code.endswith("_quote_invalid"):
+        return ErrorCategory.REVIEW_SOURCE_REFERENCE
+    if code.endswith("_claim_invalid"):
+        return ErrorCategory.REVIEW_CLAIM_REFERENCE
+    if code.endswith("_claim_uncovered"):
+        return ErrorCategory.REVIEW_CLAIM_COVERAGE
+    if code.endswith("_input_too_large"):
+        return ErrorCategory.REVIEW_INPUT_TOO_LARGE
+    if code.endswith("_capacity_exceeded"):
+        return ErrorCategory.REVIEW_CAPACITY_EXCEEDED
+    if code.endswith("_too_large"):
+        return ErrorCategory.REVIEW_OUTPUT_TOO_LARGE
+    return ErrorCategory.REVIEW_INTERNAL_ERROR
+
+
+def _validation_label(code: str) -> str:
+    category = _parser_category(code)
+    return {
+        ErrorCategory.REVIEW_JSON_SYNTAX: "JSON 无法解析",
+        ErrorCategory.REVIEW_JSON_STRUCTURE: "输出结构校验失败",
+        ErrorCategory.REVIEW_JSON_SEMANTIC: "输出语义校验失败",
+        ErrorCategory.REVIEW_SOURCE_COVERAGE: "来源覆盖校验失败",
+        ErrorCategory.REVIEW_SOURCE_REFERENCE: "来源引用校验失败",
+        ErrorCategory.REVIEW_CLAIM_REFERENCE: "claim 引用校验失败",
+        ErrorCategory.REVIEW_CLAIM_COVERAGE: "claim 覆盖校验失败",
+        ErrorCategory.REVIEW_INPUT_TOO_LARGE: "输入预算校验失败",
+        ErrorCategory.REVIEW_OUTPUT_TOO_LARGE: "输出预算校验失败",
+        ErrorCategory.REVIEW_CAPACITY_EXCEEDED: "容量校验失败",
+    }.get(category, "输出校验失败")
+
+
+def _user_message_for_parser_failure(
+    code: str,
+    *,
+    stage: FailureStage | None,
+    finish_reason: str | None,
+) -> str:
+    label = _stage_label(stage)
+    if code == "history_review_llm_empty_response":
+        if finish_reason == "length":
+            return (
+                f"{label}：模型未返回内容，"
+                "上游标记为长度截断（finish_reason=length）。"
+            )
+        return f"{label}：模型返回空内容。"
+    validation = _validation_label(code)
+    if finish_reason == "length":
+        return (
+            f"{label}：模型输出在长度上限处结束，"
+            f"随后{validation}。"
+        )
+    if finish_reason == "content_filter":
+        return (
+            f"{label}：模型输出因内容过滤结束，"
+            f"随后{validation}。"
+        )
+    return _safe_error_message(code)
+
+
+def _user_message_for_llm_error(
+    diagnostics: LLMCallDiagnostics | None,
+    *,
+    stage: FailureStage | None,
+) -> str | None:
+    if diagnostics is None or diagnostics.error_category is None:
+        return None
+    category = diagnostics.error_category
+    label = _stage_label(stage)
+    configured = diagnostics.timeout_configured_seconds
+
+    if category in {
+        ErrorCategory.UPSTREAM_CONNECT_TIMEOUT,
+        ErrorCategory.UPSTREAM_READ_TIMEOUT,
+        ErrorCategory.UPSTREAM_WRITE_TIMEOUT,
+        ErrorCategory.UPSTREAM_POOL_TIMEOUT,
+        ErrorCategory.UPSTREAM_TIMEOUT_UNKNOWN,
+    }:
+        if configured is not None:
+            return (
+                f"{label}：等待模型响应超时"
+                f"（当前配置 {configured:.1f}s）。"
+            )
+        return f"{label}：等待模型响应超时。"
+
+    if category == ErrorCategory.UPSTREAM_CONNECT_ERROR:
+        return f"{label}：无法连接上游模型服务（连接错误）。"
+    if category == ErrorCategory.UPSTREAM_READ_ERROR:
+        return f"{label}：读取上游响应失败。"
+    if category == ErrorCategory.UPSTREAM_WRITE_ERROR:
+        return f"{label}：向上游发送请求失败。"
+    if category == ErrorCategory.UPSTREAM_REMOTE_PROTOCOL_ERROR:
+        return f"{label}：上游通信协议异常。"
+    if category == ErrorCategory.UPSTREAM_PROXY_ERROR:
+        return f"{label}：代理连接失败。"
+    if category == ErrorCategory.UPSTREAM_UNSUPPORTED_PROTOCOL:
+        return f"{label}：不支持的请求协议。"
+    if category == ErrorCategory.UPSTREAM_TRANSPORT_DECODE_ERROR:
+        return f"{label}：上游响应解码失败。"
+    if category == ErrorCategory.UPSTREAM_TRANSPORT_ERROR_UNKNOWN:
+        return f"{label}：与上游模型的传输失败，原因未分类。"
+
+    if category == ErrorCategory.UPSTREAM_HTTP_400:
+        return f"{label}：上游拒绝请求（HTTP 400）。具体原因无法仅凭状态码判断。"
+    if category == ErrorCategory.UPSTREAM_HTTP_401:
+        return f"{label}：上游认证失败（HTTP 401）。请检查 API Key 或认证配置。"
+    if category == ErrorCategory.UPSTREAM_HTTP_402:
+        return f"{label}：上游计费受限（HTTP 402）。请检查账户余额或计费状态。"
+    if category == ErrorCategory.UPSTREAM_HTTP_429:
+        return f"{label}：上游限流（HTTP 429）。请稍后重试。"
+    if category == ErrorCategory.UPSTREAM_HTTP_5XX:
+        status = diagnostics.http_status
+        suffix = f"（HTTP {status}）" if status is not None else ""
+        return f"{label}：上游服务错误{suffix}。请稍后重试。"
+    if category == ErrorCategory.UPSTREAM_HTTP_OTHER:
+        status = diagnostics.http_status
+        suffix = f" HTTP {status}" if status is not None else ""
+        return f"{label}：上游返回非成功状态{suffix}，原因未分类。"
+
+    if category == ErrorCategory.UPSTREAM_RESPONSE_INVALID_JSON:
+        return f"{label}：上游返回了无法解析的响应体。"
+    if category == ErrorCategory.UPSTREAM_RESPONSE_SHAPE_ERROR:
+        return f"{label}：上游响应结构异常，缺少 choices 或 message。"
+    if category == ErrorCategory.UPSTREAM_RESPONSE_MISSING_CONTENT:
+        return f"{label}：上游响应结构异常，缺少 content 字段。"
+    if category == ErrorCategory.UPSTREAM_RESPONSE_NULL_CONTENT:
+        return f"{label}：上游响应 content 为 null，未返回有效文本。"
+    if category == ErrorCategory.UPSTREAM_RESPONSE_NON_STRING_CONTENT:
+        return f"{label}：上游响应 content 类型错误，不是字符串。"
+    if category == ErrorCategory.UPSTREAM_RESPONSE_FILTERED:
+        return f"{label}：模型因内容过滤结束且未返回内容。"
+    if category == ErrorCategory.UPSTREAM_RESPONSE_EMPTY_CONTENT:
+        if diagnostics.finish_reason == "length":
+            return (
+                f"{label}：模型未返回内容，"
+                "上游标记为长度截断（finish_reason=length）。"
+            )
+        return f"{label}：模型返回空内容。"
+    return None
+
+
+def _llm_error_code(
+    diagnostics: LLMCallDiagnostics | None,
+) -> str:
+    if diagnostics is None or diagnostics.error_category is None:
+        return LLM_UPSTREAM_ERROR
+    if diagnostics.error_category == ErrorCategory.UPSTREAM_RESPONSE_EMPTY_CONTENT:
+        return LLM_EMPTY_RESPONSE
+    if diagnostics.error_category in {
+        ErrorCategory.UPSTREAM_RESPONSE_SHAPE_ERROR,
+        ErrorCategory.UPSTREAM_RESPONSE_MISSING_CONTENT,
+        ErrorCategory.UPSTREAM_RESPONSE_NULL_CONTENT,
+        ErrorCategory.UPSTREAM_RESPONSE_NON_STRING_CONTENT,
+    }:
+        return LLM_NON_STRING_RESPONSE
+    return LLM_UPSTREAM_ERROR
+
+
+def _failure_details_json(
+    details: HistoryReviewFailureDetails,
+) -> str:
+    return json.dumps(
+        diagnostics_to_dict(details),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _safe_exception_type_name(exc: BaseException | None) -> str | None:
+    """Return a bounded, log-safe exception class name."""
+    if exc is None:
+        return None
+    name = type(exc).__name__
+    if not isinstance(name, str) or not name:
+        return None
+    cleaned = "".join(
+        char for char in name[:64]
+        if char.isalnum() or char == "_"
+    )
+    return cleaned or None
+
+
+def _log_history_review_failure(
+    *,
+    review_id: int,
+    session_id: int,
+    model: str,
+    prompt_version: str,
+    error_code: str,
+    error_message: str,
+    details: HistoryReviewFailureDetails,
+) -> None:
+    """Emit one bounded structured failure event; never raise.
+
+    Diagnostic logging must not replace the original business failure or
+    prevent the caller from persisting the review failure state.
+    """
+    try:
+        payload = {
+            "event": "history_review_failure",
+            "review_id": review_id,
+            "session_id": session_id,
+            "model": model,
+            "prompt_version": prompt_version,
+            "error_code": error_code,
+            "error_message": error_message,
+            **diagnostics_to_dict(details),
+        }
+        logger.warning(
+            "%s",
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            extra={"history_review_failure": payload},
+        )
+    except Exception:
+        return
+
+
+def _log_history_review_cleanup_failure(
+    *,
+    review_id: int,
+    session_id: int,
+    exception_type: str | None,
+) -> None:
+    """Log a cancelled-review cleanup failure without exception text."""
+    try:
+        payload = {
+            "event": "history_review_cleanup_failure",
+            "review_id": review_id,
+            "session_id": session_id,
+            "exception_type": exception_type,
+            "error_category": "review_execution_interrupted",
+        }
+        logger.warning(
+            "%s",
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            extra={"history_review_cleanup_failure": payload},
+        )
+    except Exception:
+        return
 
 
 class HistoryReviewExecutionError(HistoryReviewError):
@@ -581,6 +874,7 @@ class HistoryReviewService:
                     status="failed",
                     error_code=error_code,
                     error_message=_safe_error_message(error_code),
+                    error_details=None,
                     started_at=None,
                     completed_at=now,
                     updated_at=now,
@@ -840,49 +1134,116 @@ class HistoryReviewService:
         )
 
     def recover_abandoned_running_reviews(self, db: Session) -> int:
-        """Mark all running reviews from a previous process as interrupted."""
-        review_ids = list(db.execute(
-            select(HistoryReview.id)
+        """Fail abandoned running reviews safely on startup.
+
+        Current-pipeline rows become retryable interrupted reviews.
+        Legacy rows with a different pipeline snapshot become
+        non-retryable unsupported failures.
+        """
+        running_rows = list(db.execute(
+            select(
+                HistoryReview.id,
+                HistoryReview.prompt_version_snapshot,
+            )
             .where(HistoryReview.status == "running")
-        ).scalars().all())
-        if not review_ids:
+        ).all())
+        if not running_rows:
             db.rollback()
             return 0
 
+        current_ids = [
+            review_id
+            for review_id, snapshot in running_rows
+            if snapshot == HISTORY_REVIEW_PIPELINE_VERSION
+        ]
+        unsupported_ids = [
+            review_id
+            for review_id, snapshot in running_rows
+            if snapshot != HISTORY_REVIEW_PIPELINE_VERSION
+        ]
+
         now = utc_now()
-        try:
-            update_result = db.execute(
-                update(HistoryReview)
-                .where(
-                    HistoryReview.id.in_(review_ids),
-                    HistoryReview.status == "running",
-                )
-                .values(
-                    status="failed",
-                    error_code=HISTORY_REVIEW_EXECUTION_INTERRUPTED,
-                    error_message=_safe_error_message(
-                        HISTORY_REVIEW_EXECUTION_INTERRUPTED
-                    ),
-                    summary=None,
-                    coverage_note=None,
-                    raw_output=None,
-                    raw_output_truncated=False,
-                    completed_at=now,
-                    updated_at=now,
-                )
-                .execution_options(synchronize_session=False)
+        updated_ids: list[int] = []
+        interrupted_details = _failure_details_json(
+            HistoryReviewFailureDetails(
+                error_code=HISTORY_REVIEW_EXECUTION_INTERRUPTED,
+                error_category=(
+                    ErrorCategory.REVIEW_EXECUTION_INTERRUPTED
+                ),
             )
-            if update_result.rowcount:
-                db.execute(
-                    delete(HistoryReviewFinding).where(
-                        HistoryReviewFinding.review_id.in_(review_ids)
+        )
+        unsupported_details = _failure_details_json(
+            HistoryReviewFailureDetails(
+                error_code=PROMPT_VERSION_UNSUPPORTED,
+                error_category=(
+                    ErrorCategory.REVIEW_PROMPT_VERSION_UNSUPPORTED
+                ),
+            )
+        )
+        try:
+            if current_ids:
+                current_result = db.execute(
+                    update(HistoryReview)
+                    .where(
+                        HistoryReview.id.in_(current_ids),
+                        HistoryReview.status == "running",
                     )
+                    .values(
+                        status="failed",
+                        error_code=HISTORY_REVIEW_EXECUTION_INTERRUPTED,
+                        error_message=_safe_error_message(
+                            HISTORY_REVIEW_EXECUTION_INTERRUPTED
+                        ),
+                        error_details=interrupted_details,
+                        summary=None,
+                        coverage_note=None,
+                        raw_output=None,
+                        raw_output_truncated=False,
+                        completed_at=now,
+                        updated_at=now,
+                    )
+                    .returning(HistoryReview.id)
+                    .execution_options(synchronize_session=False)
                 )
+                updated_ids.extend(current_result.scalars().all())
+            if unsupported_ids:
+                unsupported_result = db.execute(
+                    update(HistoryReview)
+                    .where(
+                        HistoryReview.id.in_(unsupported_ids),
+                        HistoryReview.status == "running",
+                    )
+                    .values(
+                        status="failed",
+                        error_code=PROMPT_VERSION_UNSUPPORTED,
+                        error_message=_safe_error_message(
+                            PROMPT_VERSION_UNSUPPORTED
+                        ),
+                        error_details=unsupported_details,
+                        summary=None,
+                        coverage_note=None,
+                        raw_output=None,
+                        raw_output_truncated=False,
+                        completed_at=now,
+                        updated_at=now,
+                    )
+                    .returning(HistoryReview.id)
+                    .execution_options(synchronize_session=False)
+                )
+                updated_ids.extend(unsupported_result.scalars().all())
+            if not updated_ids:
+                db.rollback()
+                return 0
+            db.execute(
+                delete(HistoryReviewFinding).where(
+                    HistoryReviewFinding.review_id.in_(updated_ids)
+                )
+            )
             db.commit()
         except Exception:
             db.rollback()
             raise
-        return int(update_result.rowcount or 0)
+        return len(updated_ids)
 
     def _reset_interrupted_review_for_retry(
         self,
@@ -910,6 +1271,7 @@ class HistoryReviewService:
                     raw_output_truncated=False,
                     error_code=None,
                     error_message=None,
+                    error_details=None,
                     started_at=None,
                     completed_at=None,
                     updated_at=now,
@@ -929,6 +1291,58 @@ class HistoryReviewService:
             db.rollback()
             raise
         return True
+
+    def _mark_interrupted_retry_unsupported(
+        self,
+        db: Session,
+        session_id: int,
+        review_id: int,
+    ) -> HistoryReviewExecutionResult | None:
+        now = utc_now()
+        try:
+            update_result = db.execute(
+                update(HistoryReview)
+                .where(
+                    HistoryReview.id == review_id,
+                    HistoryReview.session_id == session_id,
+                    HistoryReview.status == "failed",
+                    HistoryReview.error_code
+                    == HISTORY_REVIEW_EXECUTION_INTERRUPTED,
+                )
+                .values(
+                    error_code=PROMPT_VERSION_UNSUPPORTED,
+                    error_message=_safe_error_message(
+                        PROMPT_VERSION_UNSUPPORTED
+                    ),
+                    error_details=_failure_details_json(
+                        HistoryReviewFailureDetails(
+                            error_code=PROMPT_VERSION_UNSUPPORTED,
+                            error_category=(
+                                ErrorCategory.REVIEW_PROMPT_VERSION_UNSUPPORTED
+                            ),
+                        )
+                    ),
+                    updated_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if update_result.rowcount != 1:
+                db.rollback()
+                return None
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        review = self._load_execution_review(db, session_id, review_id)
+        if review is None:
+            db.rollback()
+            raise HistoryReviewExecutionNotFound()
+        result = self._build_execution_result(
+            db, review, called_llm=False
+        )
+        db.rollback()
+        return result
 
     def _claim_retry_or_authoritative(
         self,
@@ -954,6 +1368,26 @@ class HistoryReviewService:
         if review.error_code != HISTORY_REVIEW_EXECUTION_INTERRUPTED:
             db.rollback()
             raise HistoryReviewRetryNotAllowed()
+
+        if review.prompt_version_snapshot != HISTORY_REVIEW_PIPELINE_VERSION:
+            result = self._mark_interrupted_retry_unsupported(
+                db, session_id, review_id
+            )
+            if result is not None:
+                return result
+            current = self._load_execution_review(db, session_id, review_id)
+            if current is None:
+                db.rollback()
+                raise HistoryReviewExecutionNotFound()
+            if current.status == "pending":
+                return self._claim_pending_review(
+                    db, session_id, review_id
+                )
+            result = self._build_execution_result(
+                db, current, called_llm=False
+            )
+            db.rollback()
+            return result
 
         if not self._reset_interrupted_review_for_retry(
             db, session_id, review_id
@@ -1026,7 +1460,13 @@ class HistoryReviewService:
                 )
                 .values(
                     status="running",
+                    error_code=None,
+                    error_message=None,
+                    error_details=None,
+                    summary=None,
+                    coverage_note=None,
                     started_at=now,
+                    completed_at=None,
                     updated_at=now,
                 )
                 .execution_options(synchronize_session=False)
@@ -1061,8 +1501,16 @@ class HistoryReviewService:
         error_code: str,
         raw_output: object,
         called_llm: bool,
+        error_message: str | None = None,
+        error_details: HistoryReviewFailureDetails | None = None,
     ) -> HistoryReviewExecutionResult | None:
         stored_raw, raw_truncated = self._raw_for_storage(raw_output)
+        stored_message = error_message or _safe_error_message(error_code)
+        stored_details = (
+            _failure_details_json(error_details)
+            if error_details is not None
+            else None
+        )
         now = utc_now()
         try:
             update_result = db.execute(
@@ -1075,7 +1523,8 @@ class HistoryReviewService:
                 .values(
                     status="failed",
                     error_code=error_code,
-                    error_message=_safe_error_message(error_code),
+                    error_message=stored_message,
+                    error_details=stored_details,
                     summary=None,
                     coverage_note=None,
                     raw_output=stored_raw,
@@ -1107,7 +1556,7 @@ class HistoryReviewService:
             summary=None,
             coverage_note=None,
             error_code=error_code,
-            error_message=_safe_error_message(error_code),
+            error_message=stored_message,
             raw_output_truncated=raw_truncated,
             findings=(),
         )
@@ -1122,6 +1571,8 @@ class HistoryReviewService:
         error_code: str,
         raw_output: object,
         called_llm: bool,
+        error_message: str | None = None,
+        error_details: HistoryReviewFailureDetails | None = None,
     ) -> HistoryReviewExecutionResult:
         result = self._record_running_failure(
             db,
@@ -1129,6 +1580,8 @@ class HistoryReviewService:
             error_code=error_code,
             raw_output=raw_output,
             called_llm=called_llm,
+            error_message=error_message,
+            error_details=error_details,
         )
         if result is not None:
             return result
@@ -1143,24 +1596,74 @@ class HistoryReviewService:
         self,
         db: Session,
         claim: _ClaimedExecution,
+        *,
+        diagnostics: LLMCallDiagnostics | None = None,
+        review_elapsed_ms: int | None = None,
     ) -> None:
         try:
             db.rollback()
+            stage = (
+                FailureStage(diagnostics.stage.value)
+                if diagnostics is not None
+                and diagnostics.stage is not None
+                else None
+            )
+            details = HistoryReviewFailureDetails(
+                error_code=HISTORY_REVIEW_EXECUTION_INTERRUPTED,
+                error_category=ErrorCategory.REVIEW_EXECUTION_INTERRUPTED,
+                failure_stage=stage,
+                failure_attempt=(
+                    diagnostics.attempt
+                    if diagnostics is not None
+                    else None
+                ),
+                failure_mode=(
+                    diagnostics.mode
+                    if diagnostics is not None
+                    else None
+                ),
+                llm_call_index=(
+                    diagnostics.llm_call_index
+                    if diagnostics is not None
+                    else None
+                ),
+                llm=diagnostics,
+                review_elapsed_ms=review_elapsed_ms,
+            )
+            error_message = _safe_error_message(
+                HISTORY_REVIEW_EXECUTION_INTERRUPTED
+            )
+            _log_history_review_failure(
+                review_id=claim.snapshot.review_id,
+                session_id=claim.snapshot.session_id,
+                model=claim.profile.model,
+                prompt_version=claim.snapshot.prompt_version,
+                error_code=HISTORY_REVIEW_EXECUTION_INTERRUPTED,
+                error_message=error_message,
+                details=details,
+            )
             self._record_running_failure(
                 db,
                 claim,
                 error_code=HISTORY_REVIEW_EXECUTION_INTERRUPTED,
                 raw_output=None,
                 called_llm=True,
+                error_message=error_message,
+                error_details=details,
             )
-        except Exception:
+        except Exception as cleanup_exc:
             try:
                 db.rollback()
             except Exception:
                 pass
-            logger.exception(
-                "Failed to mark cancelled history review as interrupted"
-            )
+            try:
+                _log_history_review_cleanup_failure(
+                    review_id=claim.snapshot.review_id,
+                    session_id=claim.snapshot.session_id,
+                    exception_type=_safe_exception_type_name(cleanup_exc),
+                )
+            except Exception:
+                pass
 
     def _finalize_success(
         self,
@@ -1189,6 +1692,7 @@ class HistoryReviewService:
                     raw_output_truncated=raw_truncated,
                     error_code=None,
                     error_message=None,
+                    error_details=None,
                     completed_at=now,
                     updated_at=now,
                 )
@@ -1263,25 +1767,129 @@ class HistoryReviewService:
                 return claim_or_result
             claim = claim_or_result
 
+            review_start = time.perf_counter()
+
+            def review_elapsed_ms() -> int:
+                return max(
+                    0,
+                    int((time.perf_counter() - review_start) * 1000),
+                )
+
             try:
                 pipeline_result = await run_history_review_pipeline(
                     client=claim.profile.client,
                     sources=claim.snapshot.sources,
                 )
-            except asyncio.CancelledError:
-                self._handle_cancelled_execution(db, claim)
+            except asyncio.CancelledError as cancel_exc:
+                self._handle_cancelled_execution(
+                    db,
+                    claim,
+                    diagnostics=getattr(
+                        cancel_exc,
+                        "diagnostics",
+                        None,
+                    ),
+                    review_elapsed_ms=review_elapsed_ms(),
+                )
                 raise
-            except LLMError:
+            except LLMError as exc:
+                diagnostics = exc.diagnostics
+                stage = (
+                    FailureStage(diagnostics.stage.value)
+                    if diagnostics is not None
+                    and diagnostics.stage is not None
+                    else None
+                )
+                error_code = _llm_error_code(diagnostics)
+                error_message = (
+                    _user_message_for_llm_error(
+                        diagnostics,
+                        stage=stage,
+                    )
+                    or _safe_error_message(error_code)
+                )
+                details = HistoryReviewFailureDetails(
+                    error_code=error_code,
+                    error_category=(
+                        diagnostics.error_category
+                        if diagnostics is not None
+                        else None
+                    ),
+                    failure_stage=stage,
+                    failure_attempt=(
+                        diagnostics.attempt
+                        if diagnostics is not None
+                        else None
+                    ),
+                    failure_mode=(
+                        diagnostics.mode
+                        if diagnostics is not None
+                        else None
+                    ),
+                    llm_call_index=(
+                        diagnostics.llm_call_index
+                        if diagnostics is not None
+                        else None
+                    ),
+                    llm=diagnostics,
+                    review_elapsed_ms=review_elapsed_ms(),
+                )
+                _log_history_review_failure(
+                    review_id=review_id,
+                    session_id=session_id,
+                    model=claim.profile.model,
+                    prompt_version=claim.snapshot.prompt_version,
+                    error_code=error_code,
+                    error_message=error_message,
+                    details=details,
+                )
                 return self._handle_running_failure(
                     db,
                     claim,
                     session_id=session_id,
                     review_id=review_id,
-                    error_code=LLM_UPSTREAM_ERROR,
+                    error_code=error_code,
                     raw_output=None,
                     called_llm=True,
+                    error_message=error_message,
+                    error_details=details,
                 )
             except HistoryReviewPipelineError as exc:
+                diagnostics = exc.diagnostics
+                finish_reason = (
+                    diagnostics.finish_reason
+                    if diagnostics is not None
+                    else None
+                )
+                category = _parser_category(exc.code)
+                if finish_reason == "length":
+                    category = ErrorCategory.REVIEW_OUTPUT_TRUNCATED
+                elif finish_reason == "content_filter":
+                    category = ErrorCategory.REVIEW_OUTPUT_FILTERED
+                error_message = _user_message_for_parser_failure(
+                    exc.code,
+                    stage=exc.failure_stage,
+                    finish_reason=finish_reason,
+                )
+                details = HistoryReviewFailureDetails(
+                    error_code=exc.code,
+                    error_category=category,
+                    failure_stage=exc.failure_stage,
+                    failure_attempt=exc.failure_attempt,
+                    failure_mode=exc.failure_mode,
+                    llm_call_index=exc.llm_call_index,
+                    llm=diagnostics,
+                    review_elapsed_ms=review_elapsed_ms(),
+                )
+                _log_history_review_failure(
+                    review_id=review_id,
+                    session_id=session_id,
+                    model=claim.profile.model,
+                    prompt_version=claim.snapshot.prompt_version,
+                    error_code=exc.code,
+                    error_message=error_message,
+                    details=details,
+                )
                 return self._handle_running_failure(
                     db,
                     claim,
@@ -1290,8 +1898,26 @@ class HistoryReviewService:
                     error_code=exc.code,
                     raw_output=exc.audit_raw_output,
                     called_llm=exc.called_llm,
+                    error_message=error_message,
+                    error_details=details,
                 )
             except Exception:
+                error_message = _safe_error_message(INTERNAL_ERROR)
+                details = HistoryReviewFailureDetails(
+                    error_code=INTERNAL_ERROR,
+                    error_category=ErrorCategory.REVIEW_INTERNAL_ERROR,
+                    failure_stage=FailureStage.SERVICE,
+                    review_elapsed_ms=review_elapsed_ms(),
+                )
+                _log_history_review_failure(
+                    review_id=review_id,
+                    session_id=session_id,
+                    model=claim.profile.model,
+                    prompt_version=claim.snapshot.prompt_version,
+                    error_code=INTERNAL_ERROR,
+                    error_message=error_message,
+                    details=details,
+                )
                 return self._handle_running_failure(
                     db,
                     claim,
@@ -1300,6 +1926,8 @@ class HistoryReviewService:
                     error_code=INTERNAL_ERROR,
                     raw_output=None,
                     called_llm=True,
+                    error_message=error_message,
+                    error_details=details,
                 )
 
             try:
@@ -1310,6 +1938,33 @@ class HistoryReviewService:
                     pipeline_result.audit_raw_output,
                 )
             except SQLAlchemyError as original_exc:
+                diagnostics = (
+                    pipeline_result.last_llm_call_diagnostics
+                )
+                error_message = _safe_error_message(FINALIZE_FAILED)
+                details = HistoryReviewFailureDetails(
+                    error_code=FINALIZE_FAILED,
+                    error_category=ErrorCategory.REVIEW_FINALIZE_FAILED,
+                    failure_stage=FailureStage.FINALIZE,
+                    failure_attempt=None,
+                    failure_mode=None,
+                    llm_call_index=(
+                        diagnostics.llm_call_index
+                        if diagnostics is not None
+                        else None
+                    ),
+                    llm=diagnostics,
+                    review_elapsed_ms=review_elapsed_ms(),
+                )
+                _log_history_review_failure(
+                    review_id=review_id,
+                    session_id=session_id,
+                    model=claim.profile.model,
+                    prompt_version=claim.snapshot.prompt_version,
+                    error_code=FINALIZE_FAILED,
+                    error_message=error_message,
+                    details=details,
+                )
                 try:
                     failed = self._record_running_failure(
                         db,
@@ -1317,6 +1972,8 @@ class HistoryReviewService:
                         error_code=FINALIZE_FAILED,
                         raw_output=pipeline_result.audit_raw_output,
                         called_llm=True,
+                        error_message=error_message,
+                        error_details=details,
                     )
                 except Exception:
                     db.rollback()

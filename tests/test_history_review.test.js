@@ -794,7 +794,10 @@ describe("history review controller", function () {
 
     const outcome = await controller.start(makeOperation());
     assert.equal(outcome.status, "uncertain");
-    assert.match(outcome.message, /Recheck/);
+    assert.equal(
+      outcome.message,
+      "尚无法确认审查结果。请使用 Recheck 重新查询状态。",
+    );
   });
 
   it("returns uncertain when reconciliation detail mismatches", async function () {
@@ -810,6 +813,36 @@ describe("history review controller", function () {
 
     const outcome = await controller.start(makeOperation());
     assert.equal(outcome.status, "uncertain");
+    assert.equal(
+      outcome.message,
+      "尚无法确认审查结果。请使用 Recheck 重新查询状态。",
+    );
+  });
+
+  it("shows the shared uncertain message in the final panel model", function () {
+    const model = buildHistoryReviewPanelModel({
+      sessionId: 1,
+      state: {
+        events: [],
+        eventsStatus: "ready",
+        summaries: [],
+        summariesStatus: "ready",
+        detailsById: Object.create(null),
+        selectedReviewId: null,
+        proposalDismissedEventId: null,
+        uncertainEventId: 9,
+        operation: null,
+        panelError: "尚无法确认审查结果。请使用 Recheck 重新查询状态。",
+        collapsed: false,
+      },
+      currentMode: CORRECTIVE_MODE,
+      validateTimestamp: isValidApiTimestamp,
+      validateModeSwitchEvent: isValidModeSwitchEvent,
+    });
+    assert.match(
+      model.errorText,
+      /尚无法确认审查结果。请使用 Recheck 重新查询状态。/,
+    );
   });
 
   it("handles deterministic HTTP 4xx without reconciliation", async function () {

@@ -6,6 +6,8 @@ network requests are ever made.
 
 import asyncio
 import copy
+import json
+import logging
 import time
 from datetime import datetime
 
@@ -15,7 +17,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from backend.chat_service import ChatService, SessionLockRegistry
+from backend.chat_service import (
+    MAX_HISTORY_MESSAGES,
+    ChatService,
+    SessionLockRegistry,
+)
 from backend.database import (
     _is_memory_database,
     create_database_engine,
@@ -24,7 +30,10 @@ from backend.database import (
 )
 from backend.exceptions import LLMError
 from backend.llm_client import LLMMessage
-from backend.interaction_modes import RECEIVE_TEACHING_PROMPT
+from backend.interaction_modes import (
+    RECEIVE_TEACHING_HISTORY_CONTEXT_VERSION,
+    RECEIVE_TEACHING_PROMPT,
+)
 from backend.main import app
 from backend.models import ChatSession, Message
 
@@ -53,7 +62,15 @@ class SpyLLMClient:
         self.response = response
         self.error = error
 
-    async def generate(self, messages: list[LLMMessage]) -> str:
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        *,
+        response_format=None,
+        temperature=None,
+        max_tokens=None,
+        diagnostics=None,
+    ) -> str:
         self.calls.append(copy.deepcopy(messages))
         if self.error is not None:
             raise self.error
@@ -81,7 +98,15 @@ class ControlledSpy:
         self.calls: list[list[LLMMessage]] = []
         self.response = response
 
-    async def generate(self, messages: list[LLMMessage]) -> str:
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        *,
+        response_format=None,
+        temperature=None,
+        max_tokens=None,
+        diagnostics=None,
+    ) -> str:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         self.entered_count += 1
@@ -295,14 +320,17 @@ class TestSendMessageSuccess:
         )
 
         msgs = spy_llm.calls[1]  # second call
-        roles = [m["role"] for m in msgs]
-        contents = [m["content"] for m in msgs]
-        assert roles == ["system", "user", "assistant", "user"]
-        assert contents == [
-            RECEIVE_TEACHING_PROMPT,
+        assert [m["role"] for m in msgs] == ["system", "user", "user"]
+        assert msgs[0] == {
+            "role": "system",
+            "content": RECEIVE_TEACHING_PROMPT,
+        }
+        assert msgs[-1] == {"role": "user", "content": "second question"}
+        background = json.loads(msgs[1]["content"])
+        assert background["type"] == "receive_teaching_history_background"
+        assert background["version"] == RECEIVE_TEACHING_HISTORY_CONTEXT_VERSION
+        assert [item["content"] for item in background["messages"]] == [
             "first question",
-            "test reply",
-            "second question",
         ]
 
     def test_system_prompt_first_llm_message(self, client, spy_llm):
@@ -500,6 +528,68 @@ class TestSendMessageErrors:
         assert rows[0].role == "user"
 
         # Explicit: no assistant message
+        assistant_rows = (
+            db.execute(
+                select(Message).where(
+                    Message.session_id == session_id,
+                    Message.role == "assistant",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        db.close()
+        assert len(assistant_rows) == 0
+
+    @pytest.mark.parametrize(
+        ("status_code", "detail"),
+        [
+            (502, "Synthetic upstream failure"),
+            (504, "Upstream API timed out"),
+        ],
+    )
+    def test_llm_error_logs_once_and_response_is_unchanged(
+        self,
+        client,
+        spy_llm,
+        test_session_factory,
+        caplog,
+        status_code,
+        detail,
+    ):
+        """502/504 logging adds one event without changing the response."""
+        session_id = _create_session(client)
+        spy_llm.error = LLMError(detail, status_code=status_code)
+
+        with caplog.at_level(
+            logging.WARNING, logger="backend.chat_service"
+        ):
+            resp = client.post(
+                f"/api/sessions/{session_id}/messages",
+                json={"message": "hello"},
+            )
+
+        assert resp.status_code == status_code
+        assert resp.json() == {"detail": detail}
+
+        records = [
+            record
+            for record in caplog.records
+            if record.name == "backend.chat_service"
+            and record.getMessage().startswith("chat_llm_failure ")
+        ]
+        assert len(records) == 1
+
+        db = test_session_factory()
+        rows = (
+            db.execute(
+                select(Message).where(Message.session_id == session_id)
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].role == "user"
         assistant_rows = (
             db.execute(
                 select(Message).where(
@@ -749,11 +839,72 @@ class TestConcurrency:
                 assert spy.max_active == 1
                 assert spy.entered_count == 3
 
-                # Third call must see history from the first two
-                last_call = spy.calls[2]
-                contents = [m["content"] for m in last_call]
-                assert "msg-1" in contents
-                assert "msg-2" in contents
+                # Identify which concurrent request acquired the session
+                # lock last from the actual last model call.
+                assert len(spy.calls) == 3
+                last_call = spy.calls[-1]
+                assert [m["role"] for m in last_call] == [
+                    "system", "user", "user",
+                ]
+                current_content = last_call[-1]["content"]
+                assert current_content in {"msg-1", "msg-2", "msg-3"}
+
+                # Confirm the current request in the temporary database and
+                # derive the exact production history sequence from that
+                # message id, without using production serialization helpers.
+                db = test_session_factory()
+                try:
+                    matching_current = db.execute(
+                        select(Message).where(
+                            Message.session_id == sid,
+                            Message.role == "user",
+                            Message.content == current_content,
+                        )
+                    ).scalars().all()
+                    assert len(matching_current) == 1
+                    current_user = matching_current[0]
+
+                    history_rows = db.execute(
+                        select(Message)
+                        .where(
+                            Message.session_id == sid,
+                            Message.id < current_user.id,
+                        )
+                        .order_by(Message.id.desc())
+                        .limit(MAX_HISTORY_MESSAGES)
+                    ).scalars().all()
+                    history_rows.reverse()
+                    expected_history_contents = [
+                        message.content
+                        for message in history_rows
+                        if message.role == "user"
+                    ]
+                    assistant_contents = [
+                        message.content
+                        for message in history_rows
+                        if message.role == "assistant"
+                    ]
+                finally:
+                    db.close()
+
+                background = json.loads(last_call[1]["content"])
+                background_items = background["messages"]
+                actual_history_contents = [
+                    item["content"] for item in background_items
+                ]
+
+                # The background order must match the actual database order
+                # under the production query contract.
+                assert actual_history_contents == expected_history_contents
+                assert len(actual_history_contents) == 2
+                assert [
+                    item["index"] for item in background_items
+                ] == [1, 2]
+                assert current_content not in actual_history_contents
+                assert all(
+                    assistant_content not in actual_history_contents
+                    for assistant_content in assistant_contents
+                )
 
                 # Registry must be clean
                 assert len(chat_svc._lock_registry._entries) == 0

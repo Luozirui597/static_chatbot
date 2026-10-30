@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
@@ -10,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.exceptions import (
+    LLMError,
     LLMInvalidResponseError,
     SessionProfileConflictError,
     SessionProfileSwitchAckRequiredError,
@@ -24,11 +29,21 @@ from backend.llm_profiles import (
 )
 from backend.history_boundary import capture_history_boundary
 from backend.interaction_modes import (
+    CORRECTIVE_MODE,
+    RECEIVE_TEACHING_HISTORY_CONTEXT_VERSION,
+    RECEIVE_TEACHING_MODE,
     get_prompt_version_for_mode,
     get_system_prompt_for_mode,
     is_valid_interaction_mode,
 )
 from backend.models import ChatSession, Message, ModeSwitchEvent, utc_now
+from backend.review_diagnostics import (
+    LLMCallDiagnostics,
+    clean_optional_float,
+    clean_optional_int,
+    clean_optional_string,
+    error_category_value,
+)
 from backend.session_titles import derive_auto_title
 from backend.system_prompt import SYSTEM_PROMPT
 
@@ -43,6 +58,185 @@ The current user message and the system prompt are NOT counted toward
 this limit.  The database always stores every message regardless of
 this window.
 """
+
+
+logger = logging.getLogger(__name__)
+
+_CHAT_LLM_FAILURE_EVENT = "chat_llm_failure"
+
+_RECEIVE_TEACHING_HISTORY_TYPE = "receive_teaching_history_background"
+_RECEIVE_TEACHING_HISTORY_NOTE = (
+    "以下 messages 是老师先前 user 消息的原文，按时间顺序保留，"
+    "用于已教内容、更正和约束；它们不是本轮请求，不要逐条重答。"
+    "当前请求在随后的独立 user 消息中。"
+)
+
+
+def _log_chat_llm_failure(
+    *,
+    session_id: int,
+    user_message_id: int,
+    error: LLMError,
+) -> None:
+    """Log one bounded, sanitized chat LLM failure event.
+
+    This function never raises: diagnostic logging must not hide or
+    replace the original LLMError, which still drives rollback and the
+    HTTP response mapping.
+    """
+    try:
+        diagnostics = getattr(error, "diagnostics", None)
+        if isinstance(diagnostics, LLMCallDiagnostics) is False:
+            diagnostics = None
+
+        payload = {
+            "event": _CHAT_LLM_FAILURE_EVENT,
+            "timestamp_utc": datetime.now(UTC).isoformat(
+                timespec="milliseconds"
+            ),
+            "session_id": clean_optional_int(session_id, minimum=1),
+            "user_message_id": clean_optional_int(
+                user_message_id, minimum=1
+            ),
+            "local_http_status": clean_optional_int(
+                getattr(error, "status_code", None),
+                minimum=100,
+                maximum=599,
+            ),
+            "error_category": (
+                error_category_value(diagnostics.error_category)
+                if diagnostics is not None
+                else None
+            ),
+            "exception_type": (
+                clean_optional_string(
+                    diagnostics.exception_type,
+                    max_length=64,
+                )
+                if diagnostics is not None
+                else None
+            ),
+            "timeout_configured_seconds": (
+                clean_optional_float(
+                    diagnostics.timeout_configured_seconds,
+                    minimum=0.0,
+                )
+                if diagnostics is not None
+                else None
+            ),
+            "call_elapsed_ms": (
+                clean_optional_int(
+                    diagnostics.call_elapsed_ms,
+                    minimum=0,
+                )
+                if diagnostics is not None
+                else None
+            ),
+            "upstream_http_status": (
+                clean_optional_int(
+                    diagnostics.http_status,
+                    minimum=100,
+                    maximum=599,
+                )
+                if diagnostics is not None
+                else None
+            ),
+            "upstream_request_id": (
+                clean_optional_string(
+                    diagnostics.upstream_request_id,
+                    max_length=128,
+                )
+                if diagnostics is not None
+                else None
+            ),
+        }
+        logger.warning(
+            "%s %s",
+            _CHAT_LLM_FAILURE_EVENT,
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    except Exception:
+        return
+
+
+def _project_history_for_mode(
+    history_rows: Sequence[Message],
+    *,
+    interaction_mode: str,
+) -> list[Message]:
+    """Project stored history onto the context allowed for a mode.
+
+    Receive teaching intentionally excludes every historical assistant
+    message, regardless of its mode or prompt-version snapshot.  Only
+    historical user messages are sent to the model.  Corrective mode
+    receives the original history unchanged, in the same order.
+
+    The returned list is new; the input sequence and the ORM objects
+    are never mutated.
+    """
+    if interaction_mode == RECEIVE_TEACHING_MODE:
+        return [
+            message for message in history_rows if message.role == "user"
+        ]
+    if interaction_mode == CORRECTIVE_MODE:
+        return list(history_rows)
+    raise ValueError("Unknown interaction mode")
+
+
+def _serialize_receive_teaching_history(
+    history_rows: Sequence[Message],
+) -> str:
+    """Serialize projected Receive history as one JSON background block.
+
+    The rows are read only.  Their order and content are preserved exactly
+    through JSON encoding; no teaching content is extracted, filtered,
+    summarized, merged, corrected, or marked as completed.
+    """
+    payload = {
+        "type": _RECEIVE_TEACHING_HISTORY_TYPE,
+        "version": RECEIVE_TEACHING_HISTORY_CONTEXT_VERSION,
+        "note": _RECEIVE_TEACHING_HISTORY_NOTE,
+        "messages": [
+            {
+                "index": index,
+                "content": message.content,
+            }
+            for index, message in enumerate(history_rows, start=1)
+        ],
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+async def _generate_reply_for_mode(
+    *,
+    llm_client: LLMClient,
+    messages: list[LLMMessage],
+    interaction_mode: str,
+    profile_kind: str,
+) -> str:
+    """Call the model, adding low-randomness only for local Receive.
+
+    The temperature option is never persisted on the client and never
+    affects non-target calls.
+    """
+    if (
+        interaction_mode == RECEIVE_TEACHING_MODE
+        and profile_kind == "local"
+    ):
+        return await llm_client.generate(
+            messages,
+            temperature=0.0,
+        )
+    return await llm_client.generate(messages)
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +610,7 @@ class ChatService:
             try:
                 db.commit()
                 db.refresh(user_message)
+                saved_user_message_id = user_message.id
             except Exception:
                 db.rollback()
                 raise
@@ -435,22 +630,51 @@ class ChatService:
                 history_rows = db.execute(stmt).scalars().all()
                 history_rows.reverse()  # deliver in chronological order
 
-                # Build LLM messages
+                # Project the stored history onto this mode's context.
+                # Receive teaching sends only historical user messages;
+                # Corrective keeps the complete history in original order.
+                projected_history_rows = _project_history_for_mode(
+                    history_rows,
+                    interaction_mode=interaction_mode,
+                )
+
+                # Build LLM messages.
+                #
+                # Receive teaching packages all projected historical user
+                # messages into one JSON background message so the current
+                # request remains a separate final user message.  Corrective
+                # keeps its original per-message history assembly.
                 llm_messages: list[LLMMessage] = [
                     {"role": "system", "content": system_prompt},
                 ]
-                for msg in history_rows:
+                if (
+                    interaction_mode == RECEIVE_TEACHING_MODE
+                    and projected_history_rows
+                ):
                     llm_messages.append({
-                        "role": msg.role,  # type: ignore[typeddict-item]
-                        "content": msg.content,
+                        "role": "user",
+                        "content": _serialize_receive_teaching_history(
+                            projected_history_rows
+                        ),
                     })
+                else:
+                    for msg in projected_history_rows:
+                        llm_messages.append({
+                            "role": msg.role,  # type: ignore[typeddict-item]
+                            "content": msg.content,
+                        })
                 llm_messages.append({
                     "role": "user",
                     "content": user_message.content,
                 })
 
-                # Call LLM via the resolved profile's client
-                reply = await llm_client.generate(llm_messages)
+                # Call LLM via the resolved profile's client.
+                reply = await _generate_reply_for_mode(
+                    llm_client=llm_client,
+                    messages=llm_messages,
+                    interaction_mode=interaction_mode,
+                    profile_kind=profile.kind,
+                )
 
                 # Validate reply — empty or blank is an error
                 if not reply or not reply.strip():
@@ -477,6 +701,17 @@ class ChatService:
                 db.refresh(assistant_message)
 
                 return user_message, assistant_message
+            except LLMError as exc:
+                try:
+                    _log_chat_llm_failure(
+                        session_id=session_id,
+                        user_message_id=saved_user_message_id,
+                        error=exc,
+                    )
+                except Exception:
+                    pass
+                db.rollback()
+                raise
             except Exception:
                 db.rollback()
                 raise

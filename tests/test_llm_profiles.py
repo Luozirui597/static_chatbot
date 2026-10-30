@@ -30,7 +30,15 @@ class _FakeClient:
         self.calls: list = []
         self.response = response
 
-    async def generate(self, messages):
+    async def generate(
+        self,
+        messages,
+        *,
+        response_format=None,
+        temperature=None,
+        max_tokens=None,
+        diagnostics=None,
+    ):
         self.calls.append(messages)
         return self.response
 
@@ -1037,7 +1045,15 @@ class _SpyForAPI:
         self.calls: list = []
         self.response = response
 
-    async def generate(self, messages):
+    async def generate(
+        self,
+        messages,
+        *,
+        response_format=None,
+        temperature=None,
+        max_tokens=None,
+        diagnostics=None,
+    ):
         self.calls.append(messages)
         return self.response
 

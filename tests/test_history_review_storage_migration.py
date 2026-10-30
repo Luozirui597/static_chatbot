@@ -574,3 +574,87 @@ class TestMalformedStorageSchema:
                 "UNIQUE (message_id, review_id)",
             ),
         )
+
+
+def _history_review_columns(engine):
+    with engine.begin() as conn:
+        return {
+            row[1]
+            for row in conn.execute(
+                sa_text("PRAGMA table_info('history_reviews')")
+            ).fetchall()
+        }
+
+
+class TestHistoryReviewErrorDetailsMigration:
+    def test_upgrade_adds_error_details_to_old_db(self, tmp_path):
+        db_path = tmp_path / "error-details-old.db"
+        _make_iteration_2a_db(db_path)
+        engine = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(engine)
+            assert "error_details" in _history_review_columns(engine)
+            assert _record_count(
+                engine, "history_review_error_details_v1"
+            ) == 1
+        finally:
+            engine.dispose()
+
+    def test_error_details_migration_is_idempotent(self, tmp_path):
+        db_path = tmp_path / "error-details-idempotent.db"
+        _make_iteration_2a_db(db_path)
+        engine = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(engine)
+            run_migrations(engine)
+            assert "error_details" in _history_review_columns(engine)
+            assert _record_count(
+                engine, "history_review_error_details_v1"
+            ) == 1
+        finally:
+            engine.dispose()
+
+    def test_fresh_tables_include_error_details(self, tmp_path):
+        engine = create_database_engine(
+            f"sqlite:///{tmp_path / 'error-details-fresh.db'}"
+        )
+        try:
+            create_tables(bind=engine)
+            assert "error_details" in _history_review_columns(engine)
+            run_migrations(engine)
+            assert _record_count(
+                engine, "history_review_error_details_v1"
+            ) == 1
+        finally:
+            engine.dispose()
+
+    def test_old_rows_are_not_backfilled(self, tmp_path):
+        db_path = tmp_path / "error-details-null.db"
+        _make_iteration_2a_db(db_path)
+        engine = create_database_engine(f"sqlite:///{db_path}")
+        try:
+            run_migrations(engine)
+            with engine.begin() as conn:
+                conn.execute(sa_text(
+                    "INSERT INTO history_reviews ("
+                    "session_id, mode_switch_event_id, status, "
+                    "lower_bound_kind, eligible_message_count, "
+                    "eligible_char_count, source_message_count, "
+                    "source_char_count, reviewer_llm_profile_id_snapshot, "
+                    "reviewer_llm_profile_kind_snapshot, "
+                    "reviewer_llm_model_snapshot, prompt_version_snapshot, "
+                    "budget_version_snapshot, selection_policy_version, "
+                    "created_at, updated_at"
+                    ") VALUES ("
+                    "1, 1, 'failed', 'session_start', 1, 1, 1, 1, "
+                    "'api', 'api', 'model', 'pipeline-v2', "
+                    "'budget-v1', 'selection-v1', "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP"
+                    ")"
+                ))
+                row = conn.execute(sa_text(
+                    "SELECT error_details FROM history_reviews"
+                )).fetchone()
+                assert row[0] is None
+        finally:
+            engine.dispose()

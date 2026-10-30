@@ -2,6 +2,7 @@
 
 import copy
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select, update
 from sqlalchemy import text as sa_text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, StatementError
 from sqlalchemy.orm import sessionmaker
 
 import backend.main as main_module
@@ -66,6 +67,7 @@ LOCAL_MODEL = "local-model"
 API_MODEL = "api-model"
 FORBIDDEN_KEYS = {
     "called_llm",
+    "error_details",
     "raw_output",
     "raw_output_truncated",
     "attempt_count",
@@ -78,6 +80,7 @@ FORBIDDEN_KEYS = {
     "prompt_version_snapshot",
     "pipeline_version",
     "attempts",
+    "mode",
     "budget_version_snapshot",
     "selection_policy_version",
     "remote_history_acknowledged",
@@ -172,6 +175,7 @@ class ApiSpyLLM:
         response_format=None,
         temperature=None,
         max_tokens=None,
+        diagnostics=None,
     ):
         stage = _history_review_stage(messages)
         base_prompt = _HISTORY_REVIEW_BASE_PROMPTS.get(stage)
@@ -1280,8 +1284,8 @@ def test_zero_claim_http_path_skips_stage2(api_harness):
     assert body["findings"][0]["source_message_id"] == user_message["id"]
     assert body["findings"][0]["verdict"] == "not_a_claim"
     assert body["findings"][0]["claim_text"] == "teaching claim"
-    assert api_harness.spy.review_calls == 1
-    assert api_harness.spy.stage1_calls == 1
+    assert api_harness.spy.review_calls == 2
+    assert api_harness.spy.stage1_calls == 2
     assert api_harness.spy.stage2_calls == 0
     assert not (_all_keys(body) & FORBIDDEN_KEYS)
 
@@ -1441,7 +1445,7 @@ def test_public_review_json_does_not_leak_audit_values(api_harness):
 
     assert stored_raw is not None
     assert stored_raw not in public_text
-    assert "history-review-pipeline-v1" not in public_text
+    assert "history-review-pipeline-v2" not in public_text
     assert HISTORY_REVIEW_STAGE_1_SYSTEM_PROMPT not in public_text
     assert HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT not in public_text
     assert "raw_output" not in public_text
@@ -1572,7 +1576,7 @@ def test_post_retry_interrupted_reuses_review_and_source_rows(api_harness):
         stored_raw = db.get(HistoryReview, review_id).raw_output
     assert stored_raw is not None
     assert stored_raw not in response.text
-    assert "history-review-pipeline-v1" not in response.text
+    assert "history-review-pipeline-v2" not in response.text
     assert HISTORY_REVIEW_STAGE_1_SYSTEM_PROMPT not in response.text
     assert HISTORY_REVIEW_STAGE_2_SYSTEM_PROMPT not in response.text
     assert "raw_output" not in response.text
@@ -1740,3 +1744,217 @@ async def test_lifespan_recovery_failure_fails_fast(
     with pytest.raises(SQLAlchemyError, match="startup recovery failure"):
         async with main_module.lifespan(main_module.app):
             pass
+
+
+def test_empty_confirmation_recovers_claim_http(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    stage1_attempts = []
+
+    def respond(messages):
+        stage = _history_review_stage(messages)
+        assert stage is not None
+        if stage == "stage1":
+            stage1_attempts.append(messages)
+            if len(stage1_attempts) == 1:
+                user_data = json.loads(messages[1]["content"])
+                return json.dumps({
+                    "overflow": False,
+                    "sources": [
+                        {
+                            "source_message_id": source["source_message_id"],
+                            "claims": [],
+                        }
+                        for source in user_data["sources"]
+                    ],
+                }, ensure_ascii=False)
+            return _default_stage1_response(messages)
+        return _default_stage2_response(messages)
+
+    api_harness.spy.review_response = respond
+
+    response = _post_review(api_harness, session_id, event["id"])
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["findings_count"] == 1
+    assert body["findings"][0]["verdict"] == "correct"
+    assert api_harness.spy.review_calls == 3
+    assert api_harness.spy.stage1_calls == 2
+    assert api_harness.spy.stage2_calls == 1
+    assert len(stage1_attempts) == 2
+    assert stage1_attempts[0][1]["content"] == (
+        stage1_attempts[1][1]["content"]
+    )
+
+
+def test_pending_pipeline_v1_http_is_unsupported_without_llm(api_harness):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    created = _post_review(api_harness, session_id, event["id"]).json()
+    review_id = created["id"]
+    with api_harness.session_factory() as db:
+        db.execute(
+            delete(HistoryReviewFinding).where(
+                HistoryReviewFinding.review_id == review_id
+            )
+        )
+        db.execute(
+            update(HistoryReview)
+            .where(HistoryReview.id == review_id)
+            .values(
+                status="pending",
+                prompt_version_snapshot="history-review-pipeline-v1",
+                summary=None,
+                coverage_note=None,
+                raw_output=None,
+                raw_output_truncated=False,
+                error_code=None,
+                error_message=None,
+                started_at=None,
+                completed_at=None,
+            )
+        )
+        db.commit()
+    calls_before = api_harness.spy.review_calls
+
+    response = _post_review(api_harness, session_id, event["id"])
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "unsupported_prompt_version"
+    assert api_harness.spy.review_calls == calls_before
+    row = _review_row(api_harness, review_id)
+    assert row.prompt_version_snapshot == "history-review-pipeline-v1"
+    assert row.status == "failed"
+    assert row.error_code == "unsupported_prompt_version"
+
+
+def test_interrupted_pipeline_v1_retry_http_is_unsupported_without_llm(
+    api_harness,
+):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    created = _post_review(api_harness, session_id, event["id"]).json()
+    review_id = created["id"]
+    _mark_review_interrupted(api_harness, review_id)
+    with api_harness.session_factory() as db:
+        db.execute(
+            update(HistoryReview)
+            .where(HistoryReview.id == review_id)
+            .values(prompt_version_snapshot="history-review-pipeline-v1")
+        )
+        db.commit()
+    calls_before = api_harness.spy.review_calls
+
+    response = _post_review(
+        api_harness, session_id, event["id"], retry_failed=True,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "unsupported_prompt_version"
+    assert api_harness.spy.review_calls == calls_before
+    row = _review_row(api_harness, review_id)
+    assert row.prompt_version_snapshot == "history-review-pipeline-v1"
+    assert row.attempt_count == 1
+    assert row.status == "failed"
+    assert row.error_code == "unsupported_prompt_version"
+
+
+@pytest.mark.anyio
+async def test_lifespan_recovery_pipeline_v1_marks_unsupported(
+    api_harness, monkeypatch,
+):
+    session_id, user_message, event = _setup_reviewable_session(api_harness)
+    created = _post_review(api_harness, session_id, event["id"]).json()
+    review_id = created["id"]
+    with api_harness.session_factory() as db:
+        db.execute(
+            update(HistoryReview)
+            .where(HistoryReview.id == review_id)
+            .values(
+                status="running",
+                prompt_version_snapshot="history-review-pipeline-v1",
+                error_code=None,
+                error_message=None,
+                started_at=utc_now(),
+                completed_at=None,
+            )
+        )
+        db.commit()
+    calls_before = api_harness.spy.review_calls
+
+    monkeypatch.setattr(main_module, "create_tables", lambda: None)
+    monkeypatch.setattr(
+        main_module, "run_migrations", lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        main_module, "SessionLocal", api_harness.session_factory,
+    )
+
+    async with main_module.lifespan(main_module.app):
+        pass
+
+    row = _review_row(api_harness, review_id)
+    assert row.status == "failed"
+    assert row.error_code == "unsupported_prompt_version"
+    assert row.prompt_version_snapshot == "history-review-pipeline-v1"
+    assert api_harness.spy.review_calls == calls_before
+
+def test_internal_error_log_redacts_statement_error(
+    api_harness, caplog,
+):
+    marker = "SYNTHETIC_PRIVATE_MARKER_7f2a"
+    with api_harness.session_factory() as db:
+        with caplog.at_level(logging.ERROR, logger="backend.main"):
+            try:
+                try:
+                    raise RuntimeError(marker)
+                except RuntimeError as nested:
+                    raise StatementError(
+                        "synthetic statement error",
+                        "SELECT sensitive_column",
+                        {
+                            "raw_output": marker,
+                            "claim_text": marker,
+                        },
+                        nested,
+                    ) from nested
+            except SQLAlchemyError:
+                response = main_module._history_review_internal_error(db)
+
+    assert response.status_code == 500
+    assert response.detail["code"] == "history_review_internal_error"
+    assert marker not in json.dumps(response.detail, ensure_ascii=False)
+    assert marker not in caplog.text
+    assert "history_review_internal_error" in caplog.text
+    assert "StatementError" in caplog.text
+    main_records = [
+        record
+        for record in caplog.records
+        if record.name == "backend.main"
+    ]
+    assert main_records
+    assert all(record.exc_info is None for record in main_records)
+
+def test_internal_error_response_survives_logger_failure(
+    api_harness, monkeypatch,
+):
+    def _raise_logger_error(*args, **kwargs):
+        raise RuntimeError("synthetic logger failure")
+
+    monkeypatch.setattr(
+        main_module.logger, "error", _raise_logger_error,
+    )
+    with api_harness.session_factory() as db:
+        try:
+            raise RuntimeError("private internal failure")
+        except Exception:
+            response = main_module._history_review_internal_error(db)
+
+    assert response.status_code == 500
+    assert response.detail["code"] == "history_review_internal_error"
+    assert "private internal failure" not in json.dumps(
+        response.detail, ensure_ascii=False,
+    )

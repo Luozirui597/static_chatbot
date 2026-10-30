@@ -65,6 +65,7 @@ def create_database_engine(database_url: str) -> Engine:
     engine = create_engine(
         database_url,
         connect_args=connect_args,
+        hide_parameters=True,
         **kwargs,
     )
 
@@ -277,6 +278,7 @@ def run_migrations(bind: Engine) -> None:
         _run_interaction_mode_constraints_migration(conn)
         _run_history_review_boundary_migration(conn)
         _run_history_review_storage_migration(conn)
+        _run_history_review_error_details_migration(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -1299,3 +1301,45 @@ def _run_history_review_storage_migration(conn) -> None:
         "INSERT INTO schema_migrations (version) "
         "VALUES ('history_review_storage_v1')"
     ))
+
+
+def _run_history_review_error_details_migration(conn) -> None:
+    """Apply history_review_error_details_v1 idempotently.
+
+    Adds the nullable ``error_details`` column to an existing
+    ``history_reviews`` table.  Existing rows are never backfilled.
+    """
+    from sqlalchemy import text as sa_text
+
+    row = conn.execute(
+        sa_text(
+            "SELECT version FROM schema_migrations "
+            "WHERE version = 'history_review_error_details_v1'"
+        )
+    ).fetchone()
+    if row is not None:
+        return
+
+    cols = [
+        r[1]
+        for r in conn.execute(
+            sa_text("PRAGMA table_info('history_reviews')")
+        ).fetchall()
+    ]
+    if not cols:
+        return
+
+    if "error_details" not in cols:
+        conn.execute(
+            sa_text(
+                "ALTER TABLE history_reviews "
+                "ADD COLUMN error_details TEXT"
+            )
+        )
+
+    conn.execute(
+        sa_text(
+            "INSERT INTO schema_migrations (version) "
+            "VALUES ('history_review_error_details_v1')"
+        )
+    )

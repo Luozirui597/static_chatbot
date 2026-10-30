@@ -427,6 +427,9 @@ class HistoryReview(Base):
     error_message: Mapped[str | None] = mapped_column(
         Text, nullable=True, default=None
     )
+    error_details: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
     attempt_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1",
     )

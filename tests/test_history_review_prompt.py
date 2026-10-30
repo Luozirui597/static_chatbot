@@ -492,7 +492,7 @@ def test_import_has_no_cycle_and_version_is_re_exported():
     )
 
     assert HISTORY_REVIEW_PROMPT_VERSION == "history-review-prompt-v2"
-    assert HISTORY_REVIEW_PIPELINE_VERSION == "history-review-pipeline-v1"
+    assert HISTORY_REVIEW_PIPELINE_VERSION == "history-review-pipeline-v2"
     assert service_module.HISTORY_REVIEW_PIPELINE_VERSION == (
-        "history-review-pipeline-v1"
+        "history-review-pipeline-v2"
     )

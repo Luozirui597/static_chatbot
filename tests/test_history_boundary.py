@@ -28,7 +28,15 @@ SESSION_PROFILE_MODEL = "injected-test-model"
 
 
 class DummyLLMClient:
-    async def generate(self, messages):
+    async def generate(
+        self,
+        messages,
+        *,
+        response_format=None,
+        temperature=None,
+        max_tokens=None,
+        diagnostics=None,
+    ):
         return "unused"
 
 
