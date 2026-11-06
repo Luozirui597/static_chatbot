@@ -8,8 +8,8 @@ OpenAI-compatible chat-completions API.
 ## Development version
 
 - `static-baseline-v1` freezes the original Static Chatbot baseline.
-- The current `feature/history-review` branch is the Teachable Agent
-  development version.
+- The current `feature/teachable-agent` branch is the Teachable Agent
+  development and sharing version; it includes the accumulated History Review work.
 - **Iteration 1** adds two switchable interaction modes
   (`receive_teaching`, `corrective`) and records an immutable boundary
   for every switch.  Corrective mode only changes how *future* turns are
