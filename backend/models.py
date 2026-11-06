@@ -56,6 +56,9 @@ class ChatSession(Base):
             "interaction_mode IN ('receive_teaching', 'corrective')",
             name="ck_chat_sessions_interaction_mode",
         ),
+        # SQLite otherwise reuses the highest deleted rowid.  Session ids
+        # are externally visible in URLs, so they must never be recycled.
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(
@@ -104,6 +107,20 @@ class ChatSession(Base):
         cascade="all, delete-orphan",
         order_by="Message.id",
     )
+    strategy_setting: Mapped["SessionTeachingStrategy | None"] = relationship(
+        cascade="all, delete-orphan", uselist=False, lazy="select",
+    )
+
+    @property
+    def teaching_strategy(self) -> str:
+        return self.strategy_setting.strategy if self.strategy_setting else "baseline"
+
+    @teaching_strategy.setter
+    def teaching_strategy(self, value: str) -> None:
+        if self.strategy_setting is None:
+            self.strategy_setting = SessionTeachingStrategy(strategy=value)
+        else:
+            self.strategy_setting.strategy = value
     mode_switch_events: Mapped[List["ModeSwitchEvent"]] = relationship(
         "ModeSwitchEvent",
         back_populates="session",
@@ -191,6 +208,19 @@ class Message(Base):
     session: Mapped["ChatSession"] = relationship(
         "ChatSession", back_populates="messages"
     )
+    strategy_snapshot: Mapped["MessageTeachingStrategy | None"] = relationship(
+        cascade="all, delete-orphan", uselist=False, lazy="select",
+    )
+
+    @property
+    def teaching_strategy_snapshot(self) -> str | None:
+        return self.strategy_snapshot.strategy if self.strategy_snapshot else None
+
+    @teaching_strategy_snapshot.setter
+    def teaching_strategy_snapshot(self, value: str | None) -> None:
+        self.strategy_snapshot = (
+            MessageTeachingStrategy(strategy=value) if value is not None else None
+        )
 
     def __repr__(self) -> str:
         return (
@@ -202,6 +232,28 @@ class Message(Base):
 # ---------------------------------------------------------------------------
 # SchemaMigration — migration bookkeeping
 # ---------------------------------------------------------------------------
+
+
+class SessionTeachingStrategy(Base):
+    __tablename__ = "session_teaching_strategies"
+    __table_args__ = (
+        CheckConstraint("strategy IN ('baseline', 'a', 'b', 'ab')", name="ck_session_teaching_strategy"),
+    )
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    strategy: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class MessageTeachingStrategy(Base):
+    __tablename__ = "message_teaching_strategies"
+    __table_args__ = (
+        CheckConstraint("strategy IN ('baseline', 'a', 'b', 'ab')", name="ck_message_teaching_strategy"),
+    )
+    message_id: Mapped[int] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True,
+    )
+    strategy: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
 class SchemaMigration(Base):

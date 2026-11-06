@@ -1,0 +1,17 @@
+# I4 — A+B interactive — no inference or question requested
+
+User explicitly forbids inference and questions; answer only whether A-C was directly taught.
+
+## T1
+
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B.
+- B links to C.
+
+Puzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z.
+
+## Q1
+
+Do not infer, and do not ask me anything. Was A links to C directly taught? Answer only that.

@@ -20,7 +20,42 @@ OpenAI-compatible chat-completions API.
   switching to `corrective` never starts one automatically, and nothing
   is sent to a remote reviewer until the user confirms it.
 
+## Latest update (2026-11-06)
+
+See [CHANGELOG.md](CHANGELOG.md) for each component’s status and [the detailed update](docs/updates/2026-11-06.md) for validation, experiment results and known follow-ups. Production chat features and isolated strategy-verification experiments are documented separately.
+
 ## Features
+
+### Teaching strategies in the production chat page
+
+Receive teaching conversations now have a separate **Teaching strategy**
+selector: **Standard**, **A — Limited inference**, **B — Ask for teaching**,
+and **A+B — Inference and questions**. Click **Apply** to use the selection
+for future messages. It persists per conversation and does not change the
+model or rewrite prior messages. Corrective keeps its existing behavior;
+switching back to Receive teaching restores the selected strategy.
+
+- A allows one application of a rule explicitly taught by the teacher.
+- B reports direct teaching and may ask one focused question, without inference.
+- A+B combines that bounded inference with at most one focused teaching request.
+- All production choices retain the backend reply-language constraint and use
+  the selected strategy after history retrieval and in clarification replies.
+
+The API is `PATCH /api/sessions/{id}/teaching-strategy` with, for example,
+`{"teaching_strategy":"ab"}`. Allowed values are `baseline`, `a`, `b`, and `ab`.
+Session responses include `teaching_strategy` and `teaching_strategy_switchable`;
+message responses include nullable `teaching_strategy_snapshot`. Existing
+messages keep unknown strategy snapshots. Additive setting/snapshot tables
+preserve the existing session/message schema and content.
+
+Production prompt assets live under `backend/prompts/`, copied from the frozen
+A/B/A+B strategy contracts and identified by new production versions. The
+isolated frozen experiments remain separately versioned and do not enable
+the production strategy selector or its `l1` language enforcement. Strategy
+compliance and inference quality remain model behavior to evaluate, rather
+than a symbolic proof system.
+
+### Existing features
 
 - FastAPI backend with async LLM client
 - Vanilla HTML / CSS / JavaScript frontend (no frameworks)
@@ -73,8 +108,8 @@ OpenAI-compatible chat-completions API.
     only when at least one selected source message carries a different
     profile id, profile kind, or model snapshot
   - a strict *state machine* (`pending` → `running` →
-    `completed` / `failed`) with a single CAS claim, at most one LLM
-    call per review, and a strict JSON parser that fails a review with
+    `completed` / `failed`) with a single CAS claim, a bounded two-stage
+    pipeline (up to four calls per execution attempt), and a strict JSON parser that fails a review with
     a stable error code instead of storing partial output
   - a per-session review panel with status, findings, coverage note,
     review selector, Recheck/Reload, and Continue actions
@@ -496,6 +531,44 @@ LLM_API_BASE_URL=<your-base-url>
 LLM_MODEL=<your-model-name>
 ```
 
+## General history retrieval (optional)
+
+`GENERAL_HISTORY_ENABLED=false` is the default.  When enabled for a
+Receive teaching session, the general path is available only for the
+resolved API profile, the exact configured model, and a local SQLite
+database.  Fixed relation yes/no and relation-history comparison remains
+ahead of the general path.  No page, button, mode, or database-migration
+change is involved.
+
+The feature must be enabled explicitly in `.env` (or the process
+environment), with the exact API profile and model, before starting the
+normal launcher.  A missing or mismatched profile/model uses the ordinary
+path:
+
+```env
+GENERAL_HISTORY_ENABLED=true
+GENERAL_HISTORY_PROFILE_ID=<api-profile-id>
+GENERAL_HISTORY_MODEL=<exact-model-name>
+GENERAL_HISTORY_DECISION_TIMEOUT_SECONDS=3
+GENERAL_HISTORY_OVERALL_TIMEOUT_SECONDS=12
+```
+
+The existing fixed relation-history settings remain independent:
+
+```env
+PROGRAMMATIC_HISTORY_ENABLED=true
+PROGRAMMATIC_HISTORY_PROFILE_ID=<profile-id>
+PROGRAMMATIC_HISTORY_MODEL=<exact-model-name>
+```
+
+Restart the service after changing these values.  The existing
+`Start Teachable Agent.command` launcher continues to be the normal
+entry point; no separate page or server is added.
+
+Transport evidence is recorded at the local `handle_async_request`
+boundary.  It shows that the request entered a local HTTP transport; it
+does not prove that the provider received it.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -506,6 +579,14 @@ LLM_MODEL=<your-model-name>
 | `LLM_MODEL` | — | Model name sent in the request body |
 | `LLM_REASONING_EFFORT` | — | `none` / `low` / `medium` / `high`. Leave empty for model default. For local models set to `none` to suppress hidden reasoning chains. |
 | `DATABASE_URL` | `sqlite:///data/chatbot.db` | SQLite connection string; the `data/` directory is created automatically on first run |
+| `PROGRAMMATIC_HISTORY_ENABLED` | `false` | Existing fixed relation-history retrieval; when enabled, relation questions use the reviewed fixed path before general retrieval |
+| `PROGRAMMATIC_HISTORY_PROFILE_ID` | — | Profile id used for the fixed relation-history retrieval path |
+| `PROGRAMMATIC_HISTORY_MODEL` | — | Exact model name required for the fixed relation-history retrieval path |
+| `GENERAL_HISTORY_ENABLED` | `false` | Opt-in general teacher-history retrieval for Receive teaching; requires a real API profile and a local SQLite database |
+| `GENERAL_HISTORY_PROFILE_ID` | — | Exact API profile id allowed to use general retrieval; missing/mismatch keeps the ordinary path |
+| `GENERAL_HISTORY_MODEL` | — | Exact model name allowed to use general retrieval; missing/mismatch keeps the ordinary path |
+| `GENERAL_HISTORY_DECISION_TIMEOUT_SECONDS` | `3` | Maximum time for the optional decision model call |
+| `GENERAL_HISTORY_OVERALL_TIMEOUT_SECONDS` | `12` | Maximum retrieval-turn budget for general history |
 
 ### Local LLM configuration (example)
 
@@ -912,7 +993,7 @@ Press `Ctrl+C` in the terminal where `start-local-ollama.sh` is running.
 
 ```bash
 # Python tests
-.venv/bin/python -m pytest -q
+PYTHONDONTWRITEBYTECODE=1 PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests -q -p no:cacheprovider
 
 # Frontend tests (requires Node.js)
 node --test tests/*.test.js
@@ -924,7 +1005,7 @@ bash -n "Start Teachable Agent.command"
 bash -n "Stop Teachable Agent.command"
 ```
 
-Both suites are complete and green: the Python suite and the Node
+Run the application suites separately from the frozen experiments: the Python suite and the Node
 suite each run as a whole (`tests/*.test.js` collects every frontend
 test file, including the history-review controller and DOM/CSS
 contract tests).  Run them without a build step — no bundler, no
@@ -961,14 +1042,16 @@ framework, and no network access.
   DOM and CSS contracts (a small in-repo CSS reader, no browser
   engine required).
 
+Frozen experiment suites have separate process-isolation requirements. Use the per-suite commands in [the update notes](docs/updates/2026-11-06.md#7-本次提交前验证); do not use unqualified whole-repository pytest collection as their shared runner.
+
 ## Security and privacy
 
 - API credentials are read by the backend from environment variables
   and are **never** embedded in frontend source code or returned in
   API responses.
 - `.env` is excluded by `.gitignore` and must not be committed.
-- All user and assistant content in the UI is inserted using
-  `textContent` — no `innerHTML` usage for dynamic content.
+- Message content uses sanitized Markdown/MathML rendering with a
+  plain-text fallback; dynamic UI labels use `textContent`.
 - Request validation limits messages to 4000 characters.
 - Deleting a session cascades to its messages in the database.
 - Database-level constraints reject empty or blank message content
@@ -986,9 +1069,9 @@ appropriate security controls.
   can be manually renamed via the API and UI.
 - Messages cannot be edited or deleted individually.
 - No streaming (server-sent events) responses.
-- No Markdown or rich-text rendering in message bubbles.
+- Markdown display is supported; some display syntax and layout edges remain.
 - No retry or regenerate-action for a failed assistant reply.
-- No message search or conversation export.
+- No global message-search UI or conversation export; opt-in teacher-history retrieval is available in Receive teaching.
 - Context window hard-coded at 20 most recent prior messages per
   session.
 - Only tested with a single OpenAI-compatible provider (DeepSeek);

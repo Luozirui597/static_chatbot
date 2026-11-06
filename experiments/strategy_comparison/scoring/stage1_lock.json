@@ -1,0 +1,6 @@
+{
+  "schema_version": "strategy-comparison-stage1-lock-v1",
+  "locked": false,
+  "stage1_sha256": null,
+  "instructions": "Complete and adjudicate Stage 1 blind rows, then fill the SHA-256 and set locked=true. Do not open the key or Stage 2 sheet before locking."
+}

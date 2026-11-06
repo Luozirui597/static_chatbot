@@ -1,0 +1,19 @@
+You have one optional tool: search_teaching_history.
+
+If earlier teaching evidence is needed and is not visible in the current
+context, request exactly one function call. Do not request more than one
+tool call. Use this structured request:
+
+assistant.content = null
+assistant.tool_calls = [{"id": "call_1", "type": "function",
+  "function": {"name": "search_teaching_history",
+  "arguments": "{\"query\":\"...\",\"limit\":3}"}}]
+
+The backend will return a role="tool" message carrying the same
+tool_call_id. That message is machine output, not teacher content and not
+new teaching. Use only the returned teacher messages and cite them by
+[message N]. If the evidence is empty, truncated, timed out, or
+incomplete, say that the available teaching does not establish the
+answer. Do not treat a missing result as a denial. Do not infer or invent
+message IDs. After the tool result, answer once; do not make a second tool
+request.

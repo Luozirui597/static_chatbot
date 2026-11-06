@@ -1,0 +1,183 @@
+{
+  "method": "Nonblind program-assisted review of raw candidates and deterministic rendered gap claims against current frozen teacher evidence. Not independent human certification.",
+  "execution_complete": true,
+  "engineering_acceptance": "needs_context_refresh_fix",
+  "new_model_calls_for_review": 0,
+  "groups": {
+    "standard": {
+      "sessions": 8,
+      "attempted_turns": 10,
+      "gate_accepted": 5,
+      "raw_relational_policy_matches": 5,
+      "reviewed_appropriate_final_text": 5,
+      "stale_gap_rendering_errors": 0,
+      "positive_target_answered": 0,
+      "tokens": {
+        "prompt_tokens": 30047,
+        "completion_tokens": 6962,
+        "total_tokens": 37009
+      },
+      "latency_seconds_total": 45.46045658591902,
+      "latency_seconds_median": 3.1607495005009696
+    },
+    "a": {
+      "sessions": 8,
+      "attempted_turns": 10,
+      "gate_accepted": 10,
+      "raw_relational_policy_matches": 10,
+      "reviewed_appropriate_final_text": 10,
+      "stale_gap_rendering_errors": 0,
+      "positive_target_answered": 3,
+      "tokens": {
+        "prompt_tokens": 39837,
+        "completion_tokens": 7841,
+        "total_tokens": 47678
+      },
+      "latency_seconds_total": 51.52279237599578,
+      "latency_seconds_median": 2.725538062484702
+    },
+    "b": {
+      "sessions": 8,
+      "attempted_turns": 12,
+      "gate_accepted": 12,
+      "raw_relational_policy_matches": 12,
+      "reviewed_appropriate_final_text": 10,
+      "stale_gap_rendering_errors": 2,
+      "positive_target_answered": 0,
+      "tokens": {
+        "prompt_tokens": 51155,
+        "completion_tokens": 4317,
+        "total_tokens": 55472
+      },
+      "latency_seconds_total": 35.0806647100253,
+      "latency_seconds_median": 2.4201510834973305
+    },
+    "ab": {
+      "sessions": 8,
+      "attempted_turns": 12,
+      "gate_accepted": 12,
+      "raw_relational_policy_matches": 12,
+      "reviewed_appropriate_final_text": 12,
+      "stale_gap_rendering_errors": 0,
+      "positive_target_answered": 5,
+      "tokens": {
+        "prompt_tokens": 53483,
+        "completion_tokens": 4750,
+        "total_tokens": 58233
+      },
+      "latency_seconds_total": 33.560929207946174,
+      "latency_seconds_median": 2.5605106040020473
+    }
+  },
+  "rendered_errors": [
+    {
+      "task": "I2",
+      "strategy": "b",
+      "phase": "FINAL",
+      "call": 38,
+      "stale_context": [
+        {
+          "kind": "missing_relation_already_taught",
+          "relation": {
+            "subject": "B",
+            "object": "C"
+          },
+          "source_message_id": 50
+        }
+      ],
+      "rendered": "I cannot confirm whether A links to C from the teaching provided. The missing teaching is B links to C.",
+      "raw": "{\"items\":[{\"type\":\"insufficient\",\"unknown_target\":{\"subject\":\"A\",\"object\":\"C\"}}]}",
+      "error_owner": "server_context_and_renderer",
+      "raw_candidate_policy_compliant": true
+    },
+    {
+      "task": "I3",
+      "strategy": "b",
+      "phase": "FINAL",
+      "call": 43,
+      "stale_context": [
+        {
+          "kind": "missing_rule_already_taught",
+          "source_message_id": 50
+        }
+      ],
+      "rendered": "I cannot confirm whether A links to C from the teaching provided. The missing teaching is the composition rule.",
+      "raw": "{\"items\":[{\"type\":\"insufficient\",\"unknown_target\":{\"subject\":\"A\",\"object\":\"C\"}}]}",
+      "error_owner": "server_context_and_renderer",
+      "raw_candidate_policy_compliant": true
+    }
+  ],
+  "latent_stale_contexts": [
+    {
+      "task": "I2",
+      "strategy": "ab",
+      "phase": "FINAL",
+      "call": 36,
+      "stale_context": [
+        {
+          "kind": "missing_relation_already_taught",
+          "relation": {
+            "subject": "B",
+            "object": "C"
+          },
+          "source_message_id": 50
+        }
+      ],
+      "rendered": "Inferred [inferred]: A links to C, using A links to B [message 1], B links to C [message 50] and the rule [message 2].",
+      "raw": "{\"items\":[{\"type\":\"infer\",\"claims\":[{\"claim_id\":\"c1\",\"kind\":\"direct\",\"subject\":\"A\",\"predicate\":\"links\",\"object\":\"B\",\"polarity\":\"positive\",\"source_message_id\":1,\"quote\":\"A links to B.\"},{\"claim_id\":\"c2\",\"kind\":\"direct\",\"subject\":\"B\",\"predicate\":\"links\",\"object\":\"C\",\"polarity\":\"positive\",\"source_message_id\":50,\"quote\":\"B links to C.\"}],\"inference\":{\"premise_claim_ids\":[\"c1\",\"c2\"],\"rule_source_message_id\":2,\"condition_source_message_ids\":[],\"exception_source_message_ids\":[],\"conclusion\":{\"subject\":\"A\",\"predicate\":\"links\",\"object\":\"C\",\"polarity\":\"positive\"}}}]}"
+    },
+    {
+      "task": "I2",
+      "strategy": "b",
+      "phase": "FINAL",
+      "call": 38,
+      "stale_context": [
+        {
+          "kind": "missing_relation_already_taught",
+          "relation": {
+            "subject": "B",
+            "object": "C"
+          },
+          "source_message_id": 50
+        }
+      ],
+      "rendered": "I cannot confirm whether A links to C from the teaching provided. The missing teaching is B links to C.",
+      "raw": "{\"items\":[{\"type\":\"insufficient\",\"unknown_target\":{\"subject\":\"A\",\"object\":\"C\"}}]}"
+    },
+    {
+      "task": "I3",
+      "strategy": "ab",
+      "phase": "FINAL",
+      "call": 40,
+      "stale_context": [
+        {
+          "kind": "missing_rule_already_taught",
+          "source_message_id": 50
+        }
+      ],
+      "rendered": "Inferred [inferred]: A links to C, using A links to B [message 1], B links to C [message 2] and the rule [message 50].",
+      "raw": "{\"items\":[{\"type\":\"infer\",\"claims\":[{\"claim_id\":\"c1\",\"kind\":\"direct\",\"subject\":\"A\",\"predicate\":\"links\",\"object\":\"B\",\"polarity\":\"positive\",\"source_message_id\":1,\"quote\":\"A links to B.\"},{\"claim_id\":\"c2\",\"kind\":\"direct\",\"subject\":\"B\",\"predicate\":\"links\",\"object\":\"C\",\"polarity\":\"positive\",\"source_message_id\":2,\"quote\":\"B links to C.\"}],\"inference\":{\"premise_claim_ids\":[\"c1\",\"c2\"],\"rule_source_message_id\":50,\"condition_source_message_ids\":[],\"exception_source_message_ids\":[],\"conclusion\":{\"subject\":\"A\",\"predicate\":\"links\",\"object\":\"C\",\"polarity\":\"positive\"}}}]}"
+    },
+    {
+      "task": "I3",
+      "strategy": "b",
+      "phase": "FINAL",
+      "call": 43,
+      "stale_context": [
+        {
+          "kind": "missing_rule_already_taught",
+          "source_message_id": 50
+        }
+      ],
+      "rendered": "I cannot confirm whether A links to C from the teaching provided. The missing teaching is the composition rule.",
+      "raw": "{\"items\":[{\"type\":\"insufficient\",\"unknown_target\":{\"subject\":\"A\",\"object\":\"C\"}}]}"
+    }
+  ],
+  "gate_accepted_total": 39,
+  "reviewed_appropriate_final_text_total": 37,
+  "limitations": [
+    "summary.json appropriate_turns is only relational-gold matching plus gate acceptance; it does not validate every renderer explanation.",
+    "Standard condition identity is not explicit in its strategy header/public packet; candidate-contract labels may create a mapping confound. This is a design hypothesis, not a demonstrated cause.",
+    "One repeat, eight known tasks per strategy; no significance or generalization claim."
+  ]
+}

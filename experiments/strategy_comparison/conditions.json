@@ -1,0 +1,85 @@
+{
+  "schema_version": "strategy-comparison-conditions-v1",
+  "conditions": [
+    {
+      "strategy_id": "standard",
+      "display_name": "Standard",
+      "switch_value": "baseline",
+      "prompt_file": "prompts/standard.txt",
+      "prompt_sha256": "6dc7084229b29e5b0ec61abd884926d2d7db09e8328182817887867c002d698d",
+      "prompt_version_without_language": "receive-teaching-v7+history-context-b1",
+      "prompt_version": "receive-teaching-v7+history-context-b1+l1-en",
+      "language": "en",
+      "route": "ordinary",
+      "system_prompt_assembly": "frozen prompt + one language instruction (en)",
+      "profile_id": "default",
+      "model": "deepseek-v4-flash",
+      "generation": {
+        "temperature": null,
+        "max_tokens": null,
+        "reasoning_effort": null,
+        "note": "not sent; same production client defaults for all conditions"
+      }
+    },
+    {
+      "strategy_id": "a",
+      "display_name": "A",
+      "switch_value": "a",
+      "prompt_file": "prompts/a.txt",
+      "prompt_sha256": "300ff9e73b90a290cd58f9ecc271c213e1a64dde5037d82d161dc8ae77e5ab6d",
+      "prompt_version_without_language": "teach-a-v1+history-context-b1",
+      "prompt_version": "teach-a-v1+history-context-b1+l1-en",
+      "language": "en",
+      "route": "ordinary",
+      "system_prompt_assembly": "frozen prompt + one language instruction (en)",
+      "profile_id": "default",
+      "model": "deepseek-v4-flash",
+      "generation": {
+        "temperature": null,
+        "max_tokens": null,
+        "reasoning_effort": null,
+        "note": "not sent; same production client defaults for all conditions"
+      }
+    },
+    {
+      "strategy_id": "b",
+      "display_name": "B",
+      "switch_value": "b",
+      "prompt_file": "prompts/b.txt",
+      "prompt_sha256": "3a29ae8fc2d7478f84eb1735de5c295f7b39086f338e4440ed0e545ee9f88126",
+      "prompt_version_without_language": "teach-b-v1+history-context-b1",
+      "prompt_version": "teach-b-v1+history-context-b1+l1-en",
+      "language": "en",
+      "route": "ordinary",
+      "system_prompt_assembly": "frozen prompt + one language instruction (en)",
+      "profile_id": "default",
+      "model": "deepseek-v4-flash",
+      "generation": {
+        "temperature": null,
+        "max_tokens": null,
+        "reasoning_effort": null,
+        "note": "not sent; same production client defaults for all conditions"
+      }
+    },
+    {
+      "strategy_id": "ab",
+      "display_name": "A+B",
+      "switch_value": "ab",
+      "prompt_file": "prompts/ab.txt",
+      "prompt_sha256": "d3b3e5b37bbd274339048f1c97095de2c10b7f85d77dc8a38d185055d094369c",
+      "prompt_version_without_language": "teach-ab-v1+history-context-b1",
+      "prompt_version": "teach-ab-v1+history-context-b1+l1-en",
+      "language": "en",
+      "route": "ordinary",
+      "system_prompt_assembly": "frozen prompt + one language instruction (en)",
+      "profile_id": "default",
+      "model": "deepseek-v4-flash",
+      "generation": {
+        "temperature": null,
+        "max_tokens": null,
+        "reasoning_effort": null,
+        "note": "not sent; same production client defaults for all conditions"
+      }
+    }
+  ]
+}

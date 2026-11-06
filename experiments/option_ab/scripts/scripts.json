@@ -1,0 +1,294 @@
+{
+  "schema_version": "option-ab-scripts-v1",
+  "asset_version": "option-ab-isolated-v0.1",
+  "condition": "AB",
+  "language": "en",
+  "logical_runs": 10,
+  "budget": {
+    "fixed_calls": 16,
+    "interactive_min": 8,
+    "interactive_max": 10,
+    "total_min": 24,
+    "total_max": 26
+  },
+  "scripts": [
+    {
+      "id": "S1",
+      "mode": "fixed",
+      "title": "A+B fixed — direct, inferred, and cannot determine",
+      "focus": "Report direct A-D, optionally infer A-C with full R1, and do not infer C-A.",
+      "calls_expected": 2,
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A, B, C, and D are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you these facts:\n- A links to B.\n- B links to C.\n- A links to D.\nBoth A-B and B-C are marked active.\n\nPuzzle rule: for these tokens, if X links to Y and Y links to Z, and both links are marked active, then X links to Z."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Answer three questions using only what I taught:\n1. Does A link to D? Was that taught directly, inferred, or can you not tell?\n2. Does A link to C? Was that taught directly, inferred, or can you not tell?\n3. Does C link to A? Was that taught directly, inferred, or can you not tell?\nFor anything inferred, give the premises and the rule you used."
+        }
+      ]
+    },
+    {
+      "id": "S2",
+      "mode": "fixed",
+      "title": "A+B fixed — missing intermediate premise",
+      "focus": "State the missing B-C gap and stop; do not infer or ask.",
+      "calls_expected": 2,
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you these facts:\n- A links to B.\n\nPuzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Does A link to C? Use only what I taught. If something needed is missing, say exactly what is missing and stop."
+        }
+      ]
+    },
+    {
+      "id": "S3",
+      "mode": "fixed",
+      "title": "A+B fixed — relation facts without a combination rule",
+      "focus": "Do not assume transitivity; the combination rule has not been provided.",
+      "calls_expected": 2,
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you these facts:\n- A links to B.\n- B links to C."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Does A link to C? Use only what I taught. If you need a rule to combine the links, say what you need."
+        }
+      ]
+    },
+    {
+      "id": "S4",
+      "mode": "fixed",
+      "title": "A+B fixed — explicitly active exception",
+      "focus": "The exception blocks the rule; do not infer A-C or claim it is false.",
+      "calls_expected": 2,
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you these facts:\n- A links to B; A-B is marked active.\n- B links to C; B-C is marked active.\n- B is flagged.\n\nPuzzle rule: for these tokens, if X links to Y and Y links to Z, and both links are marked active, then X links to Z. Exception: this rule does not apply if the middle token is flagged."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Does A link to C? Use only what I taught. Explain whether the rule applies."
+        }
+      ]
+    },
+    {
+      "id": "S5",
+      "mode": "fixed",
+      "title": "A+B fixed — correction after a licensed inference",
+      "focus": "Q1 may use one R1; T2 only processes the correction; Q2 re-evaluates the corrected content.",
+      "calls_expected": 4,
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you these facts:\n- A links to B.\n- B links to C.\n\nPuzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Does A link to C? Use only what I taught. If you infer it, mark it."
+        },
+        {
+          "id": "T2",
+          "phase": "correction",
+          "content": "Correction: I was wrong about B links to C. B does not link to C. Everything else I taught is still current."
+        },
+        {
+          "id": "Q2",
+          "phase": "recheck",
+          "content": "Now report what is currently taught about A, B, and C, and whether A links to C follows. Use only the corrected facts."
+        }
+      ]
+    },
+    {
+      "id": "S6",
+      "mode": "fixed",
+      "title": "A+B fixed — revocation after a licensed inference",
+      "focus": "Q1 may use one R1; T2 only processes revocation; Q2 keeps facts but not the revoked rule.",
+      "calls_expected": 4,
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you these facts:\n- A links to B.\n- B links to C.\n\nPuzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Does A link to C? Use only what I taught. If you infer it, mark it."
+        },
+        {
+          "id": "T2",
+          "phase": "revocation",
+          "content": "I withdraw the chain rule. It no longer applies in this puzzle. The two link facts A-B and B-C are still current. There is no replacement rule."
+        },
+        {
+          "id": "Q2",
+          "phase": "recheck",
+          "content": "Now report what is currently taught and whether A links to C follows. Use only the current facts and rules."
+        }
+      ]
+    },
+    {
+      "id": "I1",
+      "mode": "interactive",
+      "title": "A+B interactive — directly taught target",
+      "focus": "Direct target; report directly, do not infer and do not ask.",
+      "calls_expected": 2,
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A and D are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you this fact:\n- A links to D."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Does A link to D? Was that taught directly, inferred, or can you not tell? Use only what I taught."
+        }
+      ],
+      "branches": []
+    },
+    {
+      "id": "I2",
+      "mode": "interactive",
+      "title": "A+B interactive — missing intermediate fact",
+      "focus": "Pause after Q1; human route to none/bc/direct_ac/no_extra; T2 response is FINAL.",
+      "calls_expected": {
+        "minimum": 2,
+        "maximum": 3
+      },
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you these facts:\n- A links to B.\n\nPuzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z.\n\nI have not taught B links to C."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Does A link to C? If current teaching is sufficient, answer and mark any inference. If it is insufficient, you may ask me at most one focused question. Do not guess."
+        }
+      ],
+      "branches": [
+        {
+          "id": "bc",
+          "label": "supply B-C only",
+          "content": "The current question is whether A links to C. I am not withdrawing A links to B or the rule \"if X links to Y and Y links to Z, then X links to Z.\" I now also teach: B links to C. This is the only new fact. If the rule now applies, answer and mark the conclusion as inferred; otherwise state what is missing.",
+          "adds": [
+            "B-C"
+          ],
+          "direct_ac": false,
+          "rule_status": "previous rule remains current"
+        },
+        {
+          "id": "direct_ac",
+          "label": "directly teach A-C only",
+          "content": "The current question is whether A links to C. I now directly teach: A links to C. This is direct teaching, not an inference. A links to B and the rule remain current. I have not taught B links to C. Report A links to C as direct teaching.",
+          "adds": [
+            "A-C"
+          ],
+          "direct_ac": true,
+          "rule_status": "previous rule remains current"
+        },
+        {
+          "id": "no_extra",
+          "label": "no new fact or rule",
+          "content": "The current question is whether A links to C. I have no new fact or rule to add. A links to B and the rule remain current; B links to C is not taught. Use only current teaching; do not guess or ask again.",
+          "adds": [],
+          "direct_ac": false,
+          "rule_status": "no new rule"
+        }
+      ]
+    },
+    {
+      "id": "I3",
+      "mode": "interactive",
+      "title": "A+B interactive — missing combination rule",
+      "focus": "Pause after Q1; main batch preassigns rule_supply; direct_ac/no_extra are other human routes.",
+      "calls_expected": {
+        "minimum": 2,
+        "maximum": 3
+      },
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you these facts:\n- A links to B.\n- B links to C.\n\nI have not taught any combination rule for links."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Does A link to C? If current teaching is sufficient, answer and mark any inference. If a rule is needed, you may ask me at most one focused question. Do not guess."
+        }
+      ],
+      "branches": [
+        {
+          "id": "rule_supply",
+          "label": "supply the combination rule",
+          "content": "The current question is whether A links to C. I now teach this rule: for these tokens, if X links to Y and Y links to Z, then X links to Z. A links to B and B links to C remain current. If the rule applies, answer and mark the conclusion as inferred; otherwise state what is missing.",
+          "adds": [
+            "rule"
+          ],
+          "direct_ac": false,
+          "rule_status": "new rule supplied"
+        },
+        {
+          "id": "direct_ac",
+          "label": "directly teach A-C only",
+          "content": "The current question is whether A links to C. I now directly teach: A links to C. This is direct teaching. A links to B and B links to C remain current. Report A links to C as direct teaching.",
+          "adds": [
+            "A-C"
+          ],
+          "direct_ac": true,
+          "rule_status": "no new rule"
+        },
+        {
+          "id": "no_extra",
+          "label": "no additional fact or rule",
+          "content": "The current question is whether A links to C. I am not adding any fact or rule in this reply. A links to B and B links to C remain current; no combination rule has been taught. Use only current teaching; do not guess or ask again.",
+          "adds": [],
+          "direct_ac": false,
+          "rule_status": "rule still not provided"
+        }
+      ]
+    },
+    {
+      "id": "I4",
+      "mode": "interactive",
+      "title": "A+B interactive — no inference or question requested",
+      "focus": "User explicitly forbids inference and questions; answer only whether A-C was directly taught.",
+      "calls_expected": 2,
+      "turns": [
+        {
+          "id": "T1",
+          "phase": "teach",
+          "content": "We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, \"links\" is a made-up relation; do not use outside knowledge about links.\n\nI teach you these facts:\n- A links to B.\n- B links to C.\n\nPuzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z."
+        },
+        {
+          "id": "Q1",
+          "phase": "query",
+          "content": "Do not infer, and do not ask me anything. Was A links to C directly taught? Answer only that."
+        }
+      ],
+      "branches": []
+    }
+  ]
+}

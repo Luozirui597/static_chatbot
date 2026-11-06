@@ -1,0 +1,14 @@
+# I1 — A+B interactive — directly taught target
+
+Direct target; report directly, do not infer and do not ask.
+
+## T1
+
+We are doing a short fictional logic puzzle. A and D are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you this fact:
+- A links to D.
+
+## Q1
+
+Does A link to D? Was that taught directly, inferred, or can you not tell? Use only what I taught.

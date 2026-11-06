@@ -1,0 +1,162 @@
+{
+  "visible": [
+    "We call the blue shape the delta fold.",
+    "The delta fold appears in chapter two of the geometry handout.",
+    "Fact: object 1 is blue.",
+    "Fact: object 2 is blue.",
+    "Fact: object 3 is blue.",
+    "Fact: object 4 is blue.",
+    "Fact: object 5 is blue.",
+    "Fact: object 6 is blue.",
+    "Fact: object 7 is blue.",
+    "Fact: object 8 is blue.",
+    "Fact: object 9 is blue.",
+    "Fact: object 10 is blue.",
+    "Fact: object 11 is blue.",
+    "Fact: object 12 is blue.",
+    "Fact: object 13 is blue.",
+    "Fact: object 14 is blue.",
+    "Fact: object 15 is blue.",
+    "Fact: object 16 is blue.",
+    "Fact: object 17 is blue.",
+    "Fact: object 18 is blue."
+  ],
+  "cases": {
+    "process": {
+      "hidden": [
+        "Process P7: Step one is to loosen the bolt.",
+        "Process P7: Step two is to turn the wheel clockwise.",
+        "Process P7: Step three is to tighten the screw.",
+        "The reason for tightening the screw is to hold the bracket.",
+        "Correction: Step three of process P7 must be done after step two; do not tighten the screw before the wheel is turned.",
+        "The third step is a safety adjustment."
+      ],
+      "question": "What is the current order of process P7, and why do you tighten the screw?"
+    },
+    "rule_exception": {
+      "hidden": [
+        "Rule: division by n is defined unless n = zero.",
+        "For division by zero, the exception is not allowed.",
+        "The division sign is printed on the page.",
+        "Rule formatting uses a blue heading.",
+        "The rule about division by n is used in the example.",
+        "Fact: object 18 is blue."
+      ],
+      "question": "What did you teach about division by zero, including any exception?"
+    },
+    "formula_compare": {
+      "hidden": [
+        "For resistance R, Formula: R = 1/n.",
+        "Correction: For resistance R, Formula: R = 2/n.",
+        "For resistance R, the symbol n is a variable.",
+        "Formula: P = 1/n.",
+        "For resistance R, the formula is in the handout.",
+        "The resistance unit is ohm."
+      ],
+      "question": "What was the original formula for resistance R, and what replacement did you teach?"
+    },
+    "alpha": {
+      "hidden": [
+        "We call the green shape the alpha bridge.",
+        "The alpha bridge is painted green.",
+        "The beta bridge is blue.",
+        "Bridge facts are in the handout.",
+        "The alpha symbol appears in the legend.",
+        "A bridge is a structure."
+      ],
+      "question": "What did I call the alpha bridge?"
+    },
+    "alpha_explicit": {
+      "hidden": [
+        "We call the green shape the alpha bridge.",
+        "The alpha bridge is painted green.",
+        "The beta bridge is blue.",
+        "Bridge facts are in the handout.",
+        "The alpha symbol appears in the legend.",
+        "A bridge is a structure."
+      ],
+      "question": "What did I originally call the alpha bridge?"
+    },
+    "sigma_source": {
+      "hidden": [
+        "The original source of the sigma rule is the green handbook.",
+        "The sigma rule is used for the heat map.",
+        "The sigma symbol appears in the legend.",
+        "The green handbook has a blue cover.",
+        "A rule can have a source.",
+        "The source is printed in the appendix."
+      ],
+      "question": "What is the original source of the sigma rule?"
+    },
+    "ambiguous": {
+      "hidden": [
+        "Process P7 step one is in the old notes.",
+        "Process P7 step two is in the old notes.",
+        "Process P7 step three is in the old notes.",
+        "The old notes have a blue cover.",
+        "The old notes mention a wheel.",
+        "The old notes mention a bracket."
+      ],
+      "question": "那条规则后来改了吗？"
+    },
+    "foobar": {
+      "hidden": [
+        "Process P7 step one is in the old notes.",
+        "Process P7 step two is in the old notes.",
+        "Process P7 step three is in the old notes.",
+        "The old notes have a blue cover.",
+        "The old notes mention a wheel.",
+        "The old notes mention a bracket."
+      ],
+      "question": "What did I teach about Foobar protocol?"
+    },
+    "visible_complete": {
+      "hidden": [
+        "Process P7 step one is in the old notes.",
+        "Process P7 step two is in the old notes.",
+        "Process P7 step three is in the old notes.",
+        "The old notes have a blue cover.",
+        "The old notes mention a wheel.",
+        "The old notes mention a bracket."
+      ],
+      "question": "What did I call the delta fold?"
+    },
+    "no_hidden": {
+      "hidden": [],
+      "question": "What did I call the delta fold?"
+    },
+    "visible_explicit": {
+      "hidden": [
+        "Process P7 step one is in the old notes.",
+        "Process P7 step two is in the old notes.",
+        "Process P7 step three is in the old notes.",
+        "The old notes have a blue cover.",
+        "The old notes mention a wheel.",
+        "The old notes mention a bracket."
+      ],
+      "question": "Did you originally call this the delta fold?"
+    },
+    "rule_only": {
+      "hidden": [
+        "Process P7 step one is in the old notes.",
+        "Process P7 step two is in the old notes.",
+        "Process P7 step three is in the old notes.",
+        "The old notes have a blue cover.",
+        "The old notes mention a wheel.",
+        "The old notes mention a bracket."
+      ],
+      "question": "What is the rule?"
+    },
+    "invalid_decision": {
+      "hidden": [
+        "Process P7 step one is in the old notes.",
+        "Process P7 step two is in the old notes.",
+        "Process P7 step three is in the old notes.",
+        "The old notes have a blue cover.",
+        "The old notes mention a wheel.",
+        "The old notes mention a bracket."
+      ],
+      "question": "What did I teach about Foobar protocol?"
+    }
+  }
+}

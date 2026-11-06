@@ -1,0 +1,52 @@
+[
+  {
+    "id": "explicit-en-to-zh",
+    "history": ["The Birch Ledger is stored in the west cabinet."],
+    "current": "Where is the Birch Ledger stored? Please answer in Chinese.",
+    "expected_language": "Chinese",
+    "answer_standard": "Say that the Birch Ledger is stored in the west cabinet."
+  },
+  {
+    "id": "explicit-zh-to-en",
+    "history": ["铜钥匙放在蓝色抽屉里。"],
+    "current": "铜钥匙放在哪里？请用英文回答。",
+    "expected_language": "English",
+    "answer_standard": "Say that the copper key is in the blue drawer."
+  },
+  {
+    "id": "persistent-preference",
+    "history": ["For the rest of this conversation, answer in Chinese.", "An amber flag means the case is ready for inspection."],
+    "current": "What does the amber flag mean?",
+    "expected_language": "Chinese",
+    "answer_standard": "Say that the case is ready for inspection."
+  },
+  {
+    "id": "one-turn-override",
+    "history": ["For the rest of this conversation, answer in Chinese.", "An amber flag means the case is ready for inspection."],
+    "current": "What does the amber flag mean? For this reply only, answer in English.",
+    "expected_language": "English",
+    "answer_standard": "Say that the case is ready for inspection."
+  },
+  {
+    "id": "restore-persistent-preference",
+    "history": ["For the rest of this conversation, answer in Chinese.", "An amber flag means the case is ready for inspection.", "What does the amber flag mean? For this reply only, answer in English."],
+    "current": "Confirm the meaning of the amber flag briefly.",
+    "expected_language": "Chinese",
+    "answer_standard": "Say that the case is ready for inspection. The earlier one-turn English request has ended."
+  },
+  {
+    "id": "preserve-quotation",
+    "history": ["箱上的英文标签原文是“Keep Upright”。"],
+    "current": "请用中文回答箱上写着什么，并逐字保留英文标签原文。",
+    "expected_language": "Chinese",
+    "answer_standard": "Use Chinese for the main clause and preserve the exact English quotation Keep Upright.",
+    "quote_required": "Keep Upright"
+  },
+  {
+    "id": "default-follow-english",
+    "history": ["The Birch Ledger is stored in the west cabinet."],
+    "current": "Where is the Birch Ledger stored?",
+    "expected_language": "English",
+    "answer_standard": "Say that the Birch Ledger is stored in the west cabinet."
+  }
+]

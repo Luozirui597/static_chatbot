@@ -1,0 +1,50 @@
+{
+  "version": "controlled-conditions-v1",
+  "conditions": [
+    {
+      "id": "standard",
+      "product_value": "baseline",
+      "strategy_prompt": "prompts/standard.txt",
+      "source_prompt_version": "receive-teaching-v7+history-context-b1",
+      "source_prompt_sha256": "8907d4793b37e6680596b58fae1166cc8a2181a02609fc02ce89080bdc7e26a7",
+      "candidate_prompt_version": "controlled-v1-standard-json-en",
+      "label": "Standard"
+    },
+    {
+      "id": "a",
+      "product_value": "a",
+      "strategy_prompt": "prompts/a.txt",
+      "source_prompt_version": "teach-a-v1+history-context-b1",
+      "source_prompt_sha256": "16236223af1b3f813e5e27aa881e27d4b45039b58db6be2f44d4a4f9137f26a4",
+      "candidate_prompt_version": "controlled-v1-a-json-en",
+      "label": "A"
+    },
+    {
+      "id": "b",
+      "product_value": "b",
+      "strategy_prompt": "prompts/b.txt",
+      "source_prompt_version": "teach-b-v1+history-context-b1",
+      "source_prompt_sha256": "44aed8837a13413565a6dee866e00671a6fcefb3cc6f5f885dd78ac8495f9113",
+      "candidate_prompt_version": "controlled-v1-b-json-en",
+      "label": "B"
+    },
+    {
+      "id": "ab",
+      "product_value": "ab",
+      "strategy_prompt": "prompts/ab.txt",
+      "source_prompt_version": "teach-ab-v1+history-context-b1",
+      "source_prompt_sha256": "b0f77e2a18289f1887aac9ad154f3ff6267cb942157f35ce28176110f688bbcf",
+      "candidate_prompt_version": "controlled-v1-ab-json-en",
+      "label": "AB"
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "response_format": {
+    "type": "json_object"
+  },
+  "temperature": null,
+  "max_tokens": 4096,
+  "timeout_seconds": 90,
+  "reasoning_effort": "",
+  "automatic_retries": 0
+}

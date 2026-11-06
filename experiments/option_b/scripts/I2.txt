@@ -1,0 +1,45 @@
+# I2 — B interactive — missing intermediate fact
+Mode: interactive
+Expected calls: {'minimum': 2, 'maximum': 3}
+
+## T1 (teach)
+
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B.
+
+Puzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z.
+
+I have not taught B links to C.
+
+## Q1 (query)
+
+Does A link to C? If current teaching is insufficient, you may ask me at most one focused question. Do not infer or guess.
+
+## branch bc — supply B-C only
+
+The current question is whether A links to C. I have not withdrawn A links
+to B or the rule "if X links to Y and Y links to Z, then X links to Z." I
+now additionally teach: B links to C. This is the only new fact I am adding.
+
+Please answer again: Does A link to C? Use only what I have directly taught;
+do not infer.
+
+## branch direct_ac — directly teach A-C only
+
+The current question is whether A links to C.
+I now directly teach: A links to C. This is direct teaching, not an inference.
+A links to B and the chain rule I previously taught remain current.
+I have not taught B links to C.
+
+Please answer again: Does A link to C? Report it as direct teaching.
+
+## branch no_extra — no new fact or rule
+
+The current question is whether A links to C. I have no new fact or rule to
+add. A links to B and the chain rule I previously taught remain current; I
+have not taught B links to C.
+
+Please answer again: Does A link to C? Use only what I have directly taught;
+do not infer.

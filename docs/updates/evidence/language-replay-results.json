@@ -1,0 +1,813 @@
+{
+  "synthetic": false,
+  "main": {
+    "conditions": {
+      "A": {
+        "planned": 49,
+        "success": 49,
+        "failure": 0,
+        "not_attempted": 0,
+        "failures": {},
+        "scored": 49,
+        "chinese_prose": 12,
+        "language": {
+          "English": 37,
+          "Chinese": 12
+        },
+        "main_clause_language": {
+          "English": 37,
+          "Chinese": 12
+        },
+        "language_compliant": 37,
+        "fidelity": {
+          "2": 48,
+          "1": 1
+        },
+        "quote_preserved": 0
+      },
+      "B": {
+        "planned": 49,
+        "success": 49,
+        "failure": 0,
+        "not_attempted": 0,
+        "failures": {},
+        "scored": 49,
+        "chinese_prose": 4,
+        "language": {
+          "Chinese": 4,
+          "English": 45
+        },
+        "main_clause_language": {
+          "Chinese": 4,
+          "English": 45
+        },
+        "language_compliant": 45,
+        "fidelity": {
+          "2": 49
+        },
+        "quote_preserved": 0
+      },
+      "C": {
+        "planned": 49,
+        "success": 49,
+        "failure": 0,
+        "not_attempted": 0,
+        "failures": {},
+        "scored": 49,
+        "chinese_prose": 8,
+        "language": {
+          "English": 41,
+          "Chinese": 8
+        },
+        "main_clause_language": {
+          "English": 41,
+          "Chinese": 8
+        },
+        "language_compliant": 41,
+        "fidelity": {
+          "2": 48,
+          "1": 1
+        },
+        "quote_preserved": 0
+      }
+    },
+    "pairs": {
+      "AB": {
+        "n": 49,
+        "main_clause_transitions": {
+          "English -> Chinese": 4,
+          "English -> English": 33,
+          "Chinese -> English": 12
+        },
+        "chinese_prose_reduced": 12,
+        "chinese_prose_increased": 4
+      },
+      "AC": {
+        "n": 49,
+        "main_clause_transitions": {
+          "English -> English": 31,
+          "English -> Chinese": 6,
+          "Chinese -> English": 10,
+          "Chinese -> Chinese": 2
+        },
+        "chinese_prose_reduced": 10,
+        "chinese_prose_increased": 6
+      }
+    },
+    "by_session": {
+      "56": {
+        "A": {
+          "planned": 39,
+          "success": 39,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 39,
+          "chinese_prose": 7,
+          "language": {
+            "English": 32,
+            "Chinese": 7
+          },
+          "main_clause_language": {
+            "English": 32,
+            "Chinese": 7
+          },
+          "language_compliant": 32,
+          "fidelity": {
+            "2": 38,
+            "1": 1
+          },
+          "quote_preserved": 0
+        },
+        "B": {
+          "planned": 39,
+          "success": 39,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 39,
+          "chinese_prose": 4,
+          "language": {
+            "Chinese": 4,
+            "English": 35
+          },
+          "main_clause_language": {
+            "Chinese": 4,
+            "English": 35
+          },
+          "language_compliant": 35,
+          "fidelity": {
+            "2": 39
+          },
+          "quote_preserved": 0
+        },
+        "C": {
+          "planned": 39,
+          "success": 39,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 39,
+          "chinese_prose": 5,
+          "language": {
+            "English": 34,
+            "Chinese": 5
+          },
+          "main_clause_language": {
+            "English": 34,
+            "Chinese": 5
+          },
+          "language_compliant": 34,
+          "fidelity": {
+            "2": 38,
+            "1": 1
+          },
+          "quote_preserved": 0
+        }
+      },
+      "57": {
+        "A": {
+          "planned": 10,
+          "success": 10,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 10,
+          "chinese_prose": 5,
+          "language": {
+            "English": 5,
+            "Chinese": 5
+          },
+          "main_clause_language": {
+            "English": 5,
+            "Chinese": 5
+          },
+          "language_compliant": 5,
+          "fidelity": {
+            "2": 10
+          },
+          "quote_preserved": 0
+        },
+        "B": {
+          "planned": 10,
+          "success": 10,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 10,
+          "chinese_prose": 0,
+          "language": {
+            "English": 10
+          },
+          "main_clause_language": {
+            "English": 10
+          },
+          "language_compliant": 10,
+          "fidelity": {
+            "2": 10
+          },
+          "quote_preserved": 0
+        },
+        "C": {
+          "planned": 10,
+          "success": 10,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 10,
+          "chinese_prose": 3,
+          "language": {
+            "English": 7,
+            "Chinese": 3
+          },
+          "main_clause_language": {
+            "English": 7,
+            "Chinese": 3
+          },
+          "language_compliant": 7,
+          "fidelity": {
+            "2": 10
+          },
+          "quote_preserved": 0
+        }
+      }
+    },
+    "baseline_chinese_prose": "observed"
+  },
+  "controls": {
+    "explicit-en-to-zh": {
+      "conditions": {
+        "A": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "B": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "C": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        }
+      },
+      "pairs": {
+        "AB": {
+          "n": 1,
+          "main_clause_transitions": {
+            "Chinese -> Chinese": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        },
+        "AC": {
+          "n": 1,
+          "main_clause_transitions": {
+            "Chinese -> Chinese": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        }
+      }
+    },
+    "explicit-zh-to-en": {
+      "conditions": {
+        "A": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 0,
+          "language": {
+            "English": 1
+          },
+          "main_clause_language": {
+            "English": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "B": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 0,
+          "language": {
+            "English": 1
+          },
+          "main_clause_language": {
+            "English": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "C": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 0,
+          "language": {
+            "English": 1
+          },
+          "main_clause_language": {
+            "English": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        }
+      },
+      "pairs": {
+        "AB": {
+          "n": 1,
+          "main_clause_transitions": {
+            "English -> English": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        },
+        "AC": {
+          "n": 1,
+          "main_clause_transitions": {
+            "English -> English": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        }
+      }
+    },
+    "persistent-preference": {
+      "conditions": {
+        "A": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "B": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "C": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        }
+      },
+      "pairs": {
+        "AB": {
+          "n": 1,
+          "main_clause_transitions": {
+            "Chinese -> Chinese": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        },
+        "AC": {
+          "n": 1,
+          "main_clause_transitions": {
+            "Chinese -> Chinese": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        }
+      }
+    },
+    "one-turn-override": {
+      "conditions": {
+        "A": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 0,
+          "language": {
+            "English": 1
+          },
+          "main_clause_language": {
+            "English": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "B": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 0,
+          "language": {
+            "English": 1
+          },
+          "main_clause_language": {
+            "English": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "C": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 0,
+          "language": {
+            "English": 1
+          },
+          "main_clause_language": {
+            "English": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        }
+      },
+      "pairs": {
+        "AB": {
+          "n": 1,
+          "main_clause_transitions": {
+            "English -> English": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        },
+        "AC": {
+          "n": 1,
+          "main_clause_transitions": {
+            "English -> English": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        }
+      }
+    },
+    "restore-persistent-preference": {
+      "conditions": {
+        "A": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "B": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "C": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        }
+      },
+      "pairs": {
+        "AB": {
+          "n": 1,
+          "main_clause_transitions": {
+            "Chinese -> Chinese": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        },
+        "AC": {
+          "n": 1,
+          "main_clause_transitions": {
+            "Chinese -> Chinese": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        }
+      }
+    },
+    "preserve-quotation": {
+      "conditions": {
+        "A": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "1": 1
+          },
+          "quote_preserved": 1
+        },
+        "B": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 1
+        },
+        "C": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 1,
+          "language": {
+            "Chinese": 1
+          },
+          "main_clause_language": {
+            "Chinese": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 1
+        }
+      },
+      "pairs": {
+        "AB": {
+          "n": 1,
+          "main_clause_transitions": {
+            "Chinese -> Chinese": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        },
+        "AC": {
+          "n": 1,
+          "main_clause_transitions": {
+            "Chinese -> Chinese": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        }
+      }
+    },
+    "default-follow-english": {
+      "conditions": {
+        "A": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 0,
+          "language": {
+            "English": 1
+          },
+          "main_clause_language": {
+            "English": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "B": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 0,
+          "language": {
+            "English": 1
+          },
+          "main_clause_language": {
+            "English": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        },
+        "C": {
+          "planned": 1,
+          "success": 1,
+          "failure": 0,
+          "not_attempted": 0,
+          "failures": {},
+          "scored": 1,
+          "chinese_prose": 0,
+          "language": {
+            "English": 1
+          },
+          "main_clause_language": {
+            "English": 1
+          },
+          "language_compliant": 1,
+          "fidelity": {
+            "2": 1
+          },
+          "quote_preserved": 0
+        }
+      },
+      "pairs": {
+        "AB": {
+          "n": 1,
+          "main_clause_transitions": {
+            "English -> English": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        },
+        "AC": {
+          "n": 1,
+          "main_clause_transitions": {
+            "English -> English": 1
+          },
+          "chinese_prose_reduced": 0,
+          "chinese_prose_increased": 0
+        }
+      }
+    }
+  }
+}

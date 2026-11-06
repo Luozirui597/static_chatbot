@@ -1,0 +1,489 @@
+{
+  "version": "decision-budget-v1",
+  "decision_prompt_source": "backend.general_history.engine.DECISION_SYSTEM",
+  "cases": [
+    {
+      "id": "session51_original",
+      "requires_external_input": true,
+      "source": "external_required",
+      "synthetic_fallback": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "I teach you this fact: the difference quotient is (f(x+h)-f(x))/h.",
+            "label": "hidden_evidence"
+          },
+          {
+            "role": "user",
+            "content": "Earlier lesson: the difference quotient appears in the derivative lesson.",
+            "label": "hidden_unused"
+          },
+          {
+            "role": "user",
+            "content": "Lesson note: the course uses short examples.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Assistant note: I will keep the original wording.",
+            "label": null
+          },
+          {
+            "role": "assistant",
+            "content": "Lesson note: ask one question at a time.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Assistant note: the examples are synthetic.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Lesson note: evidence comes first.",
+            "label": null
+          },
+          {
+            "role": "assistant",
+            "content": "Assistant note: I will not add a new rule.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Lesson note: keep the source order.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Assistant note: the current question follows.",
+            "label": null
+          },
+          {
+            "role": "assistant",
+            "content": "Lesson note: the course uses short examples.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Assistant note: I will keep the original wording.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Lesson note: ask one question at a time.",
+            "label": null
+          },
+          {
+            "role": "assistant",
+            "content": "Assistant note: the examples are synthetic.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Lesson note: evidence comes first.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Assistant note: I will not add a new rule.",
+            "label": null
+          },
+          {
+            "role": "assistant",
+            "content": "Lesson note: keep the source order.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Assistant note: the current question follows.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Lesson note: the course uses short examples.",
+            "label": null
+          },
+          {
+            "role": "assistant",
+            "content": "Assistant note: I will keep the original wording.",
+            "label": null
+          },
+          {
+            "role": "user",
+            "content": "Lesson note: ask one question at a time.",
+            "label": null
+          }
+        ],
+        "current": "Which difference quotient applies to this derivative?",
+        "expected": {
+          "manual": true
+        }
+      },
+      "expected": {
+        "manual": true
+      },
+      "synthetic": true
+    },
+    {
+      "id": "visible_complete",
+      "requires_external_input": false,
+      "source": "synthetic",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Unrelated archive note: the old schedule used a red folder.",
+          "label": "hidden_evidence"
+        },
+        {
+          "role": "user",
+          "content": "The return policy I teach is 30 days from delivery.",
+          "label": "return_policy"
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: the course uses short examples.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: I will keep the original wording.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Lesson note: ask one question at a time.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: the examples are synthetic.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: evidence comes first.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Assistant note: I will not add a new rule.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: keep the source order.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: the current question follows.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Lesson note: the course uses short examples.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: I will keep the original wording.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: ask one question at a time.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Assistant note: the examples are synthetic.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: evidence comes first.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: I will not add a new rule.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Lesson note: keep the source order.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: the current question follows.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: the course uses short examples.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Assistant note: I will keep the original wording.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: ask one question at a time.",
+          "label": null
+        }
+      ],
+      "current": "What return policy applies?",
+      "expected": {
+        "reason": "visible_complete",
+        "need_history": false,
+        "visible_labels": [
+          "return_policy"
+        ]
+      },
+      "synthetic": true
+    },
+    {
+      "id": "hidden_correction",
+      "requires_external_input": false,
+      "source": "synthetic",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Correction: the onboarding order is create account, confirm identity, then verify email.",
+          "label": "hidden_evidence"
+        },
+        {
+          "role": "user",
+          "content": "The onboarding order is create account, then verify email.",
+          "label": "old_order"
+        },
+        {
+          "role": "user",
+          "content": "Reference note: the visible lesson only quotes the old onboarding order; the current correction is in an earlier teaching record.",
+          "label": "old_reference_note"
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: the course uses short examples.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: I will keep the original wording.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Lesson note: ask one question at a time.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: the examples are synthetic.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: evidence comes first.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Assistant note: I will not add a new rule.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: keep the source order.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: the current question follows.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Lesson note: the course uses short examples.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: I will keep the original wording.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: ask one question at a time.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Assistant note: the examples are synthetic.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: evidence comes first.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: I will not add a new rule.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Lesson note: keep the source order.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: the current question follows.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: the course uses short examples.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Assistant note: I will keep the original wording.",
+          "label": null
+        }
+      ],
+      "current": "Which onboarding order applies now?",
+      "expected": {
+        "reason": "ordinary_recall",
+        "need_history": true,
+        "query_terms": [
+          "onboarding",
+          "order"
+        ]
+      },
+      "synthetic": true
+    },
+    {
+      "id": "ambiguous_reference",
+      "requires_external_input": false,
+      "source": "synthetic",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Unrelated archive note: the old schedule used a red folder.",
+          "label": "hidden_unrelated"
+        },
+        {
+          "role": "user",
+          "content": "Topic alpha: the archive process uses a blue folder.",
+          "label": "alpha_process"
+        },
+        {
+          "role": "user",
+          "content": "Topic beta: the archive process uses a green folder.",
+          "label": "beta_process"
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: the course uses short examples.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: I will keep the original wording.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Lesson note: ask one question at a time.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: the examples are synthetic.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: evidence comes first.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Assistant note: I will not add a new rule.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: keep the source order.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: the current question follows.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Lesson note: the course uses short examples.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: I will keep the original wording.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: ask one question at a time.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Assistant note: the examples are synthetic.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: evidence comes first.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: I will not add a new rule.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Lesson note: keep the source order.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Assistant note: the current question follows.",
+          "label": null
+        },
+        {
+          "role": "user",
+          "content": "Lesson note: the course uses short examples.",
+          "label": null
+        },
+        {
+          "role": "assistant",
+          "content": "Assistant note: I will keep the original wording.",
+          "label": null
+        }
+      ],
+      "current": "What about that process?",
+      "expected": {
+        "reason": "ambiguous",
+        "need_history": false
+      },
+      "synthetic": true
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "date": "2026-11-06",
+  "timezone": "Asia/Shanghai",
+  "scope": "Pre-commit offline revalidation of the working tree; no new real model calls or production database maintenance.",
+  "backend": {
+    "passed": 1620,
+    "exit_code": 0,
+    "seconds": 313.81,
+    "command": "PYTHONDONTWRITEBYTECODE=1 PYTHON_DOTENV_DISABLED=1 .venv/bin/python -m pytest tests -q -p no:cacheprovider"
+  },
+  "frontend": {
+    "passed": 555,
+    "failed": 0,
+    "exit_code": 0,
+    "command": "node --test tests/*.test.js",
+    "environment_note": "Initial restricted run could not bind a loopback test port. Identical command rerun with permission passed."
+  },
+  "experiments": [
+    {
+      "suite": "option_a",
+      "passed": 22,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m unittest discover -s experiments/option_a/tests -q"
+    },
+    {
+      "suite": "option_a_web",
+      "passed": 34,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m unittest discover -s experiments/option_a_web/tests -q"
+    },
+    {
+      "suite": "option_b",
+      "passed": 34,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m unittest discover -s experiments/option_b/tests -q"
+    },
+    {
+      "suite": "option_b_web",
+      "passed": 30,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m unittest discover -s experiments/option_b_web/tests -q"
+    },
+    {
+      "suite": "option_ab",
+      "passed": 18,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m unittest discover -s experiments/option_ab/tests -q"
+    },
+    {
+      "suite": "option_ab_web",
+      "passed": 30,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m unittest discover -s experiments/option_ab_web/tests -q"
+    },
+    {
+      "suite": "tool_search_history",
+      "passed": 92,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m pytest experiments/tool_search_history/tests -q -p no:cacheprovider"
+    },
+    {
+      "suite": "general_tool_search",
+      "passed": 106,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m pytest experiments/general_tool_search/tests -q -p no:cacheprovider"
+    },
+    {
+      "suite": "strategy_comparison",
+      "passed": 19,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m pytest experiments/strategy_comparison/tests -q -p no:cacheprovider"
+    },
+    {
+      "suite": "strategy_stability",
+      "passed": 83,
+      "exit_code": 0,
+      "command": ".venv/bin/python -m pytest experiments/strategy_stability/tests experiments/strategy_stability/controlled_v1/tests -q -p no:cacheprovider"
+    },
+    {
+      "suite": "language_language_probe",
+      "passed": 22,
+      "exit_code": 0,
+      "cwd": "experiments/language_language_probe",
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHON_DOTENV_DISABLED=1 ../../.venv/bin/python -m pytest tests -q -p no:cacheprovider"
+    }
+  ],
+  "known_test_runner_requirement": "Run each legacy Option suite in a separate unittest process. Direct pytest collection imports backend modules before the isolation guard; it is not the supported runner.",
+  "real_model_calls": 0,
+  "git_diff_check": {
+    "tracked_diff_before_staging": "passed",
+    "full_staged_diff": "existing formatting warnings in newly archived files",
+    "crlf_policy": "Frozen CSV assets retain original CRLF bytes.",
+    "other_warnings": [
+      "backend/programmatic_history/service.py:126: trailing whitespace.",
+      "backend/programmatic_history/service.py:134: trailing whitespace.",
+      "backend/programmatic_history/service.py:172: trailing whitespace.",
+      "backend/programmatic_history/service.py:181: trailing whitespace.",
+      "backend/programmatic_history/service.py:189: trailing whitespace.",
+      "experiments/option_ab_web/asgi.py:704: new blank line at EOF.",
+      "experiments/option_b_web/asgi.py:704: new blank line at EOF.",
+      "experiments/strategy_comparison/prompts/a.txt:122: new blank line at EOF.",
+      "experiments/strategy_comparison/prompts/ab.txt:139: new blank line at EOF.",
+      "experiments/strategy_comparison/prompts/b.txt:124: new blank line at EOF."
+    ],
+    "resolution": "Preserve original code and frozen assets; formatting warnings are documented and do not change runtime validation."
+  },
+  "limitations": [
+    "Dependency deprecation/resource warnings remain; no new lint or type-check certification.",
+    "The pre-commit run does not repeat real browser acceptance or real model pilots.",
+    "Known controlled_v1 rendering and baseline-identity issues remain documented."
+  ],
+  "controlled_v1_manifest": {
+    "files_checked": 23,
+    "unchanged": true
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "description": "Early teaching and a correction outside the last-20 receive window.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Start of class."
+    },
+    {
+      "role": "assistant",
+      "content": "Okay."
+    },
+    {
+      "role": "user",
+      "content": "I teach you this fact: A links to B."
+    },
+    {
+      "role": "assistant",
+      "content": "Understood."
+    },
+    {
+      "role": "user",
+      "content": "I teach you this fact: B links to C."
+    },
+    {
+      "role": "assistant",
+      "content": "Understood."
+    },
+    {
+      "role": "user",
+      "content": "We will discuss more."
+    },
+    {
+      "role": "assistant",
+      "content": "Okay."
+    },
+    {
+      "role": "user",
+      "content": "A separate fact: D links to E."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted."
+    },
+    {
+      "role": "user",
+      "content": "Another separate fact: F links to G."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted."
+    },
+    {
+      "role": "user",
+      "content": "Unrelated teaching one."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted."
+    },
+    {
+      "role": "user",
+      "content": "Unrelated teaching two."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted."
+    },
+    {
+      "role": "user",
+      "content": "Unrelated teaching three."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted."
+    },
+    {
+      "role": "user",
+      "content": "Wait, I need to correct one thing."
+    },
+    {
+      "role": "assistant",
+      "content": "Please continue."
+    },
+    {
+      "role": "user",
+      "content": "Correction: B does not link to C."
+    },
+    {
+      "role": "assistant",
+      "content": "Understood."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 1."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 1."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 2."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 2."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 3."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 3."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 4."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 4."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 5."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 5."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 6."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 6."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 7."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 7."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 8."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 8."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 9."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 9."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 10."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 10."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 11."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 11."
+    },
+    {
+      "role": "user",
+      "content": "Later teaching 12."
+    },
+    {
+      "role": "assistant",
+      "content": "Noted 12."
+    }
+  ],
+  "current": "What did I teach you about A and C, and did I later correct anything?",
+  "fixed_query": "A B C links correction",
+  "expected_source_ids": [
+    3,
+    5,
+    21
+  ]
+}

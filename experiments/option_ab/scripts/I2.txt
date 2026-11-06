@@ -1,0 +1,32 @@
+# I2 — A+B interactive — missing intermediate fact
+
+Pause after Q1; human route to none/bc/direct_ac/no_extra; T2 response is FINAL.
+
+## T1
+
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B.
+
+Puzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z.
+
+I have not taught B links to C.
+
+## Q1
+
+Does A link to C? If current teaching is sufficient, answer and mark any inference. If it is insufficient, you may ask me at most one focused question. Do not guess.
+
+## Branches
+
+### bc — supply B-C only
+
+The current question is whether A links to C. I am not withdrawing A links to B or the rule "if X links to Y and Y links to Z, then X links to Z." I now also teach: B links to C. This is the only new fact. If the rule now applies, answer and mark the conclusion as inferred; otherwise state what is missing.
+
+### direct_ac — directly teach A-C only
+
+The current question is whether A links to C. I now directly teach: A links to C. This is direct teaching, not an inference. A links to B and the rule remain current. I have not taught B links to C. Report A links to C as direct teaching.
+
+### no_extra — no new fact or rule
+
+The current question is whether A links to C. I have no new fact or rule to add. A links to B and the rule remain current; B links to C is not taught. Use only current teaching; do not guess or ask again.

@@ -82,6 +82,12 @@ class SpyLLMClient:
         self.calls.append(copy.deepcopy(messages))
         if self.error is not None:
             raise self.error
+        if self.response == "test reply" and any(
+            msg.get("role") == "system"
+            and "请用中文回复。" in str(msg.get("content", ""))
+            for msg in messages
+        ):
+            return "测试回复。"
         return self.response
 
 
@@ -105,6 +111,14 @@ class KwargSpyLLMClient:
         diagnostics=_UNSET,
     ) -> str:
         self.calls.append(copy.deepcopy(messages))
+        if self.response == "test reply" and any(
+            msg.get("role") == "system"
+            and "请用中文回复。" in str(msg.get("content", ""))
+            for msg in messages
+        ):
+            self.response_override = "测试回复。"
+        else:
+            self.response_override = self.response
         supplied = {}
         for name, value in (
             ("response_format", response_format),
@@ -115,7 +129,7 @@ class KwargSpyLLMClient:
             if value is not self._UNSET:
                 supplied[name] = value
         self.generate_kwargs.append(supplied)
-        return self.response
+        return self.response_override
 
 
 # ============================================================================
@@ -319,10 +333,8 @@ class TestHandleSessionMessageBasic:
 
         await service.handle_session_message(chat_session.id, "hi", db_session)
 
-        assert spy_llm.calls[0][0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert spy_llm.calls[0][0]["role"] == "system"
+        assert spy_llm.calls[0][0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
 
     @pytest.mark.anyio
     async def test_system_prompt_not_in_database(self, db_session, spy_llm):
@@ -373,10 +385,8 @@ class TestMultiTurnHistory:
         assert len(spy_llm.calls) == 2
         msgs = spy_llm.calls[1]
         assert [m["role"] for m in msgs] == ["system", "user", "user"]
-        assert msgs[0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert msgs[-1] == {"role": "user", "content": "q2"}
         assert _decode_receive_history_background(msgs) == ["q1"]
 
@@ -541,7 +551,8 @@ class TestMultiTurnHistory:
         roles = [m["role"] for m in msgs]
         contents = [m["content"] for m in msgs]
         assert roles == ["system", "user"]
-        assert contents == [RECEIVE_TEACHING_PROMPT, "qb1"]
+        assert contents[0].startswith(RECEIVE_TEACHING_PROMPT)
+        assert contents[1:] == ["qb1"]
 
 
 # ============================================================================
@@ -2142,7 +2153,8 @@ class TestSwitchHistoryBoundary:
         # Receive projection then removes all assistant rows, leaving
         # the historical user messages q2..q11.
         msgs = new_spy.calls[0]
-        assert msgs[0] == {"role": "system", "content": RECEIVE_TEACHING_PROMPT}
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert [m["role"] for m in msgs] == ["system", "user", "user"]
         history_contents = _decode_receive_history_background(msgs)
         assert len(history_contents) == MAX_HISTORY_MESSAGES // 2
@@ -2384,10 +2396,8 @@ class TestModeSwitchHistoryProjection:
         ]
 
         last_receive_call = spy_llm.calls[-1]
-        assert last_receive_call[0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert last_receive_call[0]["role"] == "system"
+        assert last_receive_call[0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert [message["role"] for message in last_receive_call] == [
             "system", "user", "user",
         ]
@@ -2431,7 +2441,7 @@ class TestModeSwitchHistoryProjection:
             RECEIVE_TEACHING_MODE
         )
         assert assistant_rows_after[0].prompt_version_snapshot == (
-            RECEIVE_TEACHING_PROMPT_VERSION
+            RECEIVE_TEACHING_PROMPT_VERSION + "+l1-en"
         )
         assert assistant_rows_after[1].interaction_mode_snapshot == (
             CORRECTIVE_MODE
@@ -2443,7 +2453,7 @@ class TestModeSwitchHistoryProjection:
             RECEIVE_TEACHING_MODE
         )
         assert assistant_rows_after[2].prompt_version_snapshot == (
-            RECEIVE_TEACHING_PROMPT_VERSION
+            RECEIVE_TEACHING_PROMPT_VERSION + "+l1-en"
         )
 
 
@@ -2498,10 +2508,8 @@ class TestReceiveTeachingLanguageFollowingAssembly:
         assert [message["role"] for message in messages] == [
             "system", "user",
         ]
-        assert messages[0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert messages[-1] == {"role": "user", "content": current}
 
         stored_content = db_session.execute(
@@ -2552,10 +2560,8 @@ class TestReceiveTeachingLanguageFollowingAssembly:
         assert [message["role"] for message in messages] == [
             "system", "user", "user",
         ]
-        assert messages[0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert messages[-1] == {"role": "user", "content": current}
         assert _decode_receive_history_background(messages) == list(
             history_users
@@ -2619,10 +2625,8 @@ class TestReceiveTeachingLanguageFollowingAssembly:
         assert [message["role"] for message in messages] == [
             "system", "user", "user",
         ]
-        assert messages[0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert messages[-1] == {"role": "user", "content": current}
         assert _decode_receive_history_background(messages) == list(
             history_users
@@ -2746,10 +2750,8 @@ class TestReceiveTeachingLanguageFollowingAssembly:
         )
 
         assert api_spy.calls == local_spy.calls
-        assert api_spy.calls[0][0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert api_spy.calls[0][0]["role"] == "system"
+        assert api_spy.calls[0][0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert api_spy.calls[0][-1] == {
             "role": "user", "content": self.ENGLISH_MATH,
         }
@@ -2788,10 +2790,8 @@ class TestReceiveTeachingTemperatureRouting:
 
         await service.handle_session_message(session.id, "hello", db_session)
 
-        assert local_spy.calls[0][0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert local_spy.calls[0][0]["role"] == "system"
+        assert local_spy.calls[0][0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert local_spy.generate_kwargs == [{"temperature": 0.0}]
         assert api_spy.generate_kwargs == []
 
@@ -2803,10 +2803,8 @@ class TestReceiveTeachingTemperatureRouting:
 
         await service.handle_session_message(session.id, "hello", db_session)
 
-        assert api_spy.calls[0][0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert api_spy.calls[0][0]["role"] == "system"
+        assert api_spy.calls[0][0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert api_spy.generate_kwargs == [{}]
         assert local_spy.generate_kwargs == []
 

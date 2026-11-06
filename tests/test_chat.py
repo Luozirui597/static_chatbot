@@ -145,3 +145,33 @@ def test_chat_blank_reply_502(monkeypatch):
     response = client.post("/api/chat", json={"message": "hi"})
     assert response.status_code == 502
     assert "detail" in response.json()
+
+
+def test_unexpected_chat_500_keeps_phase1_user_message(monkeypatch):
+    """An unexpected 500 cannot be assumed to mean nothing was saved."""
+    import backend.main as main_module
+    from backend.chat_service import ChatService
+
+    class _Boom:
+        async def generate(self, messages, **kwargs):
+            raise RuntimeError("synthetic post-phase1 failure")
+
+    with TestClient(main_module.app, raise_server_exceptions=False) as test_client:
+        monkeypatch.setattr(
+            main_module, "chat_service", ChatService(llm_client=_Boom())
+        )
+        created = test_client.post("/api/sessions", json={})
+        assert created.status_code == 201
+        session_id = created.json()["id"]
+
+        failed = test_client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "saved before the 500"},
+        )
+        assert failed.status_code == 500
+
+        rows = test_client.get(
+            f"/api/sessions/{session_id}/messages"
+        ).json()
+        assert [row["role"] for row in rows] == ["user"]
+        assert rows[0]["content"] == "saved before the 500"

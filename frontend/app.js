@@ -72,6 +72,9 @@
     document.getElementById("applyInteractionModeBtn");
   const interactionModeStatusEl =
     document.getElementById("interactionModeStatus");
+  let teachingStrategyControl = null;
+  let isTeachingStrategySwitching = false;
+  const teachingStrategyUncertainBySession = Object.create(null);
   const profileSwitchDialogEl =
     document.getElementById("profileSwitchDialog");
 
@@ -152,6 +155,7 @@
   let isInitializing = true;    // block user actions during page init
   let sessionLoadRequestId = 0;  // race-condition guard for message loads
   let sessionLastMessageId = {}; // sessionId -> int (last known message id)
+  let sessionLastMessageBoundaryKnown = {}; // sessionId -> bool
 
   // Model selector state
   let profiles = [];               // raw profile list from the server
@@ -973,6 +977,10 @@
    *  An uncertain-switch record for the current session always blocks
    *  sending — even when the cached llm_profile_status is "ready". */
   function currentSessionWritable() {
+    if (teachingStrategyUncertainBySession[currentSessionId]) return false;
+    const teachingSession = currentSession();
+    if (teachingSession && teachingSession.teaching_strategy !== undefined &&
+        !isValidTeachingStrategy(teachingSession.teaching_strategy)) return false;
     if (hasInteractionModeUncertain(
       interactionModeUncertainBySession, currentSessionId,
     )) {
@@ -996,7 +1004,7 @@
         interactionModeInitializationError !== null ||
         isInitializing || isSending || isCreatingSession || isRenaming ||
         isRenameSaving || isDeletingSession || isProfileSwitching ||
-        isInteractionModeSwitching) {
+        (isInteractionModeSwitching || isTeachingStrategySwitching)) {
       return false;
     }
     const session = currentSession();
@@ -1004,7 +1012,7 @@
     return canApplyInteractionMode({
       session: session,
       draftMode: currentInteractionModeDraft,
-      isSwitching: isInteractionModeSwitching,
+      isSwitching: (isInteractionModeSwitching || isTeachingStrategySwitching),
       hasUncertain: hasInteractionModeUncertain(
         interactionModeUncertainBySession, session.id,
       ),
@@ -1606,12 +1614,13 @@
    * locked during send/create.
    */
   function updateControlStates() {
+    if (teachingStrategyControl) teachingStrategyControl.render();
     const blockBase = isInitializing || isRenaming || isRenameSaving;
     const blockSessionSelection = blockBase || isCreatingSession;
     const blockSessionActions =
       blockBase || isCreatingSession || isSending ||
       isProfileSwitching || isDeletingSession ||
-      isInteractionModeSwitching;
+      (isInteractionModeSwitching || isTeachingStrategySwitching);
     const usable = registryUsable();
     const writable = currentSessionWritable();
     const reviewBusy = currentSessionId === null
@@ -1625,7 +1634,7 @@
     const blockSend =
       blockBase || isCreatingSession || isSending ||
       isProfileSwitching || isDeletingSession ||
-      isInteractionModeSwitching || !writable || reviewBusy ||
+      (isInteractionModeSwitching || isTeachingStrategySwitching) || !writable || reviewBusy ||
       (currentSessionId === null && !usable);
 
     const switchInitialized =
@@ -1913,6 +1922,7 @@
     }
     // Track the last known message id for this session so network-error
     // recovery can use an ID boundary instead of text matching.
+    sessionLastMessageBoundaryKnown[currentSessionId] = true;
     if (messages.length > 0) {
       sessionLastMessageId[currentSessionId] = messages[messages.length - 1].id;
     } else {
@@ -2308,6 +2318,7 @@
     clearReviewSessionState(sessionId);
     sessions = sessions.filter(function (s) { return s.id !== sessionId; });
     delete sessionLastMessageId[sessionId];
+    delete sessionLastMessageBoundaryKnown[sessionId];
     delete sessionSendBlocks[sessionId];
     delete sessionSwitchUncertain[sessionId];
     delete sessionHasMessages[sessionId];
@@ -2360,6 +2371,7 @@
     try {
       data = await fetchMessages(sessionId);
     } catch (err) {
+      sessionLastMessageBoundaryKnown[sessionId] = false;
       // On 404 the session no longer exists — remove it locally
       if (err instanceof ApiError && err.status === 404) {
         if (requestId === sessionLoadRequestId) {
@@ -2383,6 +2395,7 @@
     // A malformed list must never reach renderMessages or touch
     // sessionLastMessageId.
     if (!isValidMessageList(data, sessionId)) {
+      sessionLastMessageBoundaryKnown[sessionId] = false;
       renderEmptyChat();
       showStatus("The server returned an invalid response.", true);
       return;
@@ -2390,6 +2403,8 @@
 
     setHistoryState(sessionId, data.length > 0);
     if (data.length === 0) {
+      sessionLastMessageId[sessionId] = 0;
+      sessionLastMessageBoundaryKnown[sessionId] = true;
       renderEmptyChat();
     } else {
       renderMessages(data);
@@ -2530,7 +2545,7 @@
   async function newChat() {
     if (isCreatingSession || isSending || isInitializing ||
         isProfileSwitching || isDeletingSession ||
-        isInteractionModeSwitching) return;
+        (isInteractionModeSwitching || isTeachingStrategySwitching)) return;
 
     // Capture the profile id at request start so async changes cannot
     // make the UI and the request disagree.
@@ -2570,6 +2585,7 @@
       sessions.unshift(session);
       currentSessionId = session.id;
       sessionLastMessageId[session.id] = 0;
+      sessionLastMessageBoundaryKnown[session.id] = true;
       setHistoryState(session.id, false);        // brand-new session
       currentProfileDraftId = session.llm_profile_id;
       setInteractionModeDraftForSession(session);
@@ -2618,7 +2634,7 @@
 
     if (isCreatingSession || isSending || isInitializing ||
         isProfileSwitching || isDeletingSession ||
-        isInteractionModeSwitching) return false;
+        (isInteractionModeSwitching || isTeachingStrategySwitching)) return false;
 
     const profileId = selectedProfileId;
     if (profileId === null) {
@@ -2648,6 +2664,7 @@
       sessions.unshift(session);
       currentSessionId = session.id;
       sessionLastMessageId[session.id] = 0;
+      sessionLastMessageBoundaryKnown[session.id] = true;
       setHistoryState(session.id, false);
       currentProfileDraftId = session.llm_profile_id;
       setInteractionModeDraftForSession(session);
@@ -2672,7 +2689,7 @@
     event.stopPropagation();
     if (reviewTargetBusy(sessionId)) return;
     if (isSending || isProfileSwitching || isDeletingSession ||
-        isCreatingSession || isInteractionModeSwitching) return;
+        isCreatingSession || (isInteractionModeSwitching || isTeachingStrategySwitching)) return;
 
     if (!confirm("Delete this conversation?")) return;
 
@@ -2709,7 +2726,7 @@
   function startRename(sessionId) {
     if (isSending || isRenaming || isInitializing ||
         isProfileSwitching || isDeletingSession ||
-        isInteractionModeSwitching) return;
+        (isInteractionModeSwitching || isTeachingStrategySwitching)) return;
     if (reviewTargetBusy(sessionId)) return;
 
     isRenaming = true;
@@ -2721,7 +2738,7 @@
   async function saveRename(sessionId, renameInputEl) {
     if (isRenameSaving) return;  // prevent double-submit
     if (isProfileSwitching || isDeletingSession ||
-        isInteractionModeSwitching) return;
+        (isInteractionModeSwitching || isTeachingStrategySwitching)) return;
     if (reviewTargetBusy(sessionId)) return;
 
     var rawTitle = renameInputEl.value;
@@ -2793,7 +2810,7 @@
   async function sendMessage(text) {
     if (isSending || isInitializing || isCreatingSession ||
         isProfileSwitching || isDeletingSession ||
-        isInteractionModeSwitching) return;
+        (isInteractionModeSwitching || isTeachingStrategySwitching)) return;
     if (currentSessionId !== null && reviewTargetBusy(currentSessionId)) return;
 
     // Auto-create session on first send
@@ -2809,6 +2826,8 @@
 
     const sendingSessionId = currentSessionId;
     const lastMessageIdBeforeSend = sessionLastMessageId[sendingSessionId] || 0;
+    const lastMessageBoundaryKnown =
+      sessionLastMessageBoundaryKnown[sendingSessionId] === true;
 
     setSendingState(true);
     showStatus("Generating...", false);
@@ -2823,29 +2842,38 @@
       if (!isValidSendMessageResponse(data, sendingSessionId)) {
         await handleUncertainSendOutcome(
           sendingSessionId, text, lastMessageIdBeforeSend,
+          lastMessageBoundaryKnown,
         );
         return;
       }
 
       // --- Success --------------------------------------------------
-      clearStatus();
-      inputEl.value = "";
-      inputEl.style.height = "";
-
+      // Only mutate the visible conversation while that conversation is
+      // still selected.  Background save-state still advances below.
       if (currentSessionId === sendingSessionId) {
+        clearStatus();
+        inputEl.value = "";
+        inputEl.style.height = "";
         appendMessage(data.user_message.role, data.user_message.content);
         appendMessage(data.assistant_message.role, data.assistant_message.content);
         scrollMessagesToBottom();
       }
 
-      sessionLastMessageId[sendingSessionId] = data.assistant_message.id;
+      sessionLastMessageId[sendingSessionId] = Math.max(
+        sessionLastMessageId[sendingSessionId] || 0,
+        data.assistant_message.id,
+      );
+      sessionLastMessageBoundaryKnown[sendingSessionId] = true;
       setHistoryState(sendingSessionId, true);   // a user message is saved
 
       // Refresh session list (sending session moves to top).  On
       // failure the rendered messages stay and a stale warning shows.
       await refreshSessions(true);
     } catch (err) {
-      await handleSendFailure(err, sendingSessionId, text, lastMessageIdBeforeSend);
+      await handleSendFailure(
+        err, sendingSessionId, text, lastMessageIdBeforeSend,
+        lastMessageBoundaryKnown,
+      );
       return;
     } finally {
       setSendingState(false);
@@ -2868,7 +2896,14 @@
     sendingSessionId,
     originalText,
     lastMessageIdBeforeSend,
+    lastMessageBoundaryKnown,
   ) {
+    // Without a trustworthy pre-send boundary, no message can be assigned
+    // to this request.  Fail closed before matching any old identical text.
+    if (lastMessageBoundaryKnown !== true) {
+      return { status: "unknown" };
+    }
+
     let msgs;
     try {
       msgs = await fetchMessages(sendingSessionId);
@@ -2883,8 +2918,9 @@
 
     const result = findSentMessages(
       msgs, lastMessageIdBeforeSend, originalText,
+      lastMessageBoundaryKnown,
     );
-    if (result.userIdx < 0) {
+    if (result.association !== "matched" || result.userIdx < 0) {
       return { status: "unknown" };
     }
 
@@ -2894,7 +2930,9 @@
       return {
         status: "succeeded",
         messages: msgs,
-        lastMessageId: msgs[msgs.length - 1].id,
+        lastMessageId: result.observedLastMessageId,
+        matchedUserMessageId: result.userMessageId,
+        observedLastMessageId: result.observedLastMessageId,
       };
     }
 
@@ -2902,6 +2940,8 @@
       status: "user_saved",
       messages: msgs,
       userMessageId: result.userMessageId,
+      matchedUserMessageId: result.userMessageId,
+      observedLastMessageId: result.observedLastMessageId,
     };
   }
 
@@ -2924,9 +2964,11 @@
     sendingSessionId,
     originalText,
     lastMessageIdBeforeSend,
+    lastMessageBoundaryKnown,
   ) {
     const outcome = await inspectUncertainSend(
       sendingSessionId, originalText, lastMessageIdBeforeSend,
+      lastMessageBoundaryKnown,
     );
 
     if (outcome.status === "succeeded") {
@@ -2935,22 +2977,30 @@
         renderMessages(outcome.messages);
         scrollMessagesToBottom();
         clearStatus();
+        inputEl.value = "";
+        inputEl.style.height = "";
       }
-      inputEl.value = "";
-      inputEl.style.height = "";
-      if (outcome.lastMessageId > 0) {
-        sessionLastMessageId[sendingSessionId] = outcome.lastMessageId;
+      var nextLastId = outcome.observedLastMessageId ||
+        outcome.lastMessageId || 0;
+      if (nextLastId > (sessionLastMessageId[sendingSessionId] || 0)) {
+        sessionLastMessageId[sendingSessionId] = nextLastId;
       }
+      sessionLastMessageBoundaryKnown[sendingSessionId] = true;
       await refreshSessions(true);
       return;
     }
 
     if (outcome.status === "user_saved") {
       setHistoryState(sendingSessionId, true);
-      sessionLastMessageId[sendingSessionId] = outcome.userMessageId;
-      inputEl.value = "";
-      inputEl.style.height = "";
+      var observedLastId = outcome.observedLastMessageId ||
+        outcome.userMessageId;
+      if (observedLastId > (sessionLastMessageId[sendingSessionId] || 0)) {
+        sessionLastMessageId[sendingSessionId] = observedLastId;
+      }
+      sessionLastMessageBoundaryKnown[sendingSessionId] = true;
       if (currentSessionId === sendingSessionId) {
+        inputEl.value = "";
+        inputEl.style.height = "";
         showStatus(
           "Your message was saved, but the assistant could not respond.",
           true,
@@ -2962,12 +3012,6 @@
         } else {
           renderMessages(outcome.messages);
         }
-      } else {
-        showStatus(
-          "Message saved in session #" + sendingSessionId +
-          ", but the assistant could not respond.",
-          true,
-        );
       }
       return;
     }
@@ -3005,6 +3049,7 @@
     sendingSessionId,
     originalText,
     lastMessageIdBeforeSend,
+    lastMessageBoundaryKnown,
   ) {
     const errStatus = (err instanceof ApiError) ? err.status : 0;
 
@@ -3033,11 +3078,13 @@
     // --- Determine save status ----------------------------------------
     if (errStatus === 502 || errStatus === 504) {
       isSaved = true;
-    } else if (errStatus === 0) {
-      // Network error — inspect the log by ID boundary.  The shared
-      // recovery handles succeeded / user-saved / unknown.
+    } else if (errStatus === 0 || errStatus >= 500) {
+      // Network errors and unexpected 5xx can occur on either side of
+      // Phase 1.  Reuse the uncertain-send inspection instead of
+      // claiming the message was not saved.
       await handleUncertainSendOutcome(
         sendingSessionId, originalText, lastMessageIdBeforeSend,
+        lastMessageBoundaryKnown,
       );
       return;
     }
@@ -3047,10 +3094,13 @@
     if (currentSessionId === sendingSessionId) {
       if (isSaved) {
         setHistoryState(sendingSessionId, true);
-        showStatus(
-          "Your message was saved, but the assistant could not respond.",
-          true,
-        );
+        const savedMessage =
+          err instanceof ApiError &&
+          err.code === "receive_reply_language_mismatch" &&
+          typeof err.message === "string" && err.message
+            ? err.message
+            : "Your message was saved, but the assistant could not respond.";
+        showStatus(savedMessage, true);
         inputEl.value = "";
         inputEl.style.height = "";
 
@@ -3264,7 +3314,7 @@
     }
     if (isInitializing || isSending || isCreatingSession || isRenaming ||
         isRenameSaving || isDeletingSession || isProfileSwitching ||
-        isInteractionModeSwitching) return;
+        (isInteractionModeSwitching || isTeachingStrategySwitching)) return;
     if (currentSessionId === null) return;
     if (reviewTargetBusy(currentSessionId)) return;
 
@@ -3389,7 +3439,7 @@
         profileSwitchInitializationError !== null) return false;
     if (isProfileSwitching || isDeletingSession || isSending ||
         isCreatingSession || isRenaming || isRenameSaving ||
-        isInitializing || isInteractionModeSwitching) return false;
+        isInitializing || (isInteractionModeSwitching || isTeachingStrategySwitching)) return false;
     if (registry().status !== "valid") return false;
     const session = currentSession();
     if (session === null) return false;
@@ -3452,6 +3502,50 @@
     }
   }
 
+  function initializeTeachingStrategyControl() {
+    teachingStrategyControl = createTeachingStrategyControl({
+      bar: document.getElementById("teachingStrategyBar"),
+      select: document.getElementById("teachingStrategySelect"),
+      apply: document.getElementById("applyTeachingStrategyBtn"),
+      status: document.getElementById("teachingStrategyStatus"),
+      badge: document.getElementById("teachingStrategyBadge"),
+      getSession: currentSession,
+      getBusy: function () {
+        return isInitializing || isSending || isCreatingSession || isRenaming ||
+          isRenameSaving || isDeletingSession || isProfileSwitching ||
+          isInteractionModeSwitching || isTeachingStrategySwitching ||
+          hasInteractionModeUncertain(interactionModeUncertainBySession, currentSessionId) ||
+          (currentSessionId !== null && reviewTargetBusy(currentSessionId));
+      },
+      setBusy: function (value) {
+        isTeachingStrategySwitching = value; syncCurrentSessionUI();
+      },
+      setUncertain: function (id, value) {
+        if (value) teachingStrategyUncertainBySession[id] = true;
+        else delete teachingStrategyUncertainBySession[id];
+      },
+      patchSwitch: async function (id, strategy) {
+        const response = await apiRequest("/api/sessions/" + id + "/teaching-strategy", {
+          method: "PATCH", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({teaching_strategy: strategy}),
+        });
+        return response.json();
+      },
+      fetchSession: async function (id) {
+        const response = await apiRequest("/api/sessions/" + id);
+        return response.json();
+      },
+      validateSession: isValidSessionResponse,
+      onSession: function (fresh) {
+        updateInteractionModeSessionCache(fresh);
+        if (currentSessionId === fresh.id) {
+          setInteractionModeDraftForSession(fresh); renderInteractionModeBar();
+        }
+        syncCurrentSessionUI();
+      },
+    });
+  }
+
   /** One-time, fail-closed interaction-mode controller initialization. */
   function initializeInteractionModeSwitching() {
     try {
@@ -3485,7 +3579,7 @@
     }
     if (isInitializing || isSending || isCreatingSession || isRenaming ||
         isRenameSaving || isDeletingSession || isProfileSwitching ||
-        isInteractionModeSwitching) return;
+        (isInteractionModeSwitching || isTeachingStrategySwitching)) return;
     if (currentSessionId === null) return;
     if (hasInteractionModeUncertain(
       interactionModeUncertainBySession, currentSessionId,
@@ -3884,6 +3978,7 @@
     // the app keeps working; only the model switch bar is disabled.
     initializeProfileSwitching();
     initializeInteractionModeSwitching();
+    initializeTeachingStrategyControl();
     initializeHistoryReview();
 
     // Load profiles and sessions in parallel — results are handled

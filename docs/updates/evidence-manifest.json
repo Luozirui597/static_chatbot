@@ -1,0 +1,37 @@
+{
+  "date": "2026-11-06",
+  "source_project": "毕设",
+  "scope": "Selected result summaries, not complete raw run archives.",
+  "files": [
+    {
+      "archive": "docs/updates/evidence/language-replay-results.json",
+      "source_project_path": "reviews/language-probe-real-20261105/results.json",
+      "sha256": "eba73996aa755cd8c84baf88cf43bc37655be6d5f0dded70659e14bc1061289b"
+    },
+    {
+      "archive": "docs/updates/evidence/language-web-results.json",
+      "source_project_path": "reviews/receive-language-live-20261105/results.json",
+      "sha256": "8afa1b5eb3467d1af219e07ade00bf0e1e0d7ef7fa3bd39e5f5a9d0900b30e18"
+    },
+    {
+      "archive": "docs/updates/evidence/long-history-results.json",
+      "source_project_path": "reviews/general-history-v2-long-web.3k01Ej/results.json",
+      "sha256": "f3c2220a5d9608b0a36e5abcb2b6058817ea72711b632e2f7780e6af1a47cf02"
+    },
+    {
+      "archive": "docs/updates/evidence/production-strategy-results.json",
+      "source_project_path": "reviews/teaching-strategies-production-20261105/results.json",
+      "sha256": "03270e11853320247c13d3bb6d658b8fccbd428708f28ff59cc5a09aaef4c371"
+    },
+    {
+      "archive": "docs/updates/evidence/narrative-prepilot-results.json",
+      "source_project_path": "reviews/strategy-comparison-prepilot-20261106/results.json",
+      "sha256": "3fe8240924cd4c4cc392f671b3d13ada07433f73ca775f9d18cb21565ee81777"
+    },
+    {
+      "archive": "docs/updates/evidence/controlled-prepilot-reviewed-outcomes.json",
+      "source_project_path": "reviews/strategy-stability-controlled-real-pilot-20261106/reviewed-outcomes.json",
+      "sha256": "003c0e7fc239abc94aabb6f4a3c8527bd58fc9fc9c3d2599c47707bec111e051"
+    }
+  ]
+}

@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from backend import config
 from backend.chat_service import (
@@ -21,10 +21,13 @@ from backend.chat_service import (
 from backend.database import (
     SessionLocal,
     create_tables,
+    database_url,
     engine,
     get_db,
     run_migrations,
 )
+from backend.reply_language import ReplyLanguageInputError
+from backend.schemas import SwitchTeachingStrategyRequest, SwitchTeachingStrategyResponse
 from backend.exceptions import (
     HistoryReviewBoundaryUnavailable,
     HistoryReviewEventNotFound,
@@ -55,6 +58,20 @@ from backend.models import (
     HistoryReviewFinding,
     Message,
     ModeSwitchEvent,
+)
+from backend.programmatic_history.service import (
+    ProgrammaticHistoryService,
+    ProgrammaticSettings,
+)
+from backend.general_history.service import (
+    GeneralHistoryService,
+    GeneralHistorySettings,
+)
+from backend.session_id_migration import (
+    SessionIdMigrationRequired,
+    SessionSchemaUnknown,
+    assert_startup_schema,
+    record_session_schema_version,
 )
 from backend.schemas import (
     ChatRequest,
@@ -158,6 +175,7 @@ def _build_production_registry() -> LLMProfileRegistry:
             base_url=local_base_url,
             model=local_model,
             reasoning_effort=local_reasoning,
+            trust_env=False,
         )
         profiles.append(LLMProfile(
             id="local",
@@ -212,8 +230,10 @@ def _build_mode_switch_event_response(
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Create database tables and recover abandoned reviews on startup."""
+    assert_startup_schema(database_url)
     create_tables()
     run_migrations(engine)
+    record_session_schema_version(engine)
     with SessionLocal() as db:
         history_review_service.recover_abandoned_running_reviews(db)
     yield
@@ -226,9 +246,28 @@ logger = logging.getLogger(__name__)
 _profiles = _build_production_registry()
 _session_locks = SessionLockRegistry()
 
+programmatic_history_service = ProgrammaticHistoryService(
+    ProgrammaticSettings(
+        enabled=config.PROGRAMMATIC_HISTORY_ENABLED,
+        profile_id=config.PROGRAMMATIC_HISTORY_PROFILE_ID,
+        model=config.PROGRAMMATIC_HISTORY_MODEL,
+    )
+)
+general_history_service = GeneralHistoryService(
+    GeneralHistorySettings(
+        enabled=config.GENERAL_HISTORY_ENABLED,
+        profile_id=config.GENERAL_HISTORY_PROFILE_ID,
+        model=config.GENERAL_HISTORY_MODEL,
+        decision_timeout=config.GENERAL_HISTORY_DECISION_TIMEOUT_SECONDS,
+        overall_timeout=config.GENERAL_HISTORY_OVERALL_TIMEOUT_SECONDS,
+    )
+)
+
 chat_service = ChatService(
     profiles=_profiles,
     lock_registry=_session_locks,
+    programmatic_history=programmatic_history_service,
+    general_history=general_history_service,
 )
 history_review_service = HistoryReviewService(
     profiles=_profiles,
@@ -314,7 +353,7 @@ def list_sessions(db: Session = Depends(get_db)):
     Orders by ``updated_at DESC, id DESC`` so the result is stable even
     when multiple sessions share the same ``updated_at``.
     """
-    stmt = select(ChatSession).order_by(
+    stmt = select(ChatSession).options(selectinload(ChatSession.strategy_setting)).order_by(
         ChatSession.updated_at.desc(),
         ChatSession.id.desc(),
     )
@@ -346,6 +385,7 @@ def get_messages(session_id: int, db: Session = Depends(get_db)):
 
     stmt = (
         select(Message)
+        .options(selectinload(Message.strategy_snapshot))
         .where(Message.session_id == session_id)
         .order_by(Message.id.asc())
     )
@@ -385,6 +425,11 @@ async def send_message(
         raise HTTPException(
             status_code=409,
             detail=str(exc),
+        ) from exc
+    except ReplyLanguageInputError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": exc.message},
         ) from exc
     except LLMError as exc:
         raise HTTPException(
@@ -473,6 +518,25 @@ async def switch_interaction_mode(
             else None
         ),
     )
+
+
+@app.patch(
+    "/api/sessions/{session_id}/teaching-strategy",
+    response_model=SwitchTeachingStrategyResponse,
+)
+async def switch_teaching_strategy(
+    session_id: int, request: SwitchTeachingStrategyRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        session = await chat_service.switch_teaching_strategy(
+            session_id, request.teaching_strategy, db,
+        )
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found") from None
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    return SwitchTeachingStrategyResponse(session=chat_service.build_session_response(session))
 
 
 @app.patch(

@@ -1,0 +1,5 @@
+A program has preloaded one search_teaching_history evidence exchange
+before this question. It is marked as program_generated and is not a
+teacher message. Treat only the returned teacher contents as evidence,
+cite them by [message N], and apply the same uncertainty rules as for an
+on-demand tool result. Do not request another tool call in this condition.

@@ -1,0 +1,31 @@
+# I3 — A+B interactive — missing combination rule
+
+Pause after Q1; main batch preassigns rule_supply; direct_ac/no_extra are other human routes.
+
+## T1
+
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B.
+- B links to C.
+
+I have not taught any combination rule for links.
+
+## Q1
+
+Does A link to C? If current teaching is sufficient, answer and mark any inference. If a rule is needed, you may ask me at most one focused question. Do not guess.
+
+## Branches
+
+### rule_supply — supply the combination rule
+
+The current question is whether A links to C. I now teach this rule: for these tokens, if X links to Y and Y links to Z, then X links to Z. A links to B and B links to C remain current. If the rule applies, answer and mark the conclusion as inferred; otherwise state what is missing.
+
+### direct_ac — directly teach A-C only
+
+The current question is whether A links to C. I now directly teach: A links to C. This is direct teaching. A links to B and B links to C remain current. Report A links to C as direct teaching.
+
+### no_extra — no additional fact or rule
+
+The current question is whether A links to C. I am not adding any fact or rule in this reply. A links to B and B links to C remain current; no combination rule has been taught. Use only current teaching; do not guess or ask again.

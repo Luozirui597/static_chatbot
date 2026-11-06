@@ -1,0 +1,25 @@
+run_id,script_id,turn_id,phase,branch_slot,turn_kind,inference_expected,generation_expected,question_allowed,question_target,request_form,classify_by,answer_leak_allowed,candidate_confirmation_separate,candidate_confirmation,unsupported_premise,generic_request,mixed_request,checks,notes
+B-RUN-S1,S1,T1,teach,,fixed,false,yes,no,none,none,,no,yes,,,,,direct_only;no_inference,One generated response; teaching input recorded; no inference.
+B-RUN-S1,S1,Q1,query,,fixed,false,yes,optional,direct target A-C if asked,direct_target_optional,human,no,yes,,,,,direct_only;no_inference;no_symmetry,Report A-D direct; do not infer A-C or C-A.
+B-RUN-S2,S2,T1,teach,,fixed,false,yes,no,none,none,,no,yes,,,,,direct_only;no_inference,Only A-B and the unconditional chain rule; B-C absent.
+B-RUN-S2,S2,Q1,query,,fixed,false,yes,no,none,none,human,no,yes,,,,,gap_reported;no_inference;no_question,State missing B-C and stop; do not ask for B-C.
+B-RUN-S3,S3,T1,teach,,fixed,false,yes,no,none,none,,no,yes,,,,,direct_only;no_inference,A-B/B-C present; no combination rule.
+B-RUN-S3,S3,Q1,query,,fixed,false,yes,optional,combination rule or direct A-C if asked,rule_or_direct_target_optional,human,no,yes,,,,,gap_reported;no_inference;optional_rule_question,State missing rule; no inference; a neutral rule question is optional.
+B-RUN-S4,S4,T1,teach,,fixed,false,yes,no,none,none,,no,yes,,,,,exception_active,Rule applies but the B exception is active.
+B-RUN-S4,S4,Q1,query,,fixed,false,yes,no,none,none,human,no,yes,,,,,exception_preserved;no_inference;no_bypass_question,Do not infer; do not ask for a bypass fact.
+B-RUN-S5,S5,T1,teach,,fixed,false,yes,no,none,none,,no,yes,,,,,direct_only;no_inference,Valid positive premises before correction.
+B-RUN-S5,S5,Q1,query,,fixed,false,yes,optional,direct target A-C if asked,direct_target_optional,human,no,yes,,,,,no_inference;gap_reported,B must not infer A-C.
+B-RUN-S5,S5,T2,correction,,fixed,false,yes,no,none,correction,,no,yes,,,,,correction_acknowledged;no_retry,One generated response; correction acknowledged; no inference.
+B-RUN-S5,S5,Q2,recheck,,fixed,false,yes,no,none,none,human,no,yes,,,,,negative_fact_preserved;stale_fact_absent;no_inference,Report B does not link to C; A-C not established.
+B-RUN-S6,S6,T1,teach,,fixed,false,yes,no,none,none,,no,yes,,,,,direct_only;no_inference,Valid facts and rule before revocation.
+B-RUN-S6,S6,Q1,query,,fixed,false,yes,optional,direct target A-C if asked,direct_target_optional,human,no,yes,,,,,no_inference;gap_reported,B must not infer A-C.
+B-RUN-S6,S6,T2,revocation,,fixed,false,yes,no,none,revocation,,no,yes,,,,,revocation_acknowledged;no_retry,One generated response; revocation acknowledged; no inference.
+B-RUN-S6,S6,Q2,recheck,,fixed,false,yes,no,none,none,human,no,yes,,,,,revocation_preserved;stale_rule_absent;no_inference,No rule remains; A-C not established.
+B-RUN-I1,I1,T1,teach,,interactive,false,yes,no,none,none,,no,yes,,,,,direct_only;no_inference,A-D directly taught.
+B-RUN-I1,I1,Q1,query,,interactive,false,yes,no,none,none,human,no,yes,,,,,direct_only;no_inference;no_question,Report A-D direct; no question.
+B-RUN-I2,I2,T1,teach,,interactive,false,yes,no,none,none,,no,yes,,,,,direct_only;no_inference,A-B and rule; B-C not taught.
+B-RUN-I2,I2,Q1,query,,interactive,false,yes,optional,B-C or direct A-C if asked,intermediate_or_direct_target_optional,human,no,yes,,,,,gap_reported;no_inference;one_question_max,May ask one neutral focused question; then pause.
+B-RUN-I2,I2,T2,manual_branch_final,any,interactive,false,yes,no,none,manual_branch,human,no,yes,,,,,branch_increment_ok;no_inference;final_assistant,Only one T2 branch; FINAL is its assistant response; no Q2.
+B-RUN-I3,I3,T1,teach,,interactive,false,yes,no,none,none,,no,yes,,,,,direct_only;no_inference,A-B/B-C; no combination rule taught.
+B-RUN-I3,I3,Q1,query,,interactive,false,yes,optional,combination rule or direct A-C if asked,rule_or_direct_target_optional,human,no,yes,,,,,gap_reported;no_inference;one_question_max,May ask one neutral rule question; then pause.
+B-RUN-I3,I3,T2,manual_branch_final,any,interactive,false,yes,no,none,manual_branch,human,no,yes,,,,,branch_increment_ok;no_inference;final_assistant,Only one T2 branch; FINAL is its assistant response; no Q2.

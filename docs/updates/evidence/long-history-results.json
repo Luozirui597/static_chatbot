@@ -1,0 +1,396 @@
+{
+  "fixture_sha256": "6de58e17c5a42ebf4522fc02220a945e796326f3fbabdb357bf4d8f3122a28ab",
+  "startup": {
+    "event": "startup",
+    "pid": 88480,
+    "prompt_sha256": "f3518f62f650d8d946dd008c4c80b761035074f9a7a5bfed8db8d41258cda03f",
+    "general_enabled": true,
+    "model": "deepseek-v4-flash",
+    "decision_timeout": 12.0,
+    "overall_timeout": 45.0,
+    "decision_max_tokens": 800,
+    "default_thinking": true
+  },
+  "sessions": {
+    "55": "workflow_correction",
+    "56": "math_long_course",
+    "57": "routing_controls"
+  },
+  "web_sends": 68,
+  "http_200": 68,
+  "model_calls": 71,
+  "local_retrievals": 2,
+  "cases": [
+    {
+      "scenario": "workflow_correction",
+      "case": "Q01",
+      "session": 55,
+      "http_status": 200,
+      "user_message_id": 840,
+      "assistant_message_id": 841,
+      "decision_retrieval_final": [
+        1,
+        1,
+        1
+      ],
+      "decision_reason": "missing_fact",
+      "route_status": "completed_retrieved",
+      "routing_verdict": "passed",
+      "retrieval_verdict": "passed",
+      "window": {
+        "session": 55,
+        "scenario": "workflow_correction",
+        "case": "Q01",
+        "stored_before": 26,
+        "window_ids": [
+          820,
+          821,
+          822,
+          823,
+          824,
+          825,
+          826,
+          827,
+          828,
+          829,
+          830,
+          831,
+          832,
+          833,
+          834,
+          835,
+          836,
+          837,
+          838,
+          839
+        ],
+        "visible_user_ids": [
+          820,
+          822,
+          824,
+          826,
+          828,
+          830,
+          832,
+          834,
+          836,
+          838
+        ],
+        "expected_hidden": {
+          "T01": 814,
+          "T03": 818
+        },
+        "expected_visible": {}
+      },
+      "retrieved_sources": [
+        {
+          "id": 814,
+          "content": "I teach you the Cedar Dock intake sequence. Stamp the manifest first, then scan the crate tag. Confirm briefly."
+        },
+        {
+          "id": 816,
+          "content": "I teach you that a damaged Cedar Dock manifest is placed in the red sleeve for the supervisor. Confirm briefly."
+        },
+        {
+          "id": 818,
+          "content": "I teach you this correction to the Cedar Dock intake sequence. Scan the crate tag first, then stamp the manifest. This replaces the previous order. Confirm briefly."
+        }
+      ],
+      "final_request_window_sources": [
+        820,
+        822,
+        824,
+        826,
+        828,
+        830,
+        832,
+        834,
+        836,
+        838
+      ],
+      "support_pairs": {
+        "818": 814
+      },
+      "search_limits": {
+        "truncated": false,
+        "scan_truncated": false,
+        "corrections_truncated": false,
+        "omitted_count": 0
+      },
+      "snapshot": "receive-teaching-v7+programmatic-history-v1",
+      "cited": [
+        818,
+        814
+      ],
+      "reply": "Scanning the crate tag comes before stamping the manifest. This is the corrected current order in [message 818], which replaces the earlier order in [message 814].",
+      "answer_verdict": "passed",
+      "answer_note": "按更正 818 回答先扫描箱签，再盖章，并明确旧版 814 被替换。",
+      "screenshot": "workflow_correction-Q01.jpg"
+    },
+    {
+      "scenario": "math_long_course",
+      "case": "Q01",
+      "session": 56,
+      "http_status": 200,
+      "user_message_id": 922,
+      "assistant_message_id": 923,
+      "decision_retrieval_final": [
+        1,
+        1,
+        1
+      ],
+      "decision_reason": "missing_fact",
+      "route_status": "completed_retrieved",
+      "routing_verdict": "passed",
+      "retrieval_verdict": "passed",
+      "window": {
+        "session": 56,
+        "scenario": "math_long_course",
+        "case": "Q01",
+        "stored_before": 80,
+        "window_ids": [
+          902,
+          903,
+          904,
+          905,
+          906,
+          907,
+          908,
+          909,
+          910,
+          911,
+          912,
+          913,
+          914,
+          915,
+          916,
+          917,
+          918,
+          919,
+          920,
+          921
+        ],
+        "visible_user_ids": [
+          902,
+          904,
+          906,
+          908,
+          910,
+          912,
+          914,
+          916,
+          918,
+          920
+        ],
+        "expected_hidden": {
+          "T06": 852
+        },
+        "expected_visible": {}
+      },
+      "retrieved_sources": [
+        {
+          "id": 852,
+          "content": "I teach you our divisor-zero rule. We call it the Violet Turnstile in this course. It means a divisor of zero is forbidden and division by it is undefined. Confirm briefly."
+        },
+        {
+          "id": 866,
+          "content": "I teach you that a negative number sits to the left of zero on the number line. Confirm briefly."
+        },
+        {
+          "id": 900,
+          "content": "I teach you that the derivative is the limit of the difference quotient as the input change approaches zero. Confirm briefly."
+        }
+      ],
+      "final_request_window_sources": [
+        902,
+        904,
+        906,
+        908,
+        910,
+        912,
+        914,
+        916,
+        918,
+        920
+      ],
+      "support_pairs": {},
+      "search_limits": {
+        "truncated": false,
+        "scan_truncated": false,
+        "corrections_truncated": false,
+        "omitted_count": 1
+      },
+      "snapshot": "receive-teaching-v7+programmatic-history-v1",
+      "cited": [
+        852
+      ],
+      "reply": "The classroom nickname is **the Violet Turnstile**. The rule is: **a divisor of zero is forbidden, and division by zero is undefined** [message 852].",
+      "answer_verdict": "passed",
+      "answer_note": "答出 Violet Turnstile 和零除数未定义，并引用第 6 轮 852。",
+      "screenshot": "math_long_course-Q01.jpg"
+    },
+    {
+      "scenario": "routing_controls",
+      "case": "Q01",
+      "session": 57,
+      "http_status": 200,
+      "user_message_id": 946,
+      "assistant_message_id": 947,
+      "decision_retrieval_final": [
+        1,
+        0,
+        1
+      ],
+      "decision_reason": "visible_complete",
+      "route_status": "completed_visible_complete",
+      "routing_verdict": "passed",
+      "retrieval_verdict": "passed",
+      "window": {
+        "session": 57,
+        "scenario": "routing_controls",
+        "case": "Q01",
+        "stored_before": 22,
+        "window_ids": [
+          926,
+          927,
+          928,
+          929,
+          930,
+          931,
+          932,
+          933,
+          934,
+          935,
+          936,
+          937,
+          938,
+          939,
+          940,
+          941,
+          942,
+          943,
+          944,
+          945
+        ],
+        "visible_user_ids": [
+          926,
+          928,
+          930,
+          932,
+          934,
+          936,
+          938,
+          940,
+          942,
+          944
+        ],
+        "expected_hidden": {
+          "T01": 924
+        },
+        "expected_visible": {
+          "T10": 942
+        }
+      },
+      "retrieved_sources": [],
+      "final_request_window_sources": null,
+      "support_pairs": {},
+      "search_limits": {},
+      "snapshot": "receive-teaching-v7+history-context-b1",
+      "cited": [],
+      "reply": "The Oak Tag marks a box ready for shelf storage.",
+      "answer_verdict": "passed",
+      "answer_note": "答出 Oak Tag 表示盒子已可上架。",
+      "screenshot": "routing_controls-Q01.jpg"
+    },
+    {
+      "scenario": "routing_controls",
+      "case": "Q02",
+      "session": 57,
+      "http_status": 200,
+      "user_message_id": 948,
+      "assistant_message_id": 949,
+      "decision_retrieval_final": [
+        0,
+        0,
+        1
+      ],
+      "decision_reason": null,
+      "route_status": "completed_clarify",
+      "routing_verdict": "passed",
+      "retrieval_verdict": "passed",
+      "window": {
+        "session": 57,
+        "scenario": "routing_controls",
+        "case": "Q02",
+        "stored_before": 24,
+        "window_ids": [
+          928,
+          929,
+          930,
+          931,
+          932,
+          933,
+          934,
+          935,
+          936,
+          937,
+          938,
+          939,
+          940,
+          941,
+          942,
+          943,
+          944,
+          945,
+          946,
+          947
+        ],
+        "visible_user_ids": [
+          928,
+          930,
+          932,
+          934,
+          936,
+          938,
+          940,
+          942,
+          944,
+          946
+        ],
+        "expected_hidden": {
+          "T01": 924
+        },
+        "expected_visible": {
+          "T10": 942,
+          "T11": 944
+        }
+      },
+      "retrieved_sources": [],
+      "final_request_window_sources": [
+        928,
+        930,
+        932,
+        934,
+        936,
+        938,
+        940,
+        942,
+        944,
+        946
+      ],
+      "support_pairs": {},
+      "search_limits": {
+        "truncated": null,
+        "scan_truncated": null,
+        "corrections_truncated": null,
+        "omitted_count": null
+      },
+      "snapshot": "receive-teaching-v7+history-context-b1",
+      "cited": [],
+      "reply": "What task should I use the source message for?",
+      "answer_verdict": "failed",
+      "answer_note": "追问来源将用于什么任务，未澄清 Oak Tag 和 Pearl Tag 中的目标。",
+      "screenshot": "routing_controls-Q02.jpg"
+    }
+  ]
+}

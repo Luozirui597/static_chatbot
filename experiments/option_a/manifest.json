@@ -1,0 +1,117 @@
+{
+  "asset_version": "option-a-isolated-v0.1",
+  "calls": {
+    "per_script": {
+      "S1": 2,
+      "S2": 2,
+      "S3": 2,
+      "S4": 2,
+      "S5": 4,
+      "S6": 4
+    },
+    "total_expected": 16
+  },
+  "condition": "A",
+  "encoding": "utf-8",
+  "files": {
+    "README.md": {
+      "bytes": 8183,
+      "sha256": "347f2899f4519d74a8ce4e5c3ba48e4ba902084916b201df7a0acdb7b4d96288"
+    },
+    "__init__.py": {
+      "bytes": 43,
+      "sha256": "d48e454d4caf70e251c1d095f55c87ee2144076ca0eb5cbede7e64a4b315d17b"
+    },
+    "expected/coding_sheet.csv": {
+      "bytes": 1035,
+      "sha256": "c5539f5bf2a0c4658cd9f48702f7c3313816bcd851fe3039b860a945826f4905"
+    },
+    "expected/per_turn_expectations.md": {
+      "bytes": 6861,
+      "sha256": "dc26d6dedbadad40f1818dfc6114d39bcc1363720821c896605edabc05aed4cf"
+    },
+    "freeze_manifest.py": {
+      "bytes": 7860,
+      "sha256": "50eb28fb316a35032b61b279ebfa6456dc30e300e1b3bab05d099ec59d64a8ad"
+    },
+    "history.py": {
+      "bytes": 2602,
+      "sha256": "9c0dad1b522513bff8038cf61bc0eacc79fe896a9a2c89311c51342bb85b9230"
+    },
+    "prompts/a_strategy.txt": {
+      "bytes": 1134,
+      "sha256": "b5ebf8fe9cae3dcdd655d420997bc3907933b5c656e863bfd2dee1d6f18da1a9"
+    },
+    "prompts/base.txt": {
+      "bytes": 12436,
+      "sha256": "eda835c58da3c1cbd05d83d5ac34f4ff5bbd805b8a466796957b7b489e00bb6f"
+    },
+    "prompts/system.txt": {
+      "bytes": 13571,
+      "sha256": "16236223af1b3f813e5e27aa881e27d4b45039b58db6be2f44d4a4f9137f26a4"
+    },
+    "runner.py": {
+      "bytes": 21251,
+      "sha256": "0d9afe8f2bb23e1d852e1b05f1711182c73811a7852570df469d041394637274"
+    },
+    "scripts/S1.txt": {
+      "bytes": 970,
+      "sha256": "b8a48ec72d28b8c192276aa67861b7186ea94ba2088c0b8aadb358cdfdcf85fd"
+    },
+    "scripts/S2.txt": {
+      "bytes": 633,
+      "sha256": "e1a0b17037f85c788906d80afd1799c2693682a6760868c391c7c07ec3509027"
+    },
+    "scripts/S3.txt": {
+      "bytes": 526,
+      "sha256": "5e7d6b34a4e468ca1ebd8732986bc0f527eca686a9348bf3755d292eeea943fe"
+    },
+    "scripts/S4.txt": {
+      "bytes": 745,
+      "sha256": "f4b05f1f47aca68eca6f510490344ada44f7226f12d0b2c2fc26f1287426b764"
+    },
+    "scripts/S5.txt": {
+      "bytes": 894,
+      "sha256": "3f8120beb4103da423e6b697d370ee0fb1525cb01a9f30986e1b390ad2017ca0"
+    },
+    "scripts/S6.txt": {
+      "bytes": 917,
+      "sha256": "3eee953427cc00f391cbdb5890942d92c6e8aa75568e1e3229113ea7937eed52"
+    },
+    "scripts/scripts.json": {
+      "bytes": 6505,
+      "sha256": "abd1033037f4fff517cd7ef47b047a36755403a504f5ba75b9661c7187ba8378"
+    },
+    "tests/__init__.py": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tests/test_option_a.py": {
+      "bytes": 26262,
+      "sha256": "e9a45ce05f437d535418178020bc5bc0f213e1bac5db188ad136dcdc63b5eb0b"
+    }
+  },
+  "generated_at_utc": "2026-10-31T04:46:18+00:00",
+  "line_endings": "LF",
+  "notes": [
+    "No production prompt, mode, database, or application file is part of this manifest.",
+    "The runner uses only the local fake client by default.",
+    "Records are created under runs/<run_id>/ and are never overwritten."
+  ],
+  "prompt_assembly": "base.rstrip('\\n') + '\\n\\n' + a_strategy.rstrip('\\n') + '\\n'",
+  "prompts": {
+    "a_strategy": {
+      "bytes": 1134,
+      "sha256": "b5ebf8fe9cae3dcdd655d420997bc3907933b5c656e863bfd2dee1d6f18da1a9"
+    },
+    "base": {
+      "bytes": 12436,
+      "sha256": "eda835c58da3c1cbd05d83d5ac34f4ff5bbd805b8a466796957b7b489e00bb6f"
+    },
+    "system": {
+      "bytes": 13571,
+      "sha256": "16236223af1b3f813e5e27aa881e27d4b45039b58db6be2f44d4a4f9137f26a4"
+    }
+  },
+  "schema_version": "option-a-manifest-v1"
+}

@@ -1,0 +1,28 @@
+{
+  "version": "controlled-freeze-v1",
+  "files": {
+    "backend/llm_client.py": "7e3f7b04c046e77af4c4be724e7a75d2efbad3ef9a7cfccf9aca5b903a7c938e",
+    "backend/reply_language.py": "b2bb9632b564bdb5934d3cdf0f009bfb5a291e0db279152e4e22fbfe846536eb",
+    "backend/review_diagnostics.py": "5e5210202c05a4232651e0477bd5aa7c1b3c15f0a35924eebe3168df1ee5992d",
+    "experiments/strategy_stability/controlled_v1/PROTOCOL.md": "b54af739907832d730ea586f47e214f4ff3c6713e7ffe1822d83718311eeaceb",
+    "experiments/strategy_stability/controlled_v1/README.md": "4811e5ef3609789431d6dc5cfc1b5d94d4a0d75ec060ab7f17283aa3fd25550a",
+    "experiments/strategy_stability/controlled_v1/__init__.py": "25cd1b58fd8448ac166f229db072f5a517bfb9a53162cd2d4b4a0f12de22a281",
+    "experiments/strategy_stability/controlled_v1/build_assets.py": "166acb37d43a9feb4cb650dd1a4b9019ad204c6f1373cf2f25c1c2fe5da86489",
+    "experiments/strategy_stability/controlled_v1/candidate_contract.txt": "f942cdfc78e683654c7ada4f2825cdd0c8c09af7f2c2fdd2a939d71f89a60e92",
+    "experiments/strategy_stability/controlled_v1/conditions.json": "37b4106fdc7acae0f0de7be08e948c7299e3c179adbebcd0b5653116ed268452",
+    "experiments/strategy_stability/controlled_v1/core.py": "cf6bb6257dc5d1a72e731aaf4b42e5e6f9197855bfdc442ffd4338384977487b",
+    "experiments/strategy_stability/controlled_v1/freeze.py": "6f411777d528912a1f45bf18afd273f691021d15c989882afe67787d324ed1ce",
+    "experiments/strategy_stability/controlled_v1/pilot_plan.json": "709f1b6fc53b53a645a9752f601582f311a8c0215438334ff880548f3aabfc35",
+    "experiments/strategy_stability/controlled_v1/prompts/a.txt": "16236223af1b3f813e5e27aa881e27d4b45039b58db6be2f44d4a4f9137f26a4",
+    "experiments/strategy_stability/controlled_v1/prompts/ab.txt": "b0f77e2a18289f1887aac9ad154f3ff6267cb942157f35ce28176110f688bbcf",
+    "experiments/strategy_stability/controlled_v1/prompts/b.txt": "44aed8837a13413565a6dee866e00671a6fcefb3cc6f5f885dd78ac8495f9113",
+    "experiments/strategy_stability/controlled_v1/prompts/standard.txt": "8907d4793b37e6680596b58fae1166cc8a2181a02609fc02ce89080bdc7e26a7",
+    "experiments/strategy_stability/controlled_v1/runner.py": "5a0f60303ed58acb61d93272e1b6643a7c7e5f67e05c654c808d652b977ec5ec",
+    "experiments/strategy_stability/controlled_v1/tasks.json": "51ff3fcbcf3ffecf6bf47bc1987a6c9efb0a180aae8c4c86fb771a5ef567b76c",
+    "experiments/strategy_stability/controlled_v1/tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "experiments/strategy_stability/controlled_v1/tests/test_controlled.py": "0d20f9ac3773b19e828fa30d97272ef9e47aacf0df4c171370c499c841fd770c",
+    "experiments/strategy_stability/integration_app.py": "e1e13ca678068ec97cd6aba571fb7f1374a49845961ec14aee0baf9c7b5956ca",
+    "experiments/strategy_stability/models.py": "4157dad3aff4701433d37481163b6ecfb5b6181787ddafcb2cb985448702b528",
+    "experiments/strategy_stability/verifier.py": "a06ff844a63a70f4cbdd19d1fddc2de55cdd4e77b734cef556c89dd08d6bd436"
+  }
+}

@@ -421,6 +421,12 @@ function isValidSessionResponse(value) {
       _isValidInteractionMode(value.interaction_mode) === false) {
     return false;
   }
+  if (value.teaching_strategy !== undefined &&
+      ["baseline", "a", "b", "ab"].indexOf(value.teaching_strategy) === -1) {
+    return false;
+  }
+  if (value.teaching_strategy_switchable !== undefined &&
+      typeof value.teaching_strategy_switchable !== "boolean") return false;
   return true;
 }
 
@@ -558,6 +564,11 @@ function isValidMessageResponse(value) {
   if (value.interaction_mode_snapshot !== undefined &&
       value.interaction_mode_snapshot !== null &&
       _isValidInteractionMode(value.interaction_mode_snapshot) === false) {
+    return false;
+  }
+  if (value.teaching_strategy_snapshot !== undefined &&
+      value.teaching_strategy_snapshot !== null &&
+      ["baseline", "a", "b", "ab"].indexOf(value.teaching_strategy_snapshot) === -1) {
     return false;
   }
   if (value.prompt_version_snapshot !== undefined &&

@@ -1,0 +1,148 @@
+{
+  "asset_version": "option-b-isolated-v0.1",
+  "calls": {
+    "fixed_per_script": {
+      "S1": 2,
+      "S2": 2,
+      "S3": 2,
+      "S4": 2,
+      "S5": 4,
+      "S6": 4
+    },
+    "fixed_total": 16,
+    "interactive": {
+      "I1": 2,
+      "I2": {
+        "maximum": 3,
+        "minimum": 2
+      },
+      "I3": {
+        "maximum": 3,
+        "minimum": 2
+      }
+    },
+    "interactive_max": 8,
+    "interactive_min": 6,
+    "logical_runs": 9,
+    "total_max": 24,
+    "total_min": 22
+  },
+  "condition": "B",
+  "encoding": "utf-8",
+  "files": {
+    "README.md": {
+      "bytes": 6973,
+      "sha256": "9ad19048acc67429732d2d7dd37ef476afa7de6fa5d2bf71fa01d392ff9954ca"
+    },
+    "__init__.py": {
+      "bytes": 44,
+      "sha256": "fdb5631923e885c113b910dc03c3b5cf1da556e2a31d0a269ba585ba0ec1dd0f"
+    },
+    "expected/coding_sheet.csv": {
+      "bytes": 4249,
+      "sha256": "e807a479a029b4bbb7e39d59009119fca730895aed6ec683f8d041c8eb5187b6"
+    },
+    "expected/per_turn_expectations.md": {
+      "bytes": 12329,
+      "sha256": "48a8924e8748a8d22ce9a8c5a57cde6de26b1237021d0ddc4444d8d4ba5eb7fa"
+    },
+    "freeze_manifest.py": {
+      "bytes": 11096,
+      "sha256": "b7083051bba40b1aa91674bc86265adcd6234d8a1ef8d8bdddbc1846ef8db49f"
+    },
+    "history.py": {
+      "bytes": 2602,
+      "sha256": "01d11593e0ff34b97ba0da5379dbd5b6f14a6f16cad38407008d81d3df992879"
+    },
+    "prompts/b_strategy.txt": {
+      "bytes": 2513,
+      "sha256": "c2c72910d8a8381c43bbd6ff4b02d5aaf9e1d1d5957cd05b83be58305676a273"
+    },
+    "prompts/base.txt": {
+      "bytes": 12436,
+      "sha256": "eda835c58da3c1cbd05d83d5ac34f4ff5bbd805b8a466796957b7b489e00bb6f"
+    },
+    "prompts/system.txt": {
+      "bytes": 14950,
+      "sha256": "44aed8837a13413565a6dee866e00671a6fcefb3cc6f5f885dd78ac8495f9113"
+    },
+    "runner.py": {
+      "bytes": 43486,
+      "sha256": "87501048406b3eced92f74a27e3787aa1762dad89d9cae8b5d709d098f750287"
+    },
+    "scripts/I1.txt": {
+      "bytes": 416,
+      "sha256": "537bb0ee4f12bb330fbbea4674a31c59d0842b71cdbb29d00980eb5c00753317"
+    },
+    "scripts/I2.txt": {
+      "bytes": 1610,
+      "sha256": "08cba1fc63728579d579f15a377bc8610683b70c82de135add26533feb430010"
+    },
+    "scripts/I3.txt": {
+      "bytes": 1469,
+      "sha256": "c351fb2e9921a3a878ef28681a740946cd71831d34a730bee7763d7ccff606f0"
+    },
+    "scripts/S1.txt": {
+      "bytes": 956,
+      "sha256": "dac0e60785a807e58177d11f61faeb38b08504a0c08291bb6479f097a49b1e05"
+    },
+    "scripts/S2.txt": {
+      "bytes": 648,
+      "sha256": "198c6b167158f66ea0d84c6ff084934aeead7337d95fd9c3c7b92bcf9e11fc8e"
+    },
+    "scripts/S3.txt": {
+      "bytes": 541,
+      "sha256": "474cb301a9879271ef5370863dc73af65edae774b15d9208928387636e77ebfb"
+    },
+    "scripts/S4.txt": {
+      "bytes": 760,
+      "sha256": "1babe9bb7e59e71e3daab7ada3f54ddd7c0f82a02a5ac81ddba8960533cc972c"
+    },
+    "scripts/S5.txt": {
+      "bytes": 850,
+      "sha256": "68b3db00410599414f82e9d93d4d0bdbab822fc143faddb33cc86bb3d87f92c0"
+    },
+    "scripts/S6.txt": {
+      "bytes": 865,
+      "sha256": "dd50010ac143adc12daace8dec2ff7748359eea33bd9dde2b03010cc4bb7fafe"
+    },
+    "scripts/scripts.json": {
+      "bytes": 12548,
+      "sha256": "4ec5f84deaff4a5149c9de7950238f79d414bef33deb747d84cbed986019ef99"
+    },
+    "tests/__init__.py": {
+      "bytes": 50,
+      "sha256": "9b6a6ea70fa98b48bbe1caab82702ade55519851f70b3213fa24cd8c3da6c989"
+    },
+    "tests/test_option_b.py": {
+      "bytes": 35485,
+      "sha256": "715504ef207bc78f9c0ba86df6da376e6eca22cdb19568dc1d74d9ca49c9502a"
+    }
+  },
+  "generated_at_utc": "2026-10-31T17:16:02+00:00",
+  "line_endings": "LF",
+  "notes": [
+    "No production prompt, mode, database, or application file is part of this manifest.",
+    "The runner uses only the local fake client by default.",
+    "B does not receive any R1 or derivation permission.",
+    "Fixed scripts use the exact shared S1-S6 user content; interactive branches require human selection."
+  ],
+  "prompt_assembly": "base.rstrip('\\n') + '\\n\\n' + b_strategy.rstrip('\\n') + '\\n'",
+  "prompt_version": "option-b-isolated-v0.1+sys-44aed8837a13",
+  "prompts": {
+    "b_strategy": {
+      "bytes": 2513,
+      "sha256": "c2c72910d8a8381c43bbd6ff4b02d5aaf9e1d1d5957cd05b83be58305676a273"
+    },
+    "base": {
+      "bytes": 12436,
+      "sha256": "eda835c58da3c1cbd05d83d5ac34f4ff5bbd805b8a466796957b7b489e00bb6f"
+    },
+    "system": {
+      "bytes": 14950,
+      "sha256": "44aed8837a13413565a6dee866e00671a6fcefb3cc6f5f885dd78ac8495f9113"
+    }
+  },
+  "schema_version": "option-b-manifest-v1",
+  "shared_base_sha256": "eda835c58da3c1cbd05d83d5ac34f4ff5bbd805b8a466796957b7b489e00bb6f"
+}

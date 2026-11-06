@@ -1,0 +1,23 @@
+# S1 — A+B fixed — direct, inferred, and cannot determine
+
+Report direct A-D, optionally infer A-C with full R1, and do not infer C-A.
+
+## T1
+
+We are doing a short fictional logic puzzle. A, B, C, and D are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B.
+- B links to C.
+- A links to D.
+Both A-B and B-C are marked active.
+
+Puzzle rule: for these tokens, if X links to Y and Y links to Z, and both links are marked active, then X links to Z.
+
+## Q1
+
+Answer three questions using only what I taught:
+1. Does A link to D? Was that taught directly, inferred, or can you not tell?
+2. Does A link to C? Was that taught directly, inferred, or can you not tell?
+3. Does C link to A? Was that taught directly, inferred, or can you not tell?
+For anything inferred, give the premises and the rule you used.

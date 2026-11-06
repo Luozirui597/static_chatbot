@@ -747,6 +747,8 @@ class TestProductionBuilder:
         assert local_call["base_url"] == "http://127.0.0.1:11435/v1"
         assert local_call["model"] == "qwen3.5:4b"
         assert local_call["reasoning_effort"] == "none"
+        assert local_call["trust_env"] is False
+        assert recorder.calls[0].get("trust_env", True) is True
 
         local = reg.get("local")
         assert local is not None

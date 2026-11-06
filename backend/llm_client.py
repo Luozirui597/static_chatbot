@@ -83,6 +83,24 @@ class FakeLLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        system_text = next(
+            (
+                str(msg.get("content", ""))
+                for msg in messages
+                if msg.get("role") == "system"
+            ),
+            "",
+        )
+        if "Reply in English." in system_text:
+            reply = "This is a test reply."
+            if diagnostics is not None:
+                diagnostics.response_content_chars = len(reply)
+            return reply
+        if "请用中文回复。" in system_text:
+            reply = "这是测试回复。"
+            if diagnostics is not None:
+                diagnostics.response_content_chars = len(reply)
+            return reply
         for msg in reversed(messages):
             if msg["role"] == "user":
                 reply = f"测试回复：{msg['content']}"
@@ -275,6 +293,58 @@ def _set_upstream_error_metadata(
 # ---------------------------------------------------------------------------
 
 
+class _ObservedAsyncTransport(httpx.AsyncBaseTransport):
+    """Mark entry into the real or injected transport for a single call.
+
+    The event proves that a local ``handle_async_request`` boundary was
+    entered.  It does not prove that the remote provider received the
+    request.
+    """
+
+    def __init__(
+        self,
+        inner: httpx.AsyncBaseTransport,
+        diagnostics: LLMCallDiagnostics,
+    ) -> None:
+        self._inner = inner
+        self._diagnostics = diagnostics
+
+    async def handle_async_request(self, request: httpx.Request):
+        self._diagnostics.transport_started = True
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def _observe_async_transports(
+    client: httpx.AsyncClient,
+    diagnostics: LLMCallDiagnostics,
+) -> None:
+    """Wrap the client's actual transports without changing their setup.
+
+    ``AsyncClient`` creates its default transport and proxy mounts from the
+    same connection/proxy configuration as before.  Wrapping those objects
+    only observes the final ``handle_async_request`` boundary.
+    """
+    seen: dict[int, _ObservedAsyncTransport] = {}
+
+    def wrap(transport: httpx.AsyncBaseTransport | None):
+        if transport is None:
+            return None
+        key = id(transport)
+        wrapped = seen.get(key)
+        if wrapped is None:
+            wrapped = _ObservedAsyncTransport(transport, diagnostics)
+            seen[key] = wrapped
+        return wrapped
+
+    client._transport = wrap(client._transport)
+    for pattern, transport in list(client._mounts.items()):
+        if transport is not None:
+            client._mounts[pattern] = wrap(transport)
+
+
 class OpenAICompatibleLLMClient:
     """Talks to any OpenAI-compatible ``/chat/completions`` endpoint.
 
@@ -310,12 +380,14 @@ class OpenAICompatibleLLMClient:
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
         reasoning_effort: str = "",
+        trust_env: bool = True,
     ) -> None:
         self._api_key = api_key.strip()
         self._base_url = base_url.strip().rstrip("/")
         self._model = model.strip()
         self._timeout = timeout
         self._transport = transport
+        self._trust_env = trust_env
 
         self._reasoning_effort = reasoning_effort.strip()
         if self._reasoning_effort:
@@ -345,6 +417,10 @@ class OpenAICompatibleLLMClient:
         )
 
         diag = diagnostics if diagnostics is not None else LLMCallDiagnostics()
+        # This client can distinguish a request that failed while being
+        # built from one that entered a local transport.  Leave the value as
+        # None for clients that do not provide this observation.
+        diag.transport_started = False
         diag.timeout_configured_seconds = clean_optional_float(
             self._timeout,
             minimum=0.0,
@@ -368,12 +444,13 @@ class OpenAICompatibleLLMClient:
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
-        client_kwargs: dict = {"timeout": self._timeout}
+        client_kwargs: dict = {"timeout": self._timeout, "trust_env": self._trust_env}
         if self._transport is not None:
             client_kwargs["transport"] = self._transport
 
         try:
             async with httpx.AsyncClient(**client_kwargs) as client:
+                _observe_async_transports(client, diag)
                 response = await client.post(url, headers=headers, json=payload)
         except httpx.TimeoutException as exc:
             _set_transport_error(
@@ -533,6 +610,7 @@ def create_llm_client(
     base_url: str | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    trust_env: bool = True,
 ) -> LLMClient:
     """Return the correct LLM client based on *mode*.
 
@@ -575,6 +653,7 @@ def create_llm_client(
             base_url=resolved_base_url,
             model=resolved_model,
             reasoning_effort=resolved_reasoning_effort,
+            trust_env=trust_env,
         )
 
     raise ValueError(

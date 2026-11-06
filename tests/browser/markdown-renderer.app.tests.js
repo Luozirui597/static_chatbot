@@ -10,9 +10,12 @@
     "  var token = \"" + "x".repeat(160) + "\";\n" +
     "  return token;\n" +
     "}\n" +
-    "```";
+    "```\n\n" +
+    "Inline \\(y_i\\) and \\(\\frac{a}{b}\\) in history. " +
+    "Dollar $\\sin(x)+\\cos(x)$ in history.";
   var NEW_USER = "new **user** plain";
-  var NEW_ASSISTANT = "**New reply**\n\n*new emphasis*";
+  var NEW_ASSISTANT =
+    "**New reply**\n\n*new emphasis*\n\nInline \\(x_i\\) in a new reply.";
   var FALLBACK_USER = "fallback user";
   var FALLBACK_ASSISTANT = "**fallback assistant**";
 
@@ -24,6 +27,7 @@
     passed: 0,
     failed: 0,
     failures: [],
+    executedNames: [],
     appRequests: []
   };
   window.__markdownTestReport = report;
@@ -49,6 +53,7 @@
   async function runTest(name, body) {
     report.total += 1;
     report.executed += 1;
+    report.executedNames.push(name);
     try {
       await body();
       report.passed += 1;
@@ -219,11 +224,13 @@
       "/frontend/clipboard.js",
       "/frontend/copy-controller.js",
       "/frontend/interaction-mode.js",
+      "/frontend/teaching-strategy.js",
       "/frontend/model-selection.js",
       "/frontend/session-profile-switch.js",
       "/frontend/history-review.js",
       "/frontend/vendor/marked.umd.js",
       "/frontend/vendor/purify.min.js",
+      "/frontend/vendor/katex.min.js",
       "/frontend/markdown-renderer.js",
       "/frontend/app.js"
     ];
@@ -299,6 +306,30 @@
       );
     });
 
+    await runTest("history assistant math renders as MathML", function () {
+      var content = assistantContents()[0];
+      assert(content.querySelectorAll("math").length >= 2,
+        "history math did not render");
+      var visible = content.cloneNode(true);
+      visible.querySelectorAll("annotation").forEach(function (a) {
+        a.remove();
+      });
+      assert(visible.textContent.indexOf("\\(") === -1,
+        "history still shows a raw math delimiter");
+    });
+
+    await runTest("history dollar math uses the real app entry", function () {
+      var content = assistantContents()[0];
+      assert(content.querySelectorAll("math").length >= 3,
+        "history dollar math did not render");
+      var visible = content.cloneNode(true);
+      visible.querySelectorAll("annotation").forEach(function (a) {
+        a.remove();
+      });
+      assert(visible.textContent.indexOf("$\\sin") === -1,
+        "history still shows a raw dollar delimiter");
+    });
+
     await runTest("actual copy button copies the original Markdown", async function () {
       var button = assistantContents()[0]
         .closest(".message")
@@ -311,6 +342,10 @@
       );
       assert(clipboardCalls[0] === HISTORY_ASSISTANT,
         "copy button did not copy the raw Markdown");
+      assert(clipboardCalls[0].indexOf("\\(") >= 0,
+        "copy payload lost the original LaTeX delimiters");
+      assert(clipboardCalls[0].indexOf("$\\sin(x)+\\cos(x)$") >= 0,
+        "copy payload lost the original dollar math");
     });
 
     await runTest("new assistant reply goes through appendMessage", async function () {
@@ -341,6 +376,19 @@
         "new assistant reply emphasis missing");
       assert(last.textContent.indexOf("New reply") >= 0,
         "new assistant reply text missing");
+    });
+
+    await runTest("new assistant math uses the same render entry", function () {
+      var contents = assistantContents();
+      var last = contents[contents.length - 1];
+      assert(last.querySelectorAll("math").length >= 1,
+        "new assistant math did not render");
+      var visible = last.cloneNode(true);
+      visible.querySelectorAll("annotation").forEach(function (a) {
+        a.remove();
+      });
+      assert(visible.textContent.indexOf("\\(") === -1,
+        "new assistant still shows a raw math delimiter");
     });
 
     await runTest("new user message remains exact plain text", async function () {

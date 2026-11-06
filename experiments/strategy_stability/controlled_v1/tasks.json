@@ -1,0 +1,673 @@
+{
+  "version": "controlled-links-tasks-v1",
+  "language": "en",
+  "teaching_ingestion_generates_reply": false,
+  "tasks": [
+    {
+      "id": "S1",
+      "kind": "fixed",
+      "evidence": [
+        {
+          "message_id": 1,
+          "content": "A links to B."
+        },
+        {
+          "message_id": 2,
+          "content": "B links to C."
+        },
+        {
+          "message_id": 3,
+          "content": "A links to D."
+        },
+        {
+          "message_id": 4,
+          "content": "Rule: if A links to B and B links to C then A links to C."
+        }
+      ],
+      "phases": [
+        {
+          "id": "Q1",
+          "question": "Using only the current teaching, report A-D, A-C, and C-A separately. Distinguish direct teaching, permitted inference, and inability to confirm. Do not ask a question.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [
+                {
+                  "subject": "A",
+                  "object": "D"
+                },
+                {
+                  "subject": "C",
+                  "object": "A"
+                }
+              ],
+              "askable_gaps": [],
+              "missing_relations": [],
+              "missing_rule": false,
+              "gap_targets": []
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": false,
+            "allow_clarify": false,
+            "required_targets": [
+              {
+                "subject": "A",
+                "object": "D"
+              },
+              {
+                "subject": "A",
+                "object": "C"
+              },
+              {
+                "subject": "C",
+                "object": "A"
+              }
+            ]
+          },
+          "gold": {
+            "direct": [
+              [
+                "A",
+                "D",
+                "positive"
+              ]
+            ],
+            "inferred_for_a_ab": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "unknown": [
+              [
+                "C",
+                "A"
+              ]
+            ],
+            "optional_content_ask": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "S2",
+      "kind": "fixed",
+      "evidence": [
+        {
+          "message_id": 1,
+          "content": "A links to B."
+        },
+        {
+          "message_id": 2,
+          "content": "Rule: if A links to B and B links to C then A links to C."
+        }
+      ],
+      "phases": [
+        {
+          "id": "Q1",
+          "question": "Using only the current teaching, report whether A links to C can be confirmed. If teaching is missing, identify the gap and stop without asking a question.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [],
+              "askable_gaps": [],
+              "missing_relations": [
+                {
+                  "subject": "B",
+                  "object": "C"
+                }
+              ],
+              "missing_rule": false,
+              "gap_targets": []
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": false,
+            "allow_clarify": false,
+            "required_targets": [
+              {
+                "subject": "A",
+                "object": "C"
+              }
+            ]
+          },
+          "gold": {
+            "direct": [],
+            "inferred_for_a_ab": [],
+            "unknown": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "optional_content_ask": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "S3",
+      "kind": "fixed",
+      "evidence": [
+        {
+          "message_id": 1,
+          "content": "A links to B."
+        },
+        {
+          "message_id": 2,
+          "content": "B links to C."
+        }
+      ],
+      "phases": [
+        {
+          "id": "Q1",
+          "question": "Using only the current teaching, report whether A links to C can be confirmed. Identify any missing rule and stop without asking a question.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [],
+              "askable_gaps": [],
+              "missing_relations": [],
+              "missing_rule": true,
+              "gap_targets": []
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": false,
+            "allow_clarify": false,
+            "required_targets": [
+              {
+                "subject": "A",
+                "object": "C"
+              }
+            ]
+          },
+          "gold": {
+            "direct": [],
+            "inferred_for_a_ab": [],
+            "unknown": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "optional_content_ask": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "S4",
+      "kind": "fixed",
+      "evidence": [
+        {
+          "message_id": 1,
+          "content": "A links to B."
+        },
+        {
+          "message_id": 2,
+          "content": "B links to C."
+        },
+        {
+          "message_id": 3,
+          "content": "Rule: if A links to B and B links to C then A links to C. Condition: ready. Exception: flagged."
+        },
+        {
+          "message_id": 4,
+          "content": "Condition ready is true."
+        },
+        {
+          "message_id": 5,
+          "content": "Exception flagged is active."
+        }
+      ],
+      "phases": [
+        {
+          "id": "Q1",
+          "question": "Using only the current teaching, report whether A links to C can be confirmed. Do not ask a question.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [],
+              "askable_gaps": [],
+              "missing_relations": [],
+              "missing_rule": false,
+              "gap_targets": []
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": false,
+            "allow_clarify": false,
+            "required_targets": [
+              {
+                "subject": "A",
+                "object": "C"
+              }
+            ]
+          },
+          "gold": {
+            "direct": [],
+            "inferred_for_a_ab": [],
+            "unknown": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "optional_content_ask": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "S5",
+      "kind": "fixed",
+      "evidence": [
+        {
+          "message_id": 1,
+          "content": "A links to B."
+        },
+        {
+          "message_id": 2,
+          "content": "B links to C."
+        },
+        {
+          "message_id": 3,
+          "content": "Rule: if A links to B and B links to C then A links to C."
+        }
+      ],
+      "phases": [
+        {
+          "id": "Q1",
+          "question": "Using only the current teaching, report whether A links to C can be confirmed. Do not ask a question.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [],
+              "askable_gaps": [],
+              "missing_relations": [],
+              "missing_rule": false,
+              "gap_targets": []
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": false,
+            "allow_clarify": false,
+            "required_targets": [
+              {
+                "subject": "A",
+                "object": "C"
+              }
+            ]
+          },
+          "gold": {
+            "direct": [],
+            "inferred_for_a_ab": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "unknown": [],
+            "optional_content_ask": false
+          }
+        },
+        {
+          "id": "Q2",
+          "question": "After the correction, report the current A-B and B-C teaching and whether A-C can be confirmed. Preserve negation. Do not ask a question.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [
+                {
+                  "subject": "A",
+                  "object": "B"
+                },
+                {
+                  "subject": "B",
+                  "object": "C"
+                }
+              ],
+              "askable_gaps": [],
+              "missing_relations": [],
+              "missing_rule": false,
+              "gap_targets": []
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": false,
+            "allow_clarify": false,
+            "required_targets": [
+              {
+                "subject": "A",
+                "object": "B"
+              },
+              {
+                "subject": "B",
+                "object": "C"
+              },
+              {
+                "subject": "A",
+                "object": "C"
+              }
+            ]
+          },
+          "gold": {
+            "direct": [
+              [
+                "A",
+                "B",
+                "positive"
+              ],
+              [
+                "B",
+                "C",
+                "negative"
+              ]
+            ],
+            "inferred_for_a_ab": [],
+            "unknown": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "optional_content_ask": false
+          },
+          "teacher_event": {
+            "message_id": 4,
+            "content": "Correction: B does not link to C."
+          }
+        }
+      ]
+    },
+    {
+      "id": "S6",
+      "kind": "fixed",
+      "evidence": [
+        {
+          "message_id": 1,
+          "content": "A links to B."
+        },
+        {
+          "message_id": 2,
+          "content": "B links to C."
+        },
+        {
+          "message_id": 3,
+          "content": "Rule: if A links to B and B links to C then A links to C."
+        }
+      ],
+      "phases": [
+        {
+          "id": "Q1",
+          "question": "Using only the current teaching, report whether A links to C can be confirmed. Do not ask a question.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [],
+              "askable_gaps": [],
+              "missing_relations": [],
+              "missing_rule": false,
+              "gap_targets": []
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": false,
+            "allow_clarify": false,
+            "required_targets": [
+              {
+                "subject": "A",
+                "object": "C"
+              }
+            ]
+          },
+          "gold": {
+            "direct": [],
+            "inferred_for_a_ab": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "unknown": [],
+            "optional_content_ask": false
+          }
+        },
+        {
+          "id": "Q2",
+          "question": "After the rule revocation, report the current A-B and B-C teaching and whether A-C can be confirmed. Do not ask a question.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [
+                {
+                  "subject": "A",
+                  "object": "B"
+                },
+                {
+                  "subject": "B",
+                  "object": "C"
+                }
+              ],
+              "askable_gaps": [],
+              "missing_relations": [],
+              "missing_rule": false,
+              "gap_targets": []
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": false,
+            "allow_clarify": false,
+            "required_targets": [
+              {
+                "subject": "A",
+                "object": "B"
+              },
+              {
+                "subject": "B",
+                "object": "C"
+              },
+              {
+                "subject": "A",
+                "object": "C"
+              }
+            ]
+          },
+          "gold": {
+            "direct": [
+              [
+                "A",
+                "B",
+                "positive"
+              ],
+              [
+                "B",
+                "C",
+                "positive"
+              ]
+            ],
+            "inferred_for_a_ab": [],
+            "unknown": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "optional_content_ask": false
+          },
+          "teacher_event": {
+            "message_id": 4,
+            "content": "Revoke rule."
+          }
+        }
+      ]
+    },
+    {
+      "id": "I2",
+      "kind": "interactive",
+      "evidence": [
+        {
+          "message_id": 1,
+          "content": "A links to B."
+        },
+        {
+          "message_id": 2,
+          "content": "Rule: if A links to B and B links to C then A links to C."
+        }
+      ],
+      "phases": [
+        {
+          "id": "Q1",
+          "question": "Using only the current teaching, report whether A links to C can be confirmed. If it cannot be confirmed, identify the missing teaching before answering.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [],
+              "askable_gaps": [
+                {
+                  "subject": "B",
+                  "object": "C"
+                }
+              ],
+              "missing_relations": [
+                {
+                  "subject": "B",
+                  "object": "C"
+                }
+              ],
+              "missing_rule": false,
+              "gap_targets": [
+                [
+                  {
+                    "subject": "B",
+                    "object": "C"
+                  },
+                  {
+                    "subject": "A",
+                    "object": "C"
+                  }
+                ]
+              ]
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": true,
+            "allow_clarify": false,
+            "required_targets": []
+          },
+          "gold": {
+            "direct": [],
+            "inferred_for_a_ab": [],
+            "unknown": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "optional_content_ask": true
+          }
+        }
+      ],
+      "branches": {
+        "missing_fact:B:C": {
+          "message_id": 50,
+          "content": "B links to C."
+        },
+        "direct_target:A:C": {
+          "message_id": 50,
+          "content": "A links to C."
+        }
+      },
+      "continuation_question": "Continue answering the original A-C question using only the current teaching. Do not ask another question."
+    },
+    {
+      "id": "I3",
+      "kind": "interactive",
+      "evidence": [
+        {
+          "message_id": 1,
+          "content": "A links to B."
+        },
+        {
+          "message_id": 2,
+          "content": "B links to C."
+        }
+      ],
+      "phases": [
+        {
+          "id": "Q1",
+          "question": "Using only the current teaching, report whether A links to C can be confirmed. If a rule is needed to combine the links, identify the missing teaching before answering.",
+          "context": {
+            "goal": {
+              "original": {
+                "subject": "A",
+                "object": "C"
+              },
+              "current_subgoals": [],
+              "askable_gaps": [],
+              "missing_relations": [],
+              "missing_rule": true,
+              "gap_targets": []
+            },
+            "turn_kind": "question",
+            "allow_infer": true,
+            "allow_ask": true,
+            "allow_clarify": false,
+            "required_targets": []
+          },
+          "gold": {
+            "direct": [],
+            "inferred_for_a_ab": [],
+            "unknown": [
+              [
+                "A",
+                "C"
+              ]
+            ],
+            "optional_content_ask": true
+          }
+        }
+      ],
+      "branches": {
+        "missing_rule:A:C": {
+          "message_id": 50,
+          "content": "Rule: if A links to B and B links to C then A links to C."
+        },
+        "direct_target:A:C": {
+          "message_id": 50,
+          "content": "A links to C."
+        }
+      },
+      "continuation_question": "Continue answering the original A-C question using only the current teaching. Do not ask another question."
+    }
+  ]
+}

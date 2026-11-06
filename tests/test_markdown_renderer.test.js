@@ -127,15 +127,18 @@ describe("markdown-renderer wrapper: dependency checks", function () {
   it("loads the vendored parser, sanitizer and renderer before app.js", function () {
     var markedAt = indexHtml.indexOf("/static/vendor/marked.umd.js");
     var purifyAt = indexHtml.indexOf("/static/vendor/purify.min.js");
+    var katexAt = indexHtml.indexOf("/static/vendor/katex.min.js");
     var rendererAt = indexHtml.indexOf("/static/markdown-renderer.js");
     var appAt = indexHtml.indexOf("/static/app.js");
 
     assert.equal(markedAt > -1, true);
     assert.equal(purifyAt > -1, true);
+    assert.equal(katexAt > -1, true);
     assert.equal(rendererAt > -1, true);
     assert.equal(appAt > -1, true);
     assert.equal(markedAt < rendererAt, true);
     assert.equal(purifyAt < rendererAt, true);
+    assert.equal(katexAt < rendererAt, true);
     assert.equal(rendererAt < appAt, true);
   });
 
@@ -317,5 +320,43 @@ describe("markdown-renderer wrapper: successful apply and config", function () {
     renderer.apply(el, source);
 
     assert.equal(el.textContent, source);
+  });
+});
+
+
+describe("markdown-renderer wrapper: math integration contract", function () {
+  it("keeps the no-math render/apply contract with optional KaTeX", function () {
+    var marked = makeFakeMarked({ parseOutput: "<p><strong>x</strong></p>" });
+    var purify = makeFakePurify({ sanitizeOutput: "<p><strong>x</strong></p>" });
+    var renderer = markdown.createRenderer(marked, purify, undefined);
+    var rendered = renderer.render("**x**");
+    var el = makeElement();
+
+    assert.equal(renderer.configured, true);
+    assert.equal(rendered.ok, true);
+    assert.equal(rendered.html, "<p><strong>x</strong></p>");
+    assert.equal(renderer.apply(el, "**x**"), true);
+    assert.equal(el.classList.contains(MARKDOWN_CLASS), true);
+  });
+
+  it("does not require KaTeX for Markdown and never returns diagnostics from apply", function () {
+    var marked = makeFakeMarked();
+    var purify = makeFakePurify();
+    var renderer = markdown.createRenderer(marked, purify, undefined);
+    var el = makeElement();
+
+    var result = renderer.apply(el, "plain");
+    assert.equal(result, true);
+    assert.equal(typeof result, "boolean");
+  });
+
+  it("accepts an optional KaTeX namespace without touching global marked", function () {
+    var marked = makeFakeMarked();
+    var purify = makeFakePurify();
+    var katex = { renderToString: function () { throw new Error("should not run"); } };
+    var renderer = markdown.createRenderer(marked, purify, katex);
+
+    assert.equal(renderer.render("plain").ok, true);
+    assert.equal(marked.globalUseCalls, 0);
   });
 });

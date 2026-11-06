@@ -1,0 +1,25 @@
+# S6 — A+B fixed — revocation after a licensed inference
+
+Q1 may use one R1; T2 only processes revocation; Q2 keeps facts but not the revoked rule.
+
+## T1
+
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B.
+- B links to C.
+
+Puzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z.
+
+## Q1
+
+Does A link to C? Use only what I taught. If you infer it, mark it.
+
+## T2
+
+I withdraw the chain rule. It no longer applies in this puzzle. The two link facts A-B and B-C are still current. There is no replacement rule.
+
+## Q2
+
+Now report what is currently taught and whether A links to C follows. Use only the current facts and rules.

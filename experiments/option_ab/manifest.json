@@ -1,0 +1,153 @@
+{
+  "schema_version": "option-ab-manifest-v1",
+  "asset_version": "option-ab-isolated-v0.1",
+  "condition": "AB",
+  "generated_at_utc": "2026-11-01T15:21:44+00:00",
+  "encoding": "utf-8",
+  "line_endings": "LF",
+  "prompt_assembly": "base.rstrip('\\n') + '\\n\\n' + ab_strategy.rstrip('\\n') + '\\n'",
+  "shared_base_sha256": "eda835c58da3c1cbd05d83d5ac34f4ff5bbd805b8a466796957b7b489e00bb6f",
+  "prompt_version": "option-ab-isolated-v0.1+sys-b0f77e2a1828",
+  "prompts": {
+    "base": {
+      "bytes": 12436,
+      "sha256": "eda835c58da3c1cbd05d83d5ac34f4ff5bbd805b8a466796957b7b489e00bb6f"
+    },
+    "ab_strategy": {
+      "bytes": 3455,
+      "sha256": "c2d8b575a162a3ea9bffbf2af2f8db7bbb8527050c7e64d274508562942dfa06"
+    },
+    "system": {
+      "bytes": 15892,
+      "sha256": "b0f77e2a18289f1887aac9ad154f3ff6267cb942157f35ce28176110f688bbcf"
+    }
+  },
+  "calls": {
+    "fixed_per_script": {
+      "S1": 2,
+      "S2": 2,
+      "S3": 2,
+      "S4": 2,
+      "S5": 4,
+      "S6": 4
+    },
+    "fixed_total": 16,
+    "interactive": {
+      "I1": 2,
+      "I2": {
+        "minimum": 2,
+        "maximum": 3
+      },
+      "I3": {
+        "minimum": 2,
+        "maximum": 3
+      },
+      "I4": 2
+    },
+    "interactive_min": 8,
+    "interactive_max": 10,
+    "total_min": 24,
+    "total_max": 26,
+    "logical_runs": 10
+  },
+  "files": {
+    "__init__.py": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "README.md": {
+      "bytes": 2346,
+      "sha256": "ac72f062a0e108d3894341dd6aa682f48892c18ff026bc91742cd972ba83a85a"
+    },
+    "freeze_manifest.py": {
+      "bytes": 9791,
+      "sha256": "ef8f5ebbd013eabe5d20f9a08f0e1bf588045c0cbd364ffdd13affe22b05ebe6"
+    },
+    "history.py": {
+      "bytes": 2604,
+      "sha256": "7c449e44bbca7f1d1fbab196a144621d60fc88b9afe80a52e8aff2b645a64f14"
+    },
+    "runner.py": {
+      "bytes": 46736,
+      "sha256": "87c238f90c41351ce4d2333e35a345a067db247f80f1ffe4960176bd00af1509"
+    },
+    "prompts/base.txt": {
+      "bytes": 12436,
+      "sha256": "eda835c58da3c1cbd05d83d5ac34f4ff5bbd805b8a466796957b7b489e00bb6f"
+    },
+    "prompts/ab_strategy.txt": {
+      "bytes": 3455,
+      "sha256": "c2d8b575a162a3ea9bffbf2af2f8db7bbb8527050c7e64d274508562942dfa06"
+    },
+    "prompts/system.txt": {
+      "bytes": 15892,
+      "sha256": "b0f77e2a18289f1887aac9ad154f3ff6267cb942157f35ce28176110f688bbcf"
+    },
+    "scripts/scripts.json": {
+      "bytes": 13320,
+      "sha256": "43658c0a69d22f793f63ef7edf0b3a0a8997c0e218c52f5b2f2a200ab2f60953"
+    },
+    "scripts/S1.txt": {
+      "bytes": 897,
+      "sha256": "21a7b1466c637fdf40d290d3968e6e84266fc2a2e004adf14575f4cdb0921c25"
+    },
+    "scripts/S2.txt": {
+      "bytes": 528,
+      "sha256": "99be8e59bff2215af746da3eeb5c1276ed8448c24a08d35c175cdd2513e2d8f6"
+    },
+    "scripts/S3.txt": {
+      "bytes": 477,
+      "sha256": "308f6255dbd694e97d262c4f2c6d1a4ca9001d83ed646860255b13a620b94916"
+    },
+    "scripts/S4.txt": {
+      "bytes": 682,
+      "sha256": "5c42738a085651b8fecc9e64a287814cb065de115e4ee712470b103c710f8a85"
+    },
+    "scripts/S5.txt": {
+      "bytes": 788,
+      "sha256": "909749115212fbb04641c6a121c6ba8c1253d3ed79d3340a56721ea6827b5682"
+    },
+    "scripts/S6.txt": {
+      "bytes": 810,
+      "sha256": "001b7e70d410bf3af3688a6f06e6d64c43f7d0138f2a0726a43d188f54a7584b"
+    },
+    "scripts/I1.txt": {
+      "bytes": 428,
+      "sha256": "2b384840676826e364dc79a426d024d6341df10564dd178a57ff0561b6eb8194"
+    },
+    "scripts/I2.txt": {
+      "bytes": 1519,
+      "sha256": "73c9b332b2cf983931aecc3957669aeb8180c484a15c20ef562f3f7efb6d6ae1"
+    },
+    "scripts/I3.txt": {
+      "bytes": 1462,
+      "sha256": "e3c7f57973b326282dfa575f72963ea1b11597baf0ed24d41062269a86e2d12b"
+    },
+    "scripts/I4.txt": {
+      "bytes": 575,
+      "sha256": "b260ed801e5ec914163a5e2af21c4dbe9408a4ffebe90ba41c7ea38f3497dc2c"
+    },
+    "expected/per_turn_expectations.md": {
+      "bytes": 5191,
+      "sha256": "9b5098bbfaf46267f4f15b22318094efd791060a0e633d0a96724c8eb02f6436"
+    },
+    "expected/coding_sheet.csv": {
+      "bytes": 5704,
+      "sha256": "18365004797d055969c16b2ad178f0a0c0fdb9f3e6527ef2e8e93e1e629314af"
+    },
+    "tests/__init__.py": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tests/test_option_ab.py": {
+      "bytes": 19338,
+      "sha256": "b39a01cc706b71b30c613b9bb73d646716c5f23fdca874ba02e7dfe91c0d2a88"
+    }
+  },
+  "notes": [
+    "No production prompt, mode, database, or application file is part of this manifest.",
+    "The runner uses only the local fake client by default.",
+    "A+B is a separate condition with a bounded R1 and one focused question.",
+    "Fixed scripts use the exact shared S1-S6 user content; interactive branches require human selection."
+  ]
+}

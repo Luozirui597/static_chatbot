@@ -1,0 +1,158 @@
+[
+  {
+    "id": 924,
+    "role": "user",
+    "content": "I teach you that the west desk closes when the last visitor has left. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 925,
+    "role": "assistant",
+    "content": "Understood: the west desk closes when the last visitor has left.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 926,
+    "role": "user",
+    "content": "I teach you that blank intake cards are kept in the top drawer. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 927,
+    "role": "assistant",
+    "content": "Okay — blank intake cards are kept in the top drawer.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 928,
+    "role": "user",
+    "content": "I teach you that filled intake cards are stored upright. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 929,
+    "role": "assistant",
+    "content": "好，按你教的，填写好的接待卡要竖直存放。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 930,
+    "role": "user",
+    "content": "I teach you that a yellow clip marks a card awaiting review. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 931,
+    "role": "assistant",
+    "content": "Understood: a yellow clip marks a card awaiting review.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 932,
+    "role": "user",
+    "content": "I teach you that a green clip marks a card already checked. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 933,
+    "role": "assistant",
+    "content": "好，绿色夹子表示卡片已经核对过了。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 934,
+    "role": "user",
+    "content": "I teach you that the desk key is stored in a locked cabinet. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 935,
+    "role": "assistant",
+    "content": "Understood — the desk key is stored in a locked cabinet.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 936,
+    "role": "user",
+    "content": "I teach you that the help sheet sits next to the sign-in book. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 937,
+    "role": "assistant",
+    "content": "好，帮助页放在签到簿旁边。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 938,
+    "role": "user",
+    "content": "I teach you that a cracked badge is exchanged at the desk. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 939,
+    "role": "assistant",
+    "content": "Understood — a cracked badge is exchanged at the desk.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 940,
+    "role": "user",
+    "content": "I teach you that each envelope contains only one card. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 941,
+    "role": "assistant",
+    "content": "Understood — each envelope contains only one card.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 942,
+    "role": "user",
+    "content": "I teach you that the Oak Tag marks a box ready for shelf storage. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 943,
+    "role": "assistant",
+    "content": "Okay — the Oak Tag marks a box ready for shelf storage.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 944,
+    "role": "user",
+    "content": "I teach you that the Pearl Tag marks a box ready for transfer to another room. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 945,
+    "role": "assistant",
+    "content": "好，Pearl Tag 表示箱子可以转送到另一个房间。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 946,
+    "role": "user",
+    "content": "In our intake lessons, what does the Oak Tag mark?",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 947,
+    "role": "assistant",
+    "content": "The Oak Tag marks a box ready for shelf storage.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 948,
+    "role": "user",
+    "content": "Which source message should I use, the one about the Oak Tag or the one about the Pearl Tag?",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 949,
+    "role": "assistant",
+    "content": "What task should I use the source message for?",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  }
+]

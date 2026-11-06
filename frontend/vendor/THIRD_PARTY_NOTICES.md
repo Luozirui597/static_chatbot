@@ -43,3 +43,17 @@ The downloaded tarballs were checked against the npm registry
 `dist.integrity` values above.  The vendored browser files were copied
 byte-for-byte from those tarballs and their SHA-256 values are recorded
 here.
+
+## KaTeX 0.19.1
+
+- Source: `https://registry.npmjs.org/katex/-/katex-0.19.1.tgz`
+- Repository: `https://github.com/KaTeX/KaTeX` (tag `v0.19.1`)
+- npm `dist.integrity`:
+  `sha512-jG8uKntjSEcm2EpQOh0XturpPuuC9r3Sq5HLHdsFdWZT27E672SF19QEi+of0/YeOy15lDgRhKvr5614uRrEfA==`
+- Vendored as: `frontend/vendor/katex.min.js`
+- Vendored browser file SHA-256:
+  `fa140498b8cfc8302cbe5e7cb1bdbc1f952bc38b3fa258ede09e73edbf9a74bc`
+- License: MIT. Full text: `frontend/vendor/LICENSE-katex.txt`.
+- Only the MathML-producing JavaScript is vendored. KaTeX CSS and fonts
+  are not loaded by the application. If they are introduced later, their
+  licenses must be added and reviewed.

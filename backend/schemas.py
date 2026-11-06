@@ -24,6 +24,7 @@ from backend.session_titles import normalize_title_whitespace
 MAX_MESSAGE_LENGTH = 4000
 
 InteractionMode = Literal[RECEIVE_TEACHING_MODE, CORRECTIVE_MODE]
+TeachingStrategy = Literal["baseline", "a", "b", "ab"]
 
 
 class ChatRequest(BaseModel):
@@ -67,6 +68,8 @@ class SessionResponse(BaseModel):
     id: int
     title: str
     interaction_mode: InteractionMode = RECEIVE_TEACHING_MODE
+    teaching_strategy: TeachingStrategy = "baseline"
+    teaching_strategy_switchable: bool = True
     created_at: datetime
     updated_at: datetime
     llm_profile_id: str
@@ -86,6 +89,7 @@ class MessageResponse(BaseModel):
     content: str
     created_at: datetime
     interaction_mode_snapshot: InteractionMode | None = None
+    teaching_strategy_snapshot: TeachingStrategy | None = None
     prompt_version_snapshot: Annotated[
         str, Field(strict=True, min_length=1, max_length=50)
     ] | None = None
@@ -239,6 +243,15 @@ class SwitchInteractionModeRequest(BaseModel):
     """Request body for PATCH /api/sessions/{id}/interaction-mode."""
 
     interaction_mode: InteractionMode
+
+
+class SwitchTeachingStrategyRequest(BaseModel):
+    teaching_strategy: TeachingStrategy
+    model_config = ConfigDict(extra="forbid")
+
+
+class SwitchTeachingStrategyResponse(BaseModel):
+    session: SessionResponse
 
 
 class ModeSwitchEventResponse(BaseModel):

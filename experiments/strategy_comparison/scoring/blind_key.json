@@ -1,0 +1,677 @@
+{
+  "schema_version": "strategy-comparison-blind-key-v1",
+  "key": [
+    {
+      "rating_id": 75,
+      "session_key": "S1-r1-a",
+      "task_id": "S1",
+      "repeat": 1,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 2,
+      "session_key": "S1-r1-b",
+      "task_id": "S1",
+      "repeat": 1,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 21,
+      "session_key": "S1-r1-ab",
+      "task_id": "S1",
+      "repeat": 1,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 39,
+      "session_key": "S1-r1-standard",
+      "task_id": "S1",
+      "repeat": 1,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 6,
+      "session_key": "S1-r2-b",
+      "task_id": "S1",
+      "repeat": 2,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 70,
+      "session_key": "S1-r2-ab",
+      "task_id": "S1",
+      "repeat": 2,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 13,
+      "session_key": "S1-r2-standard",
+      "task_id": "S1",
+      "repeat": 2,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 60,
+      "session_key": "S1-r2-a",
+      "task_id": "S1",
+      "repeat": 2,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 38,
+      "session_key": "S1-r3-b",
+      "task_id": "S1",
+      "repeat": 3,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 94,
+      "session_key": "S1-r3-standard",
+      "task_id": "S1",
+      "repeat": 3,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 26,
+      "session_key": "S1-r3-a",
+      "task_id": "S1",
+      "repeat": 3,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 33,
+      "session_key": "S1-r3-ab",
+      "task_id": "S1",
+      "repeat": 3,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 16,
+      "session_key": "S2-r1-a",
+      "task_id": "S2",
+      "repeat": 1,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 3,
+      "session_key": "S2-r1-b",
+      "task_id": "S2",
+      "repeat": 1,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 95,
+      "session_key": "S2-r1-ab",
+      "task_id": "S2",
+      "repeat": 1,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 18,
+      "session_key": "S2-r1-standard",
+      "task_id": "S2",
+      "repeat": 1,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 35,
+      "session_key": "S2-r2-a",
+      "task_id": "S2",
+      "repeat": 2,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 64,
+      "session_key": "S2-r2-ab",
+      "task_id": "S2",
+      "repeat": 2,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 82,
+      "session_key": "S2-r2-standard",
+      "task_id": "S2",
+      "repeat": 2,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 77,
+      "session_key": "S2-r2-b",
+      "task_id": "S2",
+      "repeat": 2,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 25,
+      "session_key": "S2-r3-a",
+      "task_id": "S2",
+      "repeat": 3,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 59,
+      "session_key": "S2-r3-standard",
+      "task_id": "S2",
+      "repeat": 3,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 93,
+      "session_key": "S2-r3-ab",
+      "task_id": "S2",
+      "repeat": 3,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 45,
+      "session_key": "S2-r3-b",
+      "task_id": "S2",
+      "repeat": 3,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 41,
+      "session_key": "S3-r1-a",
+      "task_id": "S3",
+      "repeat": 1,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 36,
+      "session_key": "S3-r1-standard",
+      "task_id": "S3",
+      "repeat": 1,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 19,
+      "session_key": "S3-r1-ab",
+      "task_id": "S3",
+      "repeat": 1,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 76,
+      "session_key": "S3-r1-b",
+      "task_id": "S3",
+      "repeat": 1,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 12,
+      "session_key": "S3-r2-ab",
+      "task_id": "S3",
+      "repeat": 2,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 88,
+      "session_key": "S3-r2-standard",
+      "task_id": "S3",
+      "repeat": 2,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 11,
+      "session_key": "S3-r2-b",
+      "task_id": "S3",
+      "repeat": 2,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 74,
+      "session_key": "S3-r2-a",
+      "task_id": "S3",
+      "repeat": 2,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 17,
+      "session_key": "S3-r3-ab",
+      "task_id": "S3",
+      "repeat": 3,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 1,
+      "session_key": "S3-r3-a",
+      "task_id": "S3",
+      "repeat": 3,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 44,
+      "session_key": "S3-r3-b",
+      "task_id": "S3",
+      "repeat": 3,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 15,
+      "session_key": "S3-r3-standard",
+      "task_id": "S3",
+      "repeat": 3,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 65,
+      "session_key": "S4-r1-ab",
+      "task_id": "S4",
+      "repeat": 1,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 51,
+      "session_key": "S4-r1-standard",
+      "task_id": "S4",
+      "repeat": 1,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 53,
+      "session_key": "S4-r1-b",
+      "task_id": "S4",
+      "repeat": 1,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 14,
+      "session_key": "S4-r1-a",
+      "task_id": "S4",
+      "repeat": 1,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 62,
+      "session_key": "S4-r2-ab",
+      "task_id": "S4",
+      "repeat": 2,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 46,
+      "session_key": "S4-r2-b",
+      "task_id": "S4",
+      "repeat": 2,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 50,
+      "session_key": "S4-r2-a",
+      "task_id": "S4",
+      "repeat": 2,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 7,
+      "session_key": "S4-r2-standard",
+      "task_id": "S4",
+      "repeat": 2,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 80,
+      "session_key": "S4-r3-a",
+      "task_id": "S4",
+      "repeat": 3,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 56,
+      "session_key": "S4-r3-standard",
+      "task_id": "S4",
+      "repeat": 3,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 47,
+      "session_key": "S4-r3-b",
+      "task_id": "S4",
+      "repeat": 3,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 27,
+      "session_key": "S4-r3-ab",
+      "task_id": "S4",
+      "repeat": 3,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 42,
+      "session_key": "S5-r1-b",
+      "task_id": "S5",
+      "repeat": 1,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 67,
+      "session_key": "S5-r1-standard",
+      "task_id": "S5",
+      "repeat": 1,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 92,
+      "session_key": "S5-r1-ab",
+      "task_id": "S5",
+      "repeat": 1,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 58,
+      "session_key": "S5-r1-a",
+      "task_id": "S5",
+      "repeat": 1,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 54,
+      "session_key": "S5-r2-ab",
+      "task_id": "S5",
+      "repeat": 2,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 83,
+      "session_key": "S5-r2-a",
+      "task_id": "S5",
+      "repeat": 2,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 48,
+      "session_key": "S5-r2-standard",
+      "task_id": "S5",
+      "repeat": 2,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 63,
+      "session_key": "S5-r2-b",
+      "task_id": "S5",
+      "repeat": 2,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 68,
+      "session_key": "S5-r3-b",
+      "task_id": "S5",
+      "repeat": 3,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 61,
+      "session_key": "S5-r3-a",
+      "task_id": "S5",
+      "repeat": 3,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 29,
+      "session_key": "S5-r3-standard",
+      "task_id": "S5",
+      "repeat": 3,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 69,
+      "session_key": "S5-r3-ab",
+      "task_id": "S5",
+      "repeat": 3,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 34,
+      "session_key": "S6-r1-b",
+      "task_id": "S6",
+      "repeat": 1,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 81,
+      "session_key": "S6-r1-standard",
+      "task_id": "S6",
+      "repeat": 1,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 84,
+      "session_key": "S6-r1-ab",
+      "task_id": "S6",
+      "repeat": 1,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 8,
+      "session_key": "S6-r1-a",
+      "task_id": "S6",
+      "repeat": 1,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 96,
+      "session_key": "S6-r2-b",
+      "task_id": "S6",
+      "repeat": 2,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 30,
+      "session_key": "S6-r2-ab",
+      "task_id": "S6",
+      "repeat": 2,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 66,
+      "session_key": "S6-r2-standard",
+      "task_id": "S6",
+      "repeat": 2,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 79,
+      "session_key": "S6-r2-a",
+      "task_id": "S6",
+      "repeat": 2,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 4,
+      "session_key": "S6-r3-a",
+      "task_id": "S6",
+      "repeat": 3,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 55,
+      "session_key": "S6-r3-ab",
+      "task_id": "S6",
+      "repeat": 3,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 23,
+      "session_key": "S6-r3-b",
+      "task_id": "S6",
+      "repeat": 3,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 90,
+      "session_key": "S6-r3-standard",
+      "task_id": "S6",
+      "repeat": 3,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 31,
+      "session_key": "I2-r1-standard",
+      "task_id": "I2",
+      "repeat": 1,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 71,
+      "session_key": "I2-r1-b",
+      "task_id": "I2",
+      "repeat": 1,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 22,
+      "session_key": "I2-r1-ab",
+      "task_id": "I2",
+      "repeat": 1,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 43,
+      "session_key": "I2-r1-a",
+      "task_id": "I2",
+      "repeat": 1,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 24,
+      "session_key": "I2-r2-ab",
+      "task_id": "I2",
+      "repeat": 2,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 37,
+      "session_key": "I2-r2-b",
+      "task_id": "I2",
+      "repeat": 2,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 86,
+      "session_key": "I2-r2-a",
+      "task_id": "I2",
+      "repeat": 2,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 52,
+      "session_key": "I2-r2-standard",
+      "task_id": "I2",
+      "repeat": 2,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 87,
+      "session_key": "I2-r3-ab",
+      "task_id": "I2",
+      "repeat": 3,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 91,
+      "session_key": "I2-r3-standard",
+      "task_id": "I2",
+      "repeat": 3,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 9,
+      "session_key": "I2-r3-b",
+      "task_id": "I2",
+      "repeat": 3,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 89,
+      "session_key": "I2-r3-a",
+      "task_id": "I2",
+      "repeat": 3,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 72,
+      "session_key": "I3-r1-a",
+      "task_id": "I3",
+      "repeat": 1,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 10,
+      "session_key": "I3-r1-b",
+      "task_id": "I3",
+      "repeat": 1,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 28,
+      "session_key": "I3-r1-standard",
+      "task_id": "I3",
+      "repeat": 1,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 32,
+      "session_key": "I3-r1-ab",
+      "task_id": "I3",
+      "repeat": 1,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 40,
+      "session_key": "I3-r2-ab",
+      "task_id": "I3",
+      "repeat": 2,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 78,
+      "session_key": "I3-r2-standard",
+      "task_id": "I3",
+      "repeat": 2,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 20,
+      "session_key": "I3-r2-a",
+      "task_id": "I3",
+      "repeat": 2,
+      "strategy_id": "a"
+    },
+    {
+      "rating_id": 5,
+      "session_key": "I3-r2-b",
+      "task_id": "I3",
+      "repeat": 2,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 57,
+      "session_key": "I3-r3-b",
+      "task_id": "I3",
+      "repeat": 3,
+      "strategy_id": "b"
+    },
+    {
+      "rating_id": 49,
+      "session_key": "I3-r3-ab",
+      "task_id": "I3",
+      "repeat": 3,
+      "strategy_id": "ab"
+    },
+    {
+      "rating_id": 85,
+      "session_key": "I3-r3-standard",
+      "task_id": "I3",
+      "repeat": 3,
+      "strategy_id": "standard"
+    },
+    {
+      "rating_id": 73,
+      "session_key": "I3-r3-a",
+      "task_id": "I3",
+      "repeat": 3,
+      "strategy_id": "a"
+    }
+  ]
+}

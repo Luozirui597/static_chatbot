@@ -6,15 +6,18 @@
  *
  * Only messages with ``id > lastKnownId`` are considered — earlier
  * messages (including identical text from a prior turn) are ignored.
+ * The caller must also supply whether that boundary is *known*.  When it
+ * is not known, this function deliberately refuses to associate any
+ * message with the send.
  *
- * Returns {userIdx, hasAssistant, userMessageId} where:
+ * A send is associated only when exactly one new user message has the
+ * original text.  Its assistant reply, if any, must occur before the next
+ * user message; an assistant belonging to a later user request can never
+ * be treated as this send's reply.
  *
- * - *userIdx* — index within the filtered subset of the first user
- *   message matching *originalText* (or -1);
- * - *hasAssistant* — true if an assistant message follows that user
- *   message;
- * - *userMessageId* — the ``id`` field of the matched user message
- *   (0 when *userIdx* is -1).
+ * Returns:
+ *   {userIdx, hasAssistant, userMessageId, association, observedLastMessageId, candidateCount}
+ * where *association* is "matched", "none", or "unknown".
  *
  * This function is pure — it does not touch the DOM or network, so
  * ``node:test`` can verify it directly.  It is defined as a top-level
@@ -23,44 +26,93 @@
  * loads.
  *
  * @param {Array<{id: number, role: string, content: string}>} allMessages
- *   The full message list for the session (fetched from the API).
  * @param {number} lastKnownId
- *   The highest message id known before the send attempt.  Messages
- *   with id <= this value are ignored.
  * @param {string} originalText
- *   The exact text the user tried to send.
- * @returns {{userIdx: number, hasAssistant: boolean, userMessageId: number}}
+ * @param {boolean} [boundaryKnown=true]
+ * @returns {{userIdx: number, hasAssistant: boolean, userMessageId: number,
+ *   association: string, observedLastMessageId: number, candidateCount: number}}
  */
-function findSentMessages(allMessages, lastKnownId, originalText) {
-  // Filter to messages that appeared after the send attempt
+function findSentMessages(
+  allMessages,
+  lastKnownId,
+  originalText,
+  boundaryKnown,
+) {
+  var unknown = {
+    userIdx: -1,
+    hasAssistant: false,
+    userMessageId: 0,
+    association: "unknown",
+    observedLastMessageId: 0,
+    candidateCount: 0,
+  };
+
+  if (boundaryKnown === false) return unknown;
+  if (!Array.isArray(allMessages) ||
+      typeof lastKnownId !== "number" || !isFinite(lastKnownId) ||
+      typeof originalText !== "string") {
+    return unknown;
+  }
+
   var newMessages = [];
   for (var i = 0; i < allMessages.length; i++) {
-    if (allMessages[i].id > lastKnownId) {
-      newMessages.push(allMessages[i]);
+    if (allMessages[i].id > lastKnownId) newMessages.push(allMessages[i]);
+  }
+
+  var candidates = [];
+  for (var j = 0; j < newMessages.length; j++) {
+    if (newMessages[j].role === "user" &&
+        newMessages[j].content === originalText) {
+      candidates.push(j);
     }
   }
 
-  var userIdx = -1;
-  var userMessageId = 0;
-  for (var j = 0; j < newMessages.length; j++) {
-    if (newMessages[j].role === "user" && newMessages[j].content === originalText) {
-      userIdx = j;
-      userMessageId = newMessages[j].id;
+  var observedLastMessageId = newMessages.length > 0
+    ? newMessages[newMessages.length - 1].id
+    : 0;
+
+  if (candidates.length === 0) {
+    return {
+      userIdx: -1,
+      hasAssistant: false,
+      userMessageId: 0,
+      association: "none",
+      observedLastMessageId: observedLastMessageId,
+      candidateCount: 0,
+    };
+  }
+
+  // Multiple identical user messages after the frozen boundary cannot be
+  // associated with this request without a request id.  Never guess.
+  if (candidates.length !== 1) {
+    return {
+      userIdx: -1,
+      hasAssistant: false,
+      userMessageId: 0,
+      association: "unknown",
+      observedLastMessageId: observedLastMessageId,
+      candidateCount: candidates.length,
+    };
+  }
+
+  var userIdx = candidates[0];
+  var hasAssistant = false;
+  for (var k = userIdx + 1; k < newMessages.length; k++) {
+    if (newMessages[k].role === "user") break;
+    if (newMessages[k].role === "assistant") {
+      hasAssistant = true;
       break;
     }
   }
 
-  var hasAssistant = false;
-  if (userIdx >= 0) {
-    for (var k = userIdx + 1; k < newMessages.length; k++) {
-      if (newMessages[k].role === "assistant") {
-        hasAssistant = true;
-        break;
-      }
-    }
-  }
-
-  return { userIdx: userIdx, hasAssistant: hasAssistant, userMessageId: userMessageId };
+  return {
+    userIdx: userIdx,
+    hasAssistant: hasAssistant,
+    userMessageId: newMessages[userIdx].id,
+    association: "matched",
+    observedLastMessageId: observedLastMessageId,
+    candidateCount: 1,
+  };
 }
 
 // Dual export: browser global for app.js, module.exports for node:test

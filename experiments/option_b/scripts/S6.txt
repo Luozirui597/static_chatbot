@@ -1,0 +1,22 @@
+# S6 — B fixed — Revocation of a rule
+# Condition: B
+# Expected model calls: 4
+# Focus: B: T2 processes the revocation; Q2 keeps the facts and no rule; B never infers.
+
+## T1 (teach)
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B.
+- B links to C.
+
+Puzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z.
+
+## Q1 (query)
+Does A link to C? Use only what I taught. If you infer it, mark it.
+
+## T2 (revocation)
+I withdraw the chain rule. It no longer applies in this puzzle. The two link facts A-B and B-C are still current. There is no replacement rule.
+
+## Q2 (recheck)
+Now report what is currently taught and whether A links to C follows. Use only the current facts and rules.

@@ -1,0 +1,44 @@
+# I3 — B interactive — missing combination rule
+Mode: interactive
+Expected calls: {'minimum': 2, 'maximum': 3}
+
+## T1 (teach)
+
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B.
+- B links to C.
+
+I have not taught any combination rule for links.
+
+## Q1 (query)
+
+Does A link to C? If current teaching is insufficient, you may ask me at most one focused question. Do not infer or guess.
+
+## branch rule_request — explicitly no combination rule
+
+The current question is whether A links to C. I have no combination rule
+for links. I will not provide one. A links to B and B links to C are still
+current facts.
+
+Please answer again: Does A link to C? Use only what I have directly taught;
+do not infer.
+
+## branch direct_ac — directly teach A-C only
+
+The current question is whether A links to C. I now directly teach: A links
+to C. This is direct teaching. A links to B and B links to C are still
+current facts.
+
+Please answer again: Does A link to C? Report it as direct teaching.
+
+## branch no_extra — no additional fact or rule
+
+The current question is whether A links to C.
+I am not adding any fact or rule in this reply.
+A links to B and B links to C remain current.
+I have not taught a rule for combining links.
+
+Please answer again: Does A link to C? Use only what I have directly taught;
+do not infer.

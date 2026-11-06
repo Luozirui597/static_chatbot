@@ -1,0 +1,83 @@
+{
+  "planned_sessions": 32,
+  "created_sessions": 32,
+  "model_calls": 80,
+  "model_returns": 80,
+  "model_failures": 0,
+  "provider_statuses": {
+    "200": 80
+  },
+  "requested_models": [
+    "deepseek-v4-flash"
+  ],
+  "upstream_returned_models": [
+    "deepseek-flash"
+  ],
+  "finish_reasons": {
+    "stop": 80
+  },
+  "all_language_instructions_once": true,
+  "database_sessions": 32,
+  "database_messages": 160,
+  "users": 80,
+  "assistants": 80,
+  "strategy_and_version_snapshots_match": true,
+  "database_integrity": "ok",
+  "foreign_key_errors": 0,
+  "production_source_changed": [],
+  "original_experiment_asset_drift": [],
+  "by_condition": {
+    "a": {
+      "sessions": 8,
+      "completed": 8,
+      "pending_human": 0,
+      "failed": 0,
+      "calls": 20
+    },
+    "b": {
+      "sessions": 8,
+      "completed": 8,
+      "pending_human": 0,
+      "failed": 0,
+      "calls": 20
+    },
+    "ab": {
+      "sessions": 8,
+      "completed": 8,
+      "pending_human": 0,
+      "failed": 0,
+      "calls": 20
+    },
+    "standard": {
+      "sessions": 8,
+      "completed": 8,
+      "pending_human": 0,
+      "failed": 0,
+      "calls": 20
+    }
+  },
+  "by_status": {
+    "completed": 32
+  },
+  "ratings_status": "No human scores filled or locked; operator is unblinded",
+  "business_database_accessed": false,
+  "production_service_used": false,
+  "request_driver": "current FastAPI via in-process TestClient, real production client, isolated SQLite",
+  "status": "execution_complete_unscored",
+  "human_decision_source": "user_human",
+  "human_raw_answer": "none",
+  "human_none_count": 8,
+  "teacher_supplements": 0,
+  "question_supplement_inference_chains_observed": 0,
+  "independent_blind_ratings_completed": false,
+  "formal_repeats_executed": [
+    1
+  ],
+  "formal_repeats_not_executed": [
+    2,
+    3
+  ],
+  "stage1_locked": false,
+  "stage2_started": false,
+  "report": "REPORT.md"
+}

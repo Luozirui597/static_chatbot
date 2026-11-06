@@ -1,0 +1,174 @@
+{
+  "date": "2026-11-06",
+  "status": "passed",
+  "formal_url": "http://127.0.0.1:8000/",
+  "model": "deepseek-v4-flash",
+  "real_model_calls": 8,
+  "success_turns": 8,
+  "provider_statuses": [
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200,
+    200
+  ],
+  "all_language_instructions_once": true,
+  "language": "en",
+  "sessions": [
+    {
+      "id": 59,
+      "title": "Teaching strategy A - live acceptance 2026-11-06",
+      "created_at": "2026-11-06 03:51:39.878961",
+      "updated_at": "2026-11-06 03:59:41.551346",
+      "title_is_manual": 1,
+      "llm_profile_id": "default",
+      "llm_model_snapshot": "deepseek-v4-flash",
+      "interaction_mode": "receive_teaching",
+      "strategy": "a"
+    },
+    {
+      "id": 60,
+      "title": "Teaching strategy B - live acceptance 2026-11-06",
+      "created_at": "2026-11-06 03:53:38.357807",
+      "updated_at": "2026-11-06 03:59:41.553788",
+      "title_is_manual": 1,
+      "llm_profile_id": "default",
+      "llm_model_snapshot": "deepseek-v4-flash",
+      "interaction_mode": "receive_teaching",
+      "strategy": "b"
+    },
+    {
+      "id": 61,
+      "title": "Teaching strategy A+B - live acceptance 2026-11-06",
+      "created_at": "2026-11-06 03:55:55.606262",
+      "updated_at": "2026-11-06 03:59:41.555266",
+      "title_is_manual": 1,
+      "llm_profile_id": "default",
+      "llm_model_snapshot": "deepseek-v4-flash",
+      "interaction_mode": "receive_teaching",
+      "strategy": "ab"
+    }
+  ],
+  "messages_added": 16,
+  "users_added": 8,
+  "assistants_added": 8,
+  "old_business_rows_unchanged": {
+    "messages": true,
+    "history_reviews": true,
+    "history_review_sources": true,
+    "history_review_findings": true,
+    "chat_sessions": true,
+    "mode_switch_events": true
+  },
+  "old_message_strategy_snapshots_remain_unknown": true,
+  "integrity": "ok",
+  "foreign_key_errors": 0,
+  "plain_service_health": {
+    "status": "ok"
+  },
+  "backend_tests": 1620,
+  "node_tests": 555,
+  "frozen_experiment_tests": 168,
+  "route_scope": "ordinary final for all eight real turns; fixed/general/clarify covered by isolated tests",
+  "turns": [
+    {
+      "event": "turn_success",
+      "session": 59,
+      "turn": "A1",
+      "user_id": 986,
+      "assistant_id": 987,
+      "reply": "Confirmed: A links to B, B links to C, and R1 says if X links to Y and Y links to Z, then X links to Z, with no further conditions or exceptions.",
+      "user_version": "teach-a-v1+history-context-b1+l1-en",
+      "assistant_version": "teach-a-v1+history-context-b1+l1-en",
+      "user_strategy": "a",
+      "assistant_strategy": "a"
+    },
+    {
+      "event": "turn_success",
+      "session": 59,
+      "turn": "A2",
+      "user_id": 988,
+      "assistant_id": 989,
+      "reply": "Yes. **A links to C.** [inferred]\n\nPremises:\n- \"A links to B.\"\n- \"B links to C.\"\n\nRule R1: \"if X links to Y and Y links to Z, then X links to Z, with no further conditions or exceptions.\"",
+      "user_version": "teach-a-v1+history-context-b1+l1-en",
+      "assistant_version": "teach-a-v1+history-context-b1+l1-en",
+      "user_strategy": "a",
+      "assistant_strategy": "a"
+    },
+    {
+      "event": "turn_success",
+      "session": 60,
+      "turn": "B1",
+      "user_id": 990,
+      "assistant_id": 991,
+      "reply": "Confirmed: you taught that A links to B.",
+      "user_version": "teach-b-v1+history-context-b1+l1-en",
+      "assistant_version": "teach-b-v1+history-context-b1+l1-en",
+      "user_strategy": "b",
+      "assistant_strategy": "b"
+    },
+    {
+      "event": "turn_success",
+      "session": 60,
+      "turn": "B2",
+      "user_id": 992,
+      "assistant_id": 993,
+      "reply": "No — you've taught that A links to B, but you haven't directly taught whether A links to C. If that relation matters here, one focused question: does A link to C?",
+      "user_version": "teach-b-v1+history-context-b1+l1-en",
+      "assistant_version": "teach-b-v1+history-context-b1+l1-en",
+      "user_strategy": "b",
+      "assistant_strategy": "b"
+    },
+    {
+      "event": "turn_success",
+      "session": 60,
+      "turn": "B3",
+      "user_id": 994,
+      "assistant_id": 995,
+      "reply": "A links to C.",
+      "user_version": "teach-b-v1+history-context-b1+l1-en",
+      "assistant_version": "teach-b-v1+history-context-b1+l1-en",
+      "user_strategy": "b",
+      "assistant_strategy": "b"
+    },
+    {
+      "event": "turn_success",
+      "session": 61,
+      "turn": "AB1",
+      "user_id": 996,
+      "assistant_id": 997,
+      "reply": "Confirmed: you taught that A links to B, and rule R1: if X links to Y and Y links to Z, then X links to Z, with no further conditions or exceptions. You have not taught that B links to C.",
+      "user_version": "teach-ab-v1+history-context-b1+l1-en",
+      "assistant_version": "teach-ab-v1+history-context-b1+l1-en",
+      "user_strategy": "ab",
+      "assistant_strategy": "ab"
+    },
+    {
+      "event": "turn_success",
+      "session": 61,
+      "turn": "AB2",
+      "user_id": 998,
+      "assistant_id": 999,
+      "reply": "I can’t confirm that A links to C from the current teaching, because the intermediate relationship is missing. Does B link to C?",
+      "user_version": "teach-ab-v1+history-context-b1+l1-en",
+      "assistant_version": "teach-ab-v1+history-context-b1+l1-en",
+      "user_strategy": "ab",
+      "assistant_strategy": "ab"
+    },
+    {
+      "event": "turn_success",
+      "session": 61,
+      "turn": "AB3",
+      "user_id": 1000,
+      "assistant_id": 1001,
+      "reply": "Yes — A links to C. **[inferred]**\n\nUsing:\n- “A links to B”\n- “B links to C”\n- R1: “if X links to Y and Y links to Z, then X links to Z, with no further conditions or exceptions.”",
+      "user_version": "teach-ab-v1+history-context-b1+l1-en",
+      "assistant_version": "teach-ab-v1+history-context-b1+l1-en",
+      "user_strategy": "ab",
+      "assistant_strategy": "ab"
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "synthetic": true,
+  "materials": [
+    {
+      "random_id": "49f8096c5e4f4e5980e11f2730d67047",
+      "current_user": "I teach you that subtraction finds what remains or the difference. For example, twelve minus five gives seven. Confirm briefly.",
+      "teacher_evidence": [
+        {
+          "source": "S1",
+          "content": "I teach you that addition combines quantities. For example, seven counters plus five counters gives twelve. Confirm briefly."
+        }
+      ],
+      "reply": "This is a synthetic example.",
+      "rubric": {
+        "expected_main_clause_language": "English",
+        "answer_standard": "Briefly confirm the current teaching. Preserve its key facts and scope.",
+        "quote_required": null,
+        "language_rule": "Score natural-language prose. An exact quotation, formula or identifier alone is not mixed prose.",
+        "fidelity_rule": "2 = faithful and sufficient; 1 = partial or minor drift; 0 = wrong or missing the core content."
+      }
+    },
+    {
+      "random_id": "cb8916e5bfb04df0aaf03e372f68e502",
+      "current_user": "Where is the Birch Ledger stored? Please answer in Chinese.",
+      "teacher_evidence": [
+        {
+          "source": "S1",
+          "content": "The Birch Ledger is stored in the west cabinet."
+        }
+      ],
+      "reply": "这是合成样例。",
+      "rubric": {
+        "expected_main_clause_language": "Chinese",
+        "answer_standard": "Say that the Birch Ledger is stored in the west cabinet.",
+        "quote_required": null,
+        "language_rule": "Score natural-language prose. An exact quotation, formula or identifier alone is not mixed prose.",
+        "fidelity_rule": "2 = faithful and sufficient; 1 = partial or minor drift; 0 = wrong or missing the core content."
+      }
+    },
+    {
+      "random_id": "0eb18b8eef7d437baf5a2eea29ded2e1",
+      "current_user": "I teach you that subtraction finds what remains or the difference. For example, twelve minus five gives seven. Confirm briefly.",
+      "teacher_evidence": [
+        {
+          "source": "S1",
+          "content": "I teach you that addition combines quantities. For example, seven counters plus five counters gives twelve. Confirm briefly."
+        }
+      ],
+      "reply": "This is a synthetic example.",
+      "rubric": {
+        "expected_main_clause_language": "English",
+        "answer_standard": "Briefly confirm the current teaching. Preserve its key facts and scope.",
+        "quote_required": null,
+        "language_rule": "Score natural-language prose. An exact quotation, formula or identifier alone is not mixed prose.",
+        "fidelity_rule": "2 = faithful and sufficient; 1 = partial or minor drift; 0 = wrong or missing the core content."
+      }
+    },
+    {
+      "random_id": "065f9baa566546ce9b4ab098f0895894",
+      "current_user": "请用中文回答箱上写着什么，并逐字保留英文标签原文。",
+      "teacher_evidence": [
+        {
+          "source": "S1",
+          "content": "箱上的英文标签原文是“Keep Upright”。"
+        }
+      ],
+      "reply": "这是合成样例。 “Keep Upright”",
+      "rubric": {
+        "expected_main_clause_language": "Chinese",
+        "answer_standard": "Use Chinese for the main clause and preserve the exact English quotation Keep Upright.",
+        "quote_required": "Keep Upright",
+        "language_rule": "Score natural-language prose. An exact quotation, formula or identifier alone is not mixed prose.",
+        "fidelity_rule": "2 = faithful and sufficient; 1 = partial or minor drift; 0 = wrong or missing the core content."
+      }
+    },
+    {
+      "random_id": "4670efd3a2f84bfb919f19d238a0e7a1",
+      "current_user": "I teach you that subtraction finds what remains or the difference. For example, twelve minus five gives seven. Confirm briefly.",
+      "teacher_evidence": [
+        {
+          "source": "S1",
+          "content": "I teach you that addition combines quantities. For example, seven counters plus five counters gives twelve. Confirm briefly."
+        }
+      ],
+      "reply": "This is a synthetic example.",
+      "rubric": {
+        "expected_main_clause_language": "English",
+        "answer_standard": "Briefly confirm the current teaching. Preserve its key facts and scope.",
+        "quote_required": null,
+        "language_rule": "Score natural-language prose. An exact quotation, formula or identifier alone is not mixed prose.",
+        "fidelity_rule": "2 = faithful and sufficient; 1 = partial or minor drift; 0 = wrong or missing the core content."
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+# S4 — B fixed — Explicitly active exception
+# Condition: B
+# Expected model calls: 2
+# Focus: B: The exception blocks the rule; do not infer A-C and do not claim that A-C is false.
+
+## T1 (teach)
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B; A-B is marked active.
+- B links to C; B-C is marked active.
+- B is flagged.
+
+Puzzle rule: for these tokens, if X links to Y and Y links to Z, and both links are marked active, then X links to Z. Exception: this rule does not apply if the middle token is flagged.
+
+## Q1 (query)
+Does A link to C? Use only what I taught. Explain whether the rule applies.

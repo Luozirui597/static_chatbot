@@ -1,0 +1,15 @@
+# S2 — B fixed — Missing intermediate premise
+# Condition: B
+# Expected model calls: 2
+# Focus: B: State the missing B-C fact, do not infer A-C, and do not turn the gap statement into a teaching-content request.
+
+## T1 (teach)
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you these facts:
+- A links to B.
+
+Puzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z.
+
+## Q1 (query)
+Does A link to C? Use only what I taught. If something needed is missing, say exactly what is missing and stop.

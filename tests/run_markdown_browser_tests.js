@@ -48,12 +48,14 @@ const ALLOWED_PATHS = Object.freeze({
   "/frontend/clipboard.js": "frontend/clipboard.js",
   "/frontend/copy-controller.js": "frontend/copy-controller.js",
   "/frontend/interaction-mode.js": "frontend/interaction-mode.js",
+  "/frontend/teaching-strategy.js": "frontend/teaching-strategy.js",
   "/frontend/model-selection.js": "frontend/model-selection.js",
   "/frontend/session-profile-switch.js": "frontend/session-profile-switch.js",
   "/frontend/history-review.js": "frontend/history-review.js",
   "/frontend/markdown-renderer.js": "frontend/markdown-renderer.js",
   "/frontend/vendor/marked.umd.js": "frontend/vendor/marked.umd.js",
   "/frontend/vendor/purify.min.js": "frontend/vendor/purify.min.js",
+  "/frontend/vendor/katex.min.js": "frontend/vendor/katex.min.js",
   "/tests/browser/markdown-renderer.integration.html":
     "tests/browser/markdown-renderer.integration.html",
   "/tests/browser/markdown-renderer.integration.tests.js":
@@ -643,7 +645,7 @@ async function captureVisualViewport(port, width, height, outputPath) {
   }
 }
 
-function validateReport(label, report, minimumTotal) {
+function validateReport(label, report, minimumTotal, requiredNames) {
   const problems = [];
 
   if (report === null ||
@@ -700,6 +702,20 @@ function validateReport(label, report, minimumTotal) {
   } else if (report.failures.length > 0) {
     problems.push(label + ": " + JSON.stringify(report.failures, null, 2));
   }
+  if (Array.isArray(requiredNames) && requiredNames.length > 0) {
+    if (Array.isArray(report.executedNames) === false) {
+      problems.push(label + ": executedNames array is missing");
+    } else {
+      for (var requiredIndex = 0;
+           requiredIndex < requiredNames.length;
+           requiredIndex += 1) {
+        if (report.executedNames.indexOf(requiredNames[requiredIndex]) < 0) {
+          problems.push(label + ": required test did not execute: " +
+            requiredNames[requiredIndex]);
+        }
+      }
+    }
+  }
 
   return problems;
 }
@@ -748,26 +764,60 @@ async function main() {
 
     const desktopLayout = await captureVisualViewport(
       port, 1280, 900,
-      path.join(SCREENSHOT_DIR, "markdown-desktop.png")
+      path.join(SCREENSHOT_DIR, "markdown-math-desktop.png")
     );
     printReport("layout-desktop", desktopLayout);
 
     const narrowLayout = await captureVisualViewport(
       port, 375, 812,
-      path.join(SCREENSHOT_DIR, "markdown-narrow.png")
+      path.join(SCREENSHOT_DIR, "markdown-math-narrow.png")
     );
     printReport("layout-narrow", narrowLayout);
 
     const problems = [];
+    var integrationRequired = [
+      "inline and display math render MathML",
+      "math structures: fraction, scripts, hat, root and sums",
+      "317 and 323 math fixtures",
+      "math in lists and tables",
+      "math excluded in code, link targets and raw HTML",
+      "unclosed and scan-limit formulas fall back whole message",
+      "excluded unclosed delimiters do not fail whole message",
+      "trust commands fall back locally without injected attributes/resources",
+      "math output has no placeholders and reparses as MathML",
+      "math limits and malformed formulas fall back locally",
+      "placeholder limit and whole fallback do not leak state",
+      "missing KaTeX falls back per formula without disabling Markdown",
+      "final math count corruption falls back whole message",
+      "excluded math does not consume valid budgets",
+      "raw HTML boundaries do not swallow outside math",
+      "escaped delimiters remain ordinary Markdown",
+      "leading escaped delimiters and block contexts",
+      "formula text containing HTML tags remains MathML",
+      "nested Markdown inherits raw HTML context",
+      "raw HTML context is isolated between blocks and cells",
+      "link and image HTML state does not leak outward",
+      "link and image HTML state is isolated across scopes"
+    ];
+    var appRequired = [
+      "history assistant math renders as MathML",
+      "actual copy button copies the original Markdown",
+      "new assistant math uses the same render entry"
+    ];
+    var visualRequired = [
+      "long math display scrolls inside its own container"
+    ];
     problems.push.apply(problems, validateReport(
-      "integration", integration, 27
+      "integration", integration, 49, integrationRequired
     ));
-    problems.push.apply(problems, validateReport("app", app, 11));
     problems.push.apply(problems, validateReport(
-      "layout-desktop", desktopLayout, 10
+      "app", app, 13, appRequired
     ));
     problems.push.apply(problems, validateReport(
-      "layout-narrow", narrowLayout, 10
+      "layout-desktop", desktopLayout, 11, visualRequired
+    ));
+    problems.push.apply(problems, validateReport(
+      "layout-narrow", narrowLayout, 11, visualRequired
     ));
 
     if (problems.length > 0) {

@@ -965,6 +965,32 @@ body {
   text-decoration: line-through;
 }
 
+/* ---- MathML-only assistant formulas --------------------------------- */
+/* KaTeX is used for MathML generation only.  The app owns these wrappers;
+   KaTeX's HTML/CSS output is intentionally not loaded. */
+
+.message-content--markdown .math-inline {
+  display: inline;
+}
+
+.message-content--markdown .math-display {
+  display: block;
+  max-width: 100%;
+  margin: 0.55em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.message-content--markdown .math-display math {
+  display: block;
+}
+
+.message-content--markdown .math-fallback {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ---- Message actions (copy button) ---------------------------------- */
 
 .message-actions {

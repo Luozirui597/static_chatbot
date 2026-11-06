@@ -1,0 +1,41 @@
+{
+  "schema_version": "strategy-comparison-branches-v1",
+  "selection": "manual semantic review only; never inferred from punctuation or keywords",
+  "I2": {
+    "bc": {
+      "content": "I teach you one missing fact: B links to C. The rule I taught earlier still applies. Using the facts and rule I have taught, answer the original question: Does A link to C?",
+      "request_type": "missing_relation",
+      "supplies": "B links to C"
+    },
+    "direct_ac": {
+      "content": "I now teach you directly: A links to C. Using what I have taught, answer the original question: Does A link to C?",
+      "request_type": "direct_target",
+      "supplies": "A links to C"
+    },
+    "no_extra": {
+      "content": "I am not adding any fact or rule. Using only what I have already taught, answer the original question: Does A link to C?",
+      "request_type": "no_supplement",
+      "supplies": null
+    }
+  },
+  "I3": {
+    "rule_supply": {
+      "content": "I teach you the missing rule: for these tokens, if X links to Y and Y links to Z, then X links to Z. Using the facts and rule I have taught, answer the original question: Does A link to C?",
+      "request_type": "missing_rule",
+      "supplies": "combination rule"
+    },
+    "direct_ac": {
+      "content": "I now teach you directly: A links to C. Using what I have taught, answer the original question: Does A link to C?",
+      "request_type": "direct_target",
+      "supplies": "A links to C"
+    },
+    "no_extra": {
+      "content": "I am not adding any fact or rule. Using only what I have already taught, answer the original question: Does A link to C?",
+      "request_type": "no_supplement",
+      "supplies": null
+    }
+  },
+  "none": {
+    "description": "No actual supplement request; end after Q1. No T2."
+  }
+}

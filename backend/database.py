@@ -279,6 +279,7 @@ def run_migrations(bind: Engine) -> None:
         _run_history_review_boundary_migration(conn)
         _run_history_review_storage_migration(conn)
         _run_history_review_error_details_migration(conn)
+        _run_teaching_strategy_storage_migration(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +306,17 @@ SessionLocal = sessionmaker(
 # ---------------------------------------------------------------------------
 # Table creation
 # ---------------------------------------------------------------------------
+
+
+def _run_teaching_strategy_storage_migration(conn) -> None:
+    from sqlalchemy import text
+    from backend.models import SessionTeachingStrategy, MessageTeachingStrategy
+
+    SessionTeachingStrategy.__table__.create(conn, checkfirst=True)
+    MessageTeachingStrategy.__table__.create(conn, checkfirst=True)
+    conn.execute(text(
+        "INSERT OR IGNORE INTO schema_migrations(version) VALUES ('teaching_strategies_v1')"
+    ))
 
 
 def create_tables(bind: Engine | None = None) -> None:

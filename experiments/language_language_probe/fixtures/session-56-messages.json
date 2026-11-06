@@ -1,0 +1,494 @@
+[
+  {
+    "id": 842,
+    "role": "user",
+    "content": "I teach you that addition combines quantities. For example, seven counters plus five counters gives twelve. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 843,
+    "role": "assistant",
+    "content": "Okay — addition combines quantities; seven counters plus five counters gives twelve.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 844,
+    "role": "user",
+    "content": "I teach you that subtraction finds what remains or the difference. For example, twelve minus five gives seven. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 845,
+    "role": "assistant",
+    "content": "好，减法用来求剩余量或差值；十二减五得七。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 846,
+    "role": "user",
+    "content": "I teach you that multiplication of whole numbers can count equal groups. Four groups of three contain twelve objects. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 847,
+    "role": "assistant",
+    "content": "Okay — multiplication can count equal groups; four groups of three contain twelve objects.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 848,
+    "role": "user",
+    "content": "I teach you that division can share a total equally. Twelve objects shared among four people gives each person three. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 849,
+    "role": "assistant",
+    "content": "按你教的，除法可以将总数平均分配；十二个物品分给四个人，每人得到三个。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 850,
+    "role": "user",
+    "content": "I teach you that the divisor is the number we divide by, while the quotient is the result. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 851,
+    "role": "assistant",
+    "content": "Got it: the divisor is the number we divide by, and the quotient is the result.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 852,
+    "role": "user",
+    "content": "I teach you our divisor-zero rule. We call it the Violet Turnstile in this course. It means a divisor of zero is forbidden and division by it is undefined. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 853,
+    "role": "assistant",
+    "content": "Confirmed: under the Violet Turnstile rule, a divisor of zero is forbidden, and division by zero is undefined.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 854,
+    "role": "user",
+    "content": "I teach you that operations inside parentheses come first. For example, two times the sum of three and four gives fourteen. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 855,
+    "role": "assistant",
+    "content": "Understood: operations inside parentheses come first; for example, \\(2 \\times (3+4)=14\\).",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 856,
+    "role": "user",
+    "content": "I teach you that a fraction describes a part of a whole. In three fourths, three is the numerator and four is the denominator. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 857,
+    "role": "assistant",
+    "content": "Okay — a fraction describes part of a whole; in three fourths, three is the numerator and four is the denominator.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 858,
+    "role": "user",
+    "content": "I teach you that equivalent fractions name the same quantity. One half and two fourths are equivalent. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 859,
+    "role": "assistant",
+    "content": "Okay — equivalent fractions name the same quantity, and one half and two fourths are equivalent.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 860,
+    "role": "user",
+    "content": "I teach you that fractions with the same denominator can be added by adding their numerators. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 861,
+    "role": "assistant",
+    "content": "Okay — fractions with the same denominator can be added by adding their numerators.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 862,
+    "role": "user",
+    "content": "I teach you that decimals use place value. In 2.35, the three represents tenths and the five represents hundredths. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 863,
+    "role": "assistant",
+    "content": "Okay — decimals use place value: in 2.35, the 3 represents tenths and the 5 represents hundredths.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 864,
+    "role": "user",
+    "content": "I teach you that a percent is a number out of one hundred. Twenty-five percent is one quarter. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 865,
+    "role": "assistant",
+    "content": "明白：百分数是以一百为基准的数，25% 等于四分之一。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 866,
+    "role": "user",
+    "content": "I teach you that a negative number sits to the left of zero on the number line. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 867,
+    "role": "assistant",
+    "content": "Understood: a negative number is to the left of zero on the number line.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 868,
+    "role": "user",
+    "content": "I teach you that subtracting a negative has the same effect as adding its opposite. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 869,
+    "role": "assistant",
+    "content": "Okay — subtracting a negative has the same effect as adding its opposite.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 870,
+    "role": "user",
+    "content": "I teach you that a power such as two cubed means multiplying three copies of two. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 871,
+    "role": "assistant",
+    "content": "Okay — two cubed means multiplying three copies of two.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 872,
+    "role": "user",
+    "content": "I teach you that the square root of nine is three because three squared is nine. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 873,
+    "role": "assistant",
+    "content": "Confirmed: the square root of nine is three, because three squared is nine.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 874,
+    "role": "user",
+    "content": "I teach you that a variable is a symbol for a value that can be unknown or can vary. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 875,
+    "role": "assistant",
+    "content": "好，变量是表示一个值的符号，这个值可以是未知的，也可以变化。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 876,
+    "role": "user",
+    "content": "I teach you that an equation stays balanced if we add the same value to both sides. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 877,
+    "role": "assistant",
+    "content": "Got it — adding the same value to both sides keeps an equation balanced.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 878,
+    "role": "user",
+    "content": "I teach you that distributing two over a sum gives 2(x+3)=2x+6. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 879,
+    "role": "assistant",
+    "content": "Okay — distributing 2 over the sum gives 2(x+3) = 2x+6.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 880,
+    "role": "user",
+    "content": "I teach you that a coordinate pair gives a horizontal position followed by a vertical position. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 881,
+    "role": "assistant",
+    "content": "好，坐标对是先给水平位置，再给垂直位置。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 882,
+    "role": "user",
+    "content": "I teach you that slope measures the change in vertical position per unit of horizontal change. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 883,
+    "role": "assistant",
+    "content": "Okay — slope measures the change in vertical position per unit of horizontal change.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 884,
+    "role": "user",
+    "content": "I teach you that the graph of y=2x+1 is a straight line with slope two and vertical intercept one. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 885,
+    "role": "assistant",
+    "content": "Understood: the graph of y = 2x + 1 is a straight line, with slope two and vertical intercept one.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 886,
+    "role": "user",
+    "content": "I teach you that a function assigns each allowed input exactly one output. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 887,
+    "role": "assistant",
+    "content": "Got it — a function gives exactly one output for each allowed input.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 888,
+    "role": "user",
+    "content": "I teach you that f(x)=x squared maps a negative input and its positive opposite to the same output. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 889,
+    "role": "assistant",
+    "content": "Confirmed: \\(f(x)=x^2\\) maps a negative input and its positive opposite to the same output.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 890,
+    "role": "user",
+    "content": "I teach you that a secant line crosses a curve at two chosen points and describes the average change between them. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 891,
+    "role": "assistant",
+    "content": "Got it — a secant line crosses a curve at two chosen points and describes the average change between them.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 892,
+    "role": "user",
+    "content": "I teach you that a tangent describes the direction of a smooth curve at a point. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 893,
+    "role": "assistant",
+    "content": "Got it — a tangent describes the direction of a smooth curve at a point.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 894,
+    "role": "user",
+    "content": "I teach you that a limit concerns what a quantity approaches, which can differ from its value at the point. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 895,
+    "role": "assistant",
+    "content": "Understood: a limit concerns what a quantity approaches, and that can differ from its value at the point.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 896,
+    "role": "user",
+    "content": "I teach you that we can estimate a limit by using nearby input values on both sides. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 897,
+    "role": "assistant",
+    "content": "Okay — a limit can be estimated using nearby input values on both sides.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 898,
+    "role": "user",
+    "content": "I teach you that the difference quotient for a function is the change in output divided by the nonzero change in input. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 899,
+    "role": "assistant",
+    "content": "I understand: the difference quotient is the change in output divided by the nonzero change in input.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 900,
+    "role": "user",
+    "content": "I teach you that the derivative is the limit of the difference quotient as the input change approaches zero. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 901,
+    "role": "assistant",
+    "content": "Okay — the derivative is the limit of the difference quotient as the input change approaches zero.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 902,
+    "role": "user",
+    "content": "I teach you that the derivative of a constant function is zero because the output does not vary. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 903,
+    "role": "assistant",
+    "content": "Okay — a constant function has derivative zero because its output does not vary.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 904,
+    "role": "user",
+    "content": "I teach you that the derivative of x squared is 2x, so its slope at x=3 is six. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 905,
+    "role": "assistant",
+    "content": "Okay — the derivative of x squared is 2x, so its slope at x=3 is six.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 906,
+    "role": "user",
+    "content": "I teach you that a sum can be differentiated term by term when both derivatives exist. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 907,
+    "role": "assistant",
+    "content": "Okay — a sum can be differentiated term by term when both derivatives exist.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 908,
+    "role": "user",
+    "content": "I teach you that a positive derivative on an interval indicates an increasing function there. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 909,
+    "role": "assistant",
+    "content": "Okay — a positive derivative on an interval indicates that the function is increasing there.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 910,
+    "role": "user",
+    "content": "I teach you that a negative derivative on an interval indicates a decreasing function there. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 911,
+    "role": "assistant",
+    "content": "好的，按你教的：在某个区间上导数为负，表示函数在该区间上递减。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 912,
+    "role": "user",
+    "content": "I teach you that the derivative of position with respect to time is velocity. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 913,
+    "role": "assistant",
+    "content": "Understood: the derivative of position with respect to time is velocity.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 914,
+    "role": "user",
+    "content": "I teach you that a definite integral describes signed accumulation over an interval. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 915,
+    "role": "assistant",
+    "content": "Okay — a definite integral describes signed accumulation over an interval.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 916,
+    "role": "user",
+    "content": "I teach you that rectangular approximations estimate an integral by adding small contributions across an interval. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 917,
+    "role": "assistant",
+    "content": "Okay — rectangular approximations estimate an integral by adding small contributions across the interval.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 918,
+    "role": "user",
+    "content": "I teach you that an antiderivative of 2x is x squared plus a constant. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 919,
+    "role": "assistant",
+    "content": "明白了：2x 的一个原函数是 x 的平方加上一个常数。",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 920,
+    "role": "user",
+    "content": "I teach you that an integral of a continuous function can be evaluated by taking the difference of an antiderivative at the endpoints. Confirm briefly.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 921,
+    "role": "assistant",
+    "content": "Understood: for a continuous function, the integral can be evaluated as the difference of an antiderivative at the endpoints.",
+    "prompt_version_snapshot": "receive-teaching-v7+history-context-b1"
+  },
+  {
+    "id": 922,
+    "role": "user",
+    "content": "What classroom nickname did we use for the divisor-zero rule? Give the nickname and state the rule.",
+    "prompt_version_snapshot": "receive-teaching-v7+programmatic-history-v1"
+  },
+  {
+    "id": 923,
+    "role": "assistant",
+    "content": "The classroom nickname is **the Violet Turnstile**. The rule is: **a divisor of zero is forbidden, and division by zero is undefined** [message 852].",
+    "prompt_version_snapshot": "receive-teaching-v7+programmatic-history-v1"
+  }
+]

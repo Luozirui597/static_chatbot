@@ -321,10 +321,8 @@ class TestSendMessageSuccess:
 
         msgs = spy_llm.calls[1]  # second call
         assert [m["role"] for m in msgs] == ["system", "user", "user"]
-        assert msgs[0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
         assert msgs[-1] == {"role": "user", "content": "second question"}
         background = json.loads(msgs[1]["content"])
         assert background["type"] == "receive_teaching_history_background"
@@ -342,10 +340,8 @@ class TestSendMessageSuccess:
             json={"message": "hello"},
         )
 
-        assert spy_llm.calls[0][0] == {
-            "role": "system",
-            "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert spy_llm.calls[0][0]["role"] == "system"
+        assert spy_llm.calls[0][0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
 
     def test_current_user_is_last_llm_message(self, client, spy_llm):
         """The current user message is the last one sent to the LLM."""
@@ -743,7 +739,8 @@ class TestSessionIsolation:
         msgs = spy_llm.calls[1]
         contents = [m["content"] for m in msgs]
         assert "msg A" not in contents
-        assert contents == [RECEIVE_TEACHING_PROMPT, "msg B"]
+        assert contents[0].startswith(RECEIVE_TEACHING_PROMPT)
+        assert contents[1:] == ["msg B"]
 
 
 # ============================================================================
@@ -2174,3 +2171,233 @@ class TestSwitchProfilePydantic422SkipsService:
         )
         assert resp.status_code == 422
         assert self.service_calls["n"] == 0
+
+
+class TestReplyLanguageConstraints:
+    def test_422_before_save_for_unsupported_language(
+        self, client, spy_llm, test_session_factory
+    ):
+        session_id = _create_session(client)
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "Please answer in French."},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "receive_reply_language_unsupported"
+        assert spy_llm.calls == []
+        db = test_session_factory()
+        count = db.query(Message).filter(Message.session_id == session_id).count()
+        db.close()
+        assert count == 0
+
+    def test_422_keeps_draft_frontend_contract_is_structured(
+        self, client, spy_llm
+    ):
+        session_id = _create_session(client)
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "Please answer in English or Chinese."},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "receive_reply_language_conflict"
+        assert spy_llm.calls == []
+
+    def test_422_before_save_for_ambiguous_mixed_language(
+        self, client, spy_llm, test_session_factory
+    ):
+        session_id = _create_session(client)
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "Please continue. 请继续。"},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "receive_reply_language_ambiguous"
+        assert spy_llm.calls == []
+        db = test_session_factory()
+        assert db.query(Message).filter(Message.session_id == session_id).count() == 0
+        db.close()
+
+    def test_502_keeps_user_and_no_assistant_for_wrong_language(
+        self, client, spy_llm, test_session_factory
+    ):
+        session_id = _create_session(client)
+        spy_llm.response = "This is an English answer."
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "请告诉我这条规则。"},
+        )
+        assert response.status_code == 502
+        detail = response.json()["detail"]
+        assert detail["code"] == "receive_reply_language_mismatch"
+        assert "未保存" in detail["message"]
+        db = test_session_factory()
+        rows = (
+            db.query(Message)
+            .filter(Message.session_id == session_id)
+            .order_by(Message.id.asc())
+            .all()
+        )
+        db.close()
+        assert [row.role for row in rows] == ["user"]
+        assert rows[0].prompt_version_snapshot.endswith("+l1-zh")
+        assert len(spy_llm.calls) == 1
+
+    def test_ordinary_receive_appends_one_instruction_and_records_version(
+        self, client, spy_llm
+    ):
+        session_id = _create_session(client)
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "Explain recursion."},
+        )
+        assert response.status_code == 200
+        system = spy_llm.calls[0][0]
+        assert system["role"] == "system"
+        assert system["content"].rstrip().endswith(
+            "do not translate them."
+        )
+        assert system["content"].count("Reply in English.") == 1
+        body = response.json()
+        assert body["user_message"]["prompt_version_snapshot"].endswith("+l1-en")
+        assert body["assistant_message"]["prompt_version_snapshot"].endswith("+l1-en")
+
+
+class TestReplyLanguageWindow:
+    def _add_history(self, factory, session_id, contents):
+        db = factory()
+        for content in contents:
+            db.add(
+                Message(
+                    session_id=session_id,
+                    role="user",
+                    content=content,
+                    interaction_mode_snapshot="receive_teaching",
+                    prompt_version_snapshot="receive-teaching-v7+history-context-b1",
+                    llm_profile_id_snapshot="fake",
+                    llm_profile_kind_snapshot="fake",
+                    llm_model_snapshot="fake",
+                )
+            )
+        db.commit()
+        db.close()
+
+    def test_preference_outside_the_20_message_window_is_ignored(
+        self, client, spy_llm, test_session_factory
+    ):
+        session_id = _create_session(client)
+        history = ["Please use Chinese from now on."] + [
+            f"neutral historical teaching {i}" for i in range(20)
+        ]
+        self._add_history(test_session_factory, session_id, history)
+        spy_llm.response = "This is an English reply."
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "Please continue."},
+        )
+        assert response.status_code == 200, response.text
+        system = spy_llm.calls[0][0]["content"]
+        assert "Reply in English." in system
+        assert "请用中文回复。" not in system
+        assert response.json()["user_message"]["prompt_version_snapshot"].endswith(
+            "+l1-en"
+        )
+
+    def test_preference_inside_the_20_message_window_is_used(
+        self, client, spy_llm, test_session_factory
+    ):
+        session_id = _create_session(client)
+        history = ["Please use Chinese from now on."] + [
+            f"neutral historical teaching {i}" for i in range(19)
+        ]
+        self._add_history(test_session_factory, session_id, history)
+        spy_llm.response = "这是中文回复。"
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "Please continue."},
+        )
+        assert response.status_code == 200, response.text
+        system = spy_llm.calls[0][0]["content"]
+        assert "请用中文回复。" in system
+        assert "Reply in English." not in system
+        assert response.json()["user_message"]["prompt_version_snapshot"].endswith(
+            "+l1-zh"
+        )
+
+
+class TestReplyLanguageScopedAndFormulaTurns:
+    def test_scoped_turn_then_persistent_next_turn(
+        self, client, spy_llm, test_session_factory
+    ):
+        session_id = _create_session(client)
+        spy_llm.response = "这是中文回答。"
+        first = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "这次请用中文回答，今后请用英文回复。"},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["user_message"]["prompt_version_snapshot"].endswith(
+            "+l1-zh"
+        )
+        spy_llm.response = "This is an English answer."
+        second = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "Please continue."},
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["user_message"]["prompt_version_snapshot"].endswith(
+            "+l1-en"
+        )
+        assert len(spy_llm.calls) == 2
+        assert "请用中文回复。" in spy_llm.calls[0][0]["content"]
+        assert "Reply in English." in spy_llm.calls[1][0]["content"]
+        db = test_session_factory()
+        assert db.query(Message).filter(Message.session_id == session_id).count() == 4
+        db.close()
+
+    def test_pure_formula_uses_visible_history_language(
+        self, client, spy_llm, test_session_factory
+    ):
+        session_id = _create_session(client)
+        db = test_session_factory()
+        db.add(
+            Message(
+                session_id=session_id,
+                role="user",
+                content="好。",
+                interaction_mode_snapshot="receive_teaching",
+                prompt_version_snapshot="receive-teaching-v7+history-context-b1",
+                llm_profile_id_snapshot="fake",
+                llm_profile_kind_snapshot="fake",
+                llm_model_snapshot="fake",
+            )
+        )
+        db.commit()
+        db.close()
+        spy_llm.response = "好。"
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "$x=1$"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["user_message"]["prompt_version_snapshot"].endswith(
+            "+l1-zh"
+        )
+        assert "请用中文回复。" in spy_llm.calls[0][0]["content"]
+        db = test_session_factory()
+        assert db.query(Message).filter(Message.session_id == session_id).count() == 3
+        db.close()
+
+    def test_mixed_conflict_422_has_no_rows_or_model_calls(
+        self, client, spy_llm, test_session_factory
+    ):
+        session_id = _create_session(client)
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"message": "Please answer in English or Chinese."},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "receive_reply_language_conflict"
+        assert spy_llm.calls == []
+        db = test_session_factory()
+        assert db.query(Message).filter(Message.session_id == session_id).count() == 0
+        db.close()

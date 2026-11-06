@@ -248,15 +248,14 @@ class TestPromptAndSnapshots:
             "receive-teaching-v7+history-context-b1"
         )
         assert user["prompt_version_snapshot"] == (
-            "receive-teaching-v7+history-context-b1"
+            "receive-teaching-v7+history-context-b1+l1-en"
         )
         assert assistant["prompt_version_snapshot"] == (
-            "receive-teaching-v7+history-context-b1"
+            "receive-teaching-v7+history-context-b1+l1-en"
         )
 
-        assert spy_llm.calls[0][0] == {
-            "role": "system", "content": RECEIVE_TEACHING_PROMPT,
-        }
+        assert spy_llm.calls[0][0]["role"] == "system"
+        assert spy_llm.calls[0][0]["content"].startswith(RECEIVE_TEACHING_PROMPT)
 
         db = test_session_factory()
         try:
@@ -266,7 +265,9 @@ class TestPromptAndSnapshots:
             assert len(rows) == 2
             for row in rows:
                 assert row.interaction_mode_snapshot == RECEIVE_TEACHING_MODE
-                assert row.prompt_version_snapshot == RECEIVE_TEACHING_PROMPT_VERSION
+                assert row.prompt_version_snapshot == (
+                    RECEIVE_TEACHING_PROMPT_VERSION + "+l1-en"
+                )
         finally:
             db.close()
 
@@ -316,7 +317,9 @@ class TestPromptAndSnapshots:
                 assert len(rows) == 1
                 assert rows[0].role == "user"
                 assert rows[0].interaction_mode_snapshot == RECEIVE_TEACHING_MODE
-                assert rows[0].prompt_version_snapshot == RECEIVE_TEACHING_PROMPT_VERSION
+                assert rows[0].prompt_version_snapshot == (
+                    RECEIVE_TEACHING_PROMPT_VERSION + "+l1-en"
+                )
             finally:
                 db.close()
         finally:
@@ -919,7 +922,7 @@ class TestReceiveTeachingSnapshotCompatibility:
                     RECEIVE_TEACHING_MODE
                 )
                 assert new_message.prompt_version_snapshot == (
-                    RECEIVE_TEACHING_PROMPT_VERSION
+                    RECEIVE_TEACHING_PROMPT_VERSION + "+l1-en"
                 )
         finally:
             db.close()

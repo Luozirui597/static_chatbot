@@ -184,6 +184,7 @@ class LLMCallDiagnostics:
     error_category: ErrorCategory | None = None
 
     exception_type: str | None = None
+    transport_started: bool | None = None
     http_status: int | None = None
     retry_after_seconds: float | None = None
     timeout_configured_seconds: float | None = None

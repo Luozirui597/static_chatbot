@@ -1,0 +1,1059 @@
+{
+  "schema_version": "strategy-comparison-run-plan-v1",
+  "seed": 20261106,
+  "conditions": [
+    "standard",
+    "a",
+    "b",
+    "ab"
+  ],
+  "blocks": [
+    {
+      "block_id": "S1-r1",
+      "task_id": "S1",
+      "repeat": 1,
+      "order": [
+        "a",
+        "b",
+        "ab",
+        "standard"
+      ]
+    },
+    {
+      "block_id": "S1-r2",
+      "task_id": "S1",
+      "repeat": 2,
+      "order": [
+        "b",
+        "ab",
+        "standard",
+        "a"
+      ]
+    },
+    {
+      "block_id": "S1-r3",
+      "task_id": "S1",
+      "repeat": 3,
+      "order": [
+        "b",
+        "standard",
+        "a",
+        "ab"
+      ]
+    },
+    {
+      "block_id": "S2-r1",
+      "task_id": "S2",
+      "repeat": 1,
+      "order": [
+        "a",
+        "b",
+        "ab",
+        "standard"
+      ]
+    },
+    {
+      "block_id": "S2-r2",
+      "task_id": "S2",
+      "repeat": 2,
+      "order": [
+        "a",
+        "ab",
+        "standard",
+        "b"
+      ]
+    },
+    {
+      "block_id": "S2-r3",
+      "task_id": "S2",
+      "repeat": 3,
+      "order": [
+        "a",
+        "standard",
+        "ab",
+        "b"
+      ]
+    },
+    {
+      "block_id": "S3-r1",
+      "task_id": "S3",
+      "repeat": 1,
+      "order": [
+        "a",
+        "standard",
+        "ab",
+        "b"
+      ]
+    },
+    {
+      "block_id": "S3-r2",
+      "task_id": "S3",
+      "repeat": 2,
+      "order": [
+        "ab",
+        "standard",
+        "b",
+        "a"
+      ]
+    },
+    {
+      "block_id": "S3-r3",
+      "task_id": "S3",
+      "repeat": 3,
+      "order": [
+        "ab",
+        "a",
+        "b",
+        "standard"
+      ]
+    },
+    {
+      "block_id": "S4-r1",
+      "task_id": "S4",
+      "repeat": 1,
+      "order": [
+        "ab",
+        "standard",
+        "b",
+        "a"
+      ]
+    },
+    {
+      "block_id": "S4-r2",
+      "task_id": "S4",
+      "repeat": 2,
+      "order": [
+        "ab",
+        "b",
+        "a",
+        "standard"
+      ]
+    },
+    {
+      "block_id": "S4-r3",
+      "task_id": "S4",
+      "repeat": 3,
+      "order": [
+        "a",
+        "standard",
+        "b",
+        "ab"
+      ]
+    },
+    {
+      "block_id": "S5-r1",
+      "task_id": "S5",
+      "repeat": 1,
+      "order": [
+        "b",
+        "standard",
+        "ab",
+        "a"
+      ]
+    },
+    {
+      "block_id": "S5-r2",
+      "task_id": "S5",
+      "repeat": 2,
+      "order": [
+        "ab",
+        "a",
+        "standard",
+        "b"
+      ]
+    },
+    {
+      "block_id": "S5-r3",
+      "task_id": "S5",
+      "repeat": 3,
+      "order": [
+        "b",
+        "a",
+        "standard",
+        "ab"
+      ]
+    },
+    {
+      "block_id": "S6-r1",
+      "task_id": "S6",
+      "repeat": 1,
+      "order": [
+        "b",
+        "standard",
+        "ab",
+        "a"
+      ]
+    },
+    {
+      "block_id": "S6-r2",
+      "task_id": "S6",
+      "repeat": 2,
+      "order": [
+        "b",
+        "ab",
+        "standard",
+        "a"
+      ]
+    },
+    {
+      "block_id": "S6-r3",
+      "task_id": "S6",
+      "repeat": 3,
+      "order": [
+        "a",
+        "ab",
+        "b",
+        "standard"
+      ]
+    },
+    {
+      "block_id": "I2-r1",
+      "task_id": "I2",
+      "repeat": 1,
+      "order": [
+        "standard",
+        "b",
+        "ab",
+        "a"
+      ]
+    },
+    {
+      "block_id": "I2-r2",
+      "task_id": "I2",
+      "repeat": 2,
+      "order": [
+        "ab",
+        "b",
+        "a",
+        "standard"
+      ]
+    },
+    {
+      "block_id": "I2-r3",
+      "task_id": "I2",
+      "repeat": 3,
+      "order": [
+        "ab",
+        "standard",
+        "b",
+        "a"
+      ]
+    },
+    {
+      "block_id": "I3-r1",
+      "task_id": "I3",
+      "repeat": 1,
+      "order": [
+        "a",
+        "b",
+        "standard",
+        "ab"
+      ]
+    },
+    {
+      "block_id": "I3-r2",
+      "task_id": "I3",
+      "repeat": 2,
+      "order": [
+        "ab",
+        "standard",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "block_id": "I3-r3",
+      "task_id": "I3",
+      "repeat": 3,
+      "order": [
+        "b",
+        "ab",
+        "standard",
+        "a"
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "session_key": "S1-r1-a",
+      "block_id": "S1-r1",
+      "task_id": "S1",
+      "strategy_id": "a",
+      "repeat": 1,
+      "order": 1
+    },
+    {
+      "session_key": "S1-r1-b",
+      "block_id": "S1-r1",
+      "task_id": "S1",
+      "strategy_id": "b",
+      "repeat": 1,
+      "order": 2
+    },
+    {
+      "session_key": "S1-r1-ab",
+      "block_id": "S1-r1",
+      "task_id": "S1",
+      "strategy_id": "ab",
+      "repeat": 1,
+      "order": 3
+    },
+    {
+      "session_key": "S1-r1-standard",
+      "block_id": "S1-r1",
+      "task_id": "S1",
+      "strategy_id": "standard",
+      "repeat": 1,
+      "order": 4
+    },
+    {
+      "session_key": "S1-r2-b",
+      "block_id": "S1-r2",
+      "task_id": "S1",
+      "strategy_id": "b",
+      "repeat": 2,
+      "order": 1
+    },
+    {
+      "session_key": "S1-r2-ab",
+      "block_id": "S1-r2",
+      "task_id": "S1",
+      "strategy_id": "ab",
+      "repeat": 2,
+      "order": 2
+    },
+    {
+      "session_key": "S1-r2-standard",
+      "block_id": "S1-r2",
+      "task_id": "S1",
+      "strategy_id": "standard",
+      "repeat": 2,
+      "order": 3
+    },
+    {
+      "session_key": "S1-r2-a",
+      "block_id": "S1-r2",
+      "task_id": "S1",
+      "strategy_id": "a",
+      "repeat": 2,
+      "order": 4
+    },
+    {
+      "session_key": "S1-r3-b",
+      "block_id": "S1-r3",
+      "task_id": "S1",
+      "strategy_id": "b",
+      "repeat": 3,
+      "order": 1
+    },
+    {
+      "session_key": "S1-r3-standard",
+      "block_id": "S1-r3",
+      "task_id": "S1",
+      "strategy_id": "standard",
+      "repeat": 3,
+      "order": 2
+    },
+    {
+      "session_key": "S1-r3-a",
+      "block_id": "S1-r3",
+      "task_id": "S1",
+      "strategy_id": "a",
+      "repeat": 3,
+      "order": 3
+    },
+    {
+      "session_key": "S1-r3-ab",
+      "block_id": "S1-r3",
+      "task_id": "S1",
+      "strategy_id": "ab",
+      "repeat": 3,
+      "order": 4
+    },
+    {
+      "session_key": "S2-r1-a",
+      "block_id": "S2-r1",
+      "task_id": "S2",
+      "strategy_id": "a",
+      "repeat": 1,
+      "order": 1
+    },
+    {
+      "session_key": "S2-r1-b",
+      "block_id": "S2-r1",
+      "task_id": "S2",
+      "strategy_id": "b",
+      "repeat": 1,
+      "order": 2
+    },
+    {
+      "session_key": "S2-r1-ab",
+      "block_id": "S2-r1",
+      "task_id": "S2",
+      "strategy_id": "ab",
+      "repeat": 1,
+      "order": 3
+    },
+    {
+      "session_key": "S2-r1-standard",
+      "block_id": "S2-r1",
+      "task_id": "S2",
+      "strategy_id": "standard",
+      "repeat": 1,
+      "order": 4
+    },
+    {
+      "session_key": "S2-r2-a",
+      "block_id": "S2-r2",
+      "task_id": "S2",
+      "strategy_id": "a",
+      "repeat": 2,
+      "order": 1
+    },
+    {
+      "session_key": "S2-r2-ab",
+      "block_id": "S2-r2",
+      "task_id": "S2",
+      "strategy_id": "ab",
+      "repeat": 2,
+      "order": 2
+    },
+    {
+      "session_key": "S2-r2-standard",
+      "block_id": "S2-r2",
+      "task_id": "S2",
+      "strategy_id": "standard",
+      "repeat": 2,
+      "order": 3
+    },
+    {
+      "session_key": "S2-r2-b",
+      "block_id": "S2-r2",
+      "task_id": "S2",
+      "strategy_id": "b",
+      "repeat": 2,
+      "order": 4
+    },
+    {
+      "session_key": "S2-r3-a",
+      "block_id": "S2-r3",
+      "task_id": "S2",
+      "strategy_id": "a",
+      "repeat": 3,
+      "order": 1
+    },
+    {
+      "session_key": "S2-r3-standard",
+      "block_id": "S2-r3",
+      "task_id": "S2",
+      "strategy_id": "standard",
+      "repeat": 3,
+      "order": 2
+    },
+    {
+      "session_key": "S2-r3-ab",
+      "block_id": "S2-r3",
+      "task_id": "S2",
+      "strategy_id": "ab",
+      "repeat": 3,
+      "order": 3
+    },
+    {
+      "session_key": "S2-r3-b",
+      "block_id": "S2-r3",
+      "task_id": "S2",
+      "strategy_id": "b",
+      "repeat": 3,
+      "order": 4
+    },
+    {
+      "session_key": "S3-r1-a",
+      "block_id": "S3-r1",
+      "task_id": "S3",
+      "strategy_id": "a",
+      "repeat": 1,
+      "order": 1
+    },
+    {
+      "session_key": "S3-r1-standard",
+      "block_id": "S3-r1",
+      "task_id": "S3",
+      "strategy_id": "standard",
+      "repeat": 1,
+      "order": 2
+    },
+    {
+      "session_key": "S3-r1-ab",
+      "block_id": "S3-r1",
+      "task_id": "S3",
+      "strategy_id": "ab",
+      "repeat": 1,
+      "order": 3
+    },
+    {
+      "session_key": "S3-r1-b",
+      "block_id": "S3-r1",
+      "task_id": "S3",
+      "strategy_id": "b",
+      "repeat": 1,
+      "order": 4
+    },
+    {
+      "session_key": "S3-r2-ab",
+      "block_id": "S3-r2",
+      "task_id": "S3",
+      "strategy_id": "ab",
+      "repeat": 2,
+      "order": 1
+    },
+    {
+      "session_key": "S3-r2-standard",
+      "block_id": "S3-r2",
+      "task_id": "S3",
+      "strategy_id": "standard",
+      "repeat": 2,
+      "order": 2
+    },
+    {
+      "session_key": "S3-r2-b",
+      "block_id": "S3-r2",
+      "task_id": "S3",
+      "strategy_id": "b",
+      "repeat": 2,
+      "order": 3
+    },
+    {
+      "session_key": "S3-r2-a",
+      "block_id": "S3-r2",
+      "task_id": "S3",
+      "strategy_id": "a",
+      "repeat": 2,
+      "order": 4
+    },
+    {
+      "session_key": "S3-r3-ab",
+      "block_id": "S3-r3",
+      "task_id": "S3",
+      "strategy_id": "ab",
+      "repeat": 3,
+      "order": 1
+    },
+    {
+      "session_key": "S3-r3-a",
+      "block_id": "S3-r3",
+      "task_id": "S3",
+      "strategy_id": "a",
+      "repeat": 3,
+      "order": 2
+    },
+    {
+      "session_key": "S3-r3-b",
+      "block_id": "S3-r3",
+      "task_id": "S3",
+      "strategy_id": "b",
+      "repeat": 3,
+      "order": 3
+    },
+    {
+      "session_key": "S3-r3-standard",
+      "block_id": "S3-r3",
+      "task_id": "S3",
+      "strategy_id": "standard",
+      "repeat": 3,
+      "order": 4
+    },
+    {
+      "session_key": "S4-r1-ab",
+      "block_id": "S4-r1",
+      "task_id": "S4",
+      "strategy_id": "ab",
+      "repeat": 1,
+      "order": 1
+    },
+    {
+      "session_key": "S4-r1-standard",
+      "block_id": "S4-r1",
+      "task_id": "S4",
+      "strategy_id": "standard",
+      "repeat": 1,
+      "order": 2
+    },
+    {
+      "session_key": "S4-r1-b",
+      "block_id": "S4-r1",
+      "task_id": "S4",
+      "strategy_id": "b",
+      "repeat": 1,
+      "order": 3
+    },
+    {
+      "session_key": "S4-r1-a",
+      "block_id": "S4-r1",
+      "task_id": "S4",
+      "strategy_id": "a",
+      "repeat": 1,
+      "order": 4
+    },
+    {
+      "session_key": "S4-r2-ab",
+      "block_id": "S4-r2",
+      "task_id": "S4",
+      "strategy_id": "ab",
+      "repeat": 2,
+      "order": 1
+    },
+    {
+      "session_key": "S4-r2-b",
+      "block_id": "S4-r2",
+      "task_id": "S4",
+      "strategy_id": "b",
+      "repeat": 2,
+      "order": 2
+    },
+    {
+      "session_key": "S4-r2-a",
+      "block_id": "S4-r2",
+      "task_id": "S4",
+      "strategy_id": "a",
+      "repeat": 2,
+      "order": 3
+    },
+    {
+      "session_key": "S4-r2-standard",
+      "block_id": "S4-r2",
+      "task_id": "S4",
+      "strategy_id": "standard",
+      "repeat": 2,
+      "order": 4
+    },
+    {
+      "session_key": "S4-r3-a",
+      "block_id": "S4-r3",
+      "task_id": "S4",
+      "strategy_id": "a",
+      "repeat": 3,
+      "order": 1
+    },
+    {
+      "session_key": "S4-r3-standard",
+      "block_id": "S4-r3",
+      "task_id": "S4",
+      "strategy_id": "standard",
+      "repeat": 3,
+      "order": 2
+    },
+    {
+      "session_key": "S4-r3-b",
+      "block_id": "S4-r3",
+      "task_id": "S4",
+      "strategy_id": "b",
+      "repeat": 3,
+      "order": 3
+    },
+    {
+      "session_key": "S4-r3-ab",
+      "block_id": "S4-r3",
+      "task_id": "S4",
+      "strategy_id": "ab",
+      "repeat": 3,
+      "order": 4
+    },
+    {
+      "session_key": "S5-r1-b",
+      "block_id": "S5-r1",
+      "task_id": "S5",
+      "strategy_id": "b",
+      "repeat": 1,
+      "order": 1
+    },
+    {
+      "session_key": "S5-r1-standard",
+      "block_id": "S5-r1",
+      "task_id": "S5",
+      "strategy_id": "standard",
+      "repeat": 1,
+      "order": 2
+    },
+    {
+      "session_key": "S5-r1-ab",
+      "block_id": "S5-r1",
+      "task_id": "S5",
+      "strategy_id": "ab",
+      "repeat": 1,
+      "order": 3
+    },
+    {
+      "session_key": "S5-r1-a",
+      "block_id": "S5-r1",
+      "task_id": "S5",
+      "strategy_id": "a",
+      "repeat": 1,
+      "order": 4
+    },
+    {
+      "session_key": "S5-r2-ab",
+      "block_id": "S5-r2",
+      "task_id": "S5",
+      "strategy_id": "ab",
+      "repeat": 2,
+      "order": 1
+    },
+    {
+      "session_key": "S5-r2-a",
+      "block_id": "S5-r2",
+      "task_id": "S5",
+      "strategy_id": "a",
+      "repeat": 2,
+      "order": 2
+    },
+    {
+      "session_key": "S5-r2-standard",
+      "block_id": "S5-r2",
+      "task_id": "S5",
+      "strategy_id": "standard",
+      "repeat": 2,
+      "order": 3
+    },
+    {
+      "session_key": "S5-r2-b",
+      "block_id": "S5-r2",
+      "task_id": "S5",
+      "strategy_id": "b",
+      "repeat": 2,
+      "order": 4
+    },
+    {
+      "session_key": "S5-r3-b",
+      "block_id": "S5-r3",
+      "task_id": "S5",
+      "strategy_id": "b",
+      "repeat": 3,
+      "order": 1
+    },
+    {
+      "session_key": "S5-r3-a",
+      "block_id": "S5-r3",
+      "task_id": "S5",
+      "strategy_id": "a",
+      "repeat": 3,
+      "order": 2
+    },
+    {
+      "session_key": "S5-r3-standard",
+      "block_id": "S5-r3",
+      "task_id": "S5",
+      "strategy_id": "standard",
+      "repeat": 3,
+      "order": 3
+    },
+    {
+      "session_key": "S5-r3-ab",
+      "block_id": "S5-r3",
+      "task_id": "S5",
+      "strategy_id": "ab",
+      "repeat": 3,
+      "order": 4
+    },
+    {
+      "session_key": "S6-r1-b",
+      "block_id": "S6-r1",
+      "task_id": "S6",
+      "strategy_id": "b",
+      "repeat": 1,
+      "order": 1
+    },
+    {
+      "session_key": "S6-r1-standard",
+      "block_id": "S6-r1",
+      "task_id": "S6",
+      "strategy_id": "standard",
+      "repeat": 1,
+      "order": 2
+    },
+    {
+      "session_key": "S6-r1-ab",
+      "block_id": "S6-r1",
+      "task_id": "S6",
+      "strategy_id": "ab",
+      "repeat": 1,
+      "order": 3
+    },
+    {
+      "session_key": "S6-r1-a",
+      "block_id": "S6-r1",
+      "task_id": "S6",
+      "strategy_id": "a",
+      "repeat": 1,
+      "order": 4
+    },
+    {
+      "session_key": "S6-r2-b",
+      "block_id": "S6-r2",
+      "task_id": "S6",
+      "strategy_id": "b",
+      "repeat": 2,
+      "order": 1
+    },
+    {
+      "session_key": "S6-r2-ab",
+      "block_id": "S6-r2",
+      "task_id": "S6",
+      "strategy_id": "ab",
+      "repeat": 2,
+      "order": 2
+    },
+    {
+      "session_key": "S6-r2-standard",
+      "block_id": "S6-r2",
+      "task_id": "S6",
+      "strategy_id": "standard",
+      "repeat": 2,
+      "order": 3
+    },
+    {
+      "session_key": "S6-r2-a",
+      "block_id": "S6-r2",
+      "task_id": "S6",
+      "strategy_id": "a",
+      "repeat": 2,
+      "order": 4
+    },
+    {
+      "session_key": "S6-r3-a",
+      "block_id": "S6-r3",
+      "task_id": "S6",
+      "strategy_id": "a",
+      "repeat": 3,
+      "order": 1
+    },
+    {
+      "session_key": "S6-r3-ab",
+      "block_id": "S6-r3",
+      "task_id": "S6",
+      "strategy_id": "ab",
+      "repeat": 3,
+      "order": 2
+    },
+    {
+      "session_key": "S6-r3-b",
+      "block_id": "S6-r3",
+      "task_id": "S6",
+      "strategy_id": "b",
+      "repeat": 3,
+      "order": 3
+    },
+    {
+      "session_key": "S6-r3-standard",
+      "block_id": "S6-r3",
+      "task_id": "S6",
+      "strategy_id": "standard",
+      "repeat": 3,
+      "order": 4
+    },
+    {
+      "session_key": "I2-r1-standard",
+      "block_id": "I2-r1",
+      "task_id": "I2",
+      "strategy_id": "standard",
+      "repeat": 1,
+      "order": 1
+    },
+    {
+      "session_key": "I2-r1-b",
+      "block_id": "I2-r1",
+      "task_id": "I2",
+      "strategy_id": "b",
+      "repeat": 1,
+      "order": 2
+    },
+    {
+      "session_key": "I2-r1-ab",
+      "block_id": "I2-r1",
+      "task_id": "I2",
+      "strategy_id": "ab",
+      "repeat": 1,
+      "order": 3
+    },
+    {
+      "session_key": "I2-r1-a",
+      "block_id": "I2-r1",
+      "task_id": "I2",
+      "strategy_id": "a",
+      "repeat": 1,
+      "order": 4
+    },
+    {
+      "session_key": "I2-r2-ab",
+      "block_id": "I2-r2",
+      "task_id": "I2",
+      "strategy_id": "ab",
+      "repeat": 2,
+      "order": 1
+    },
+    {
+      "session_key": "I2-r2-b",
+      "block_id": "I2-r2",
+      "task_id": "I2",
+      "strategy_id": "b",
+      "repeat": 2,
+      "order": 2
+    },
+    {
+      "session_key": "I2-r2-a",
+      "block_id": "I2-r2",
+      "task_id": "I2",
+      "strategy_id": "a",
+      "repeat": 2,
+      "order": 3
+    },
+    {
+      "session_key": "I2-r2-standard",
+      "block_id": "I2-r2",
+      "task_id": "I2",
+      "strategy_id": "standard",
+      "repeat": 2,
+      "order": 4
+    },
+    {
+      "session_key": "I2-r3-ab",
+      "block_id": "I2-r3",
+      "task_id": "I2",
+      "strategy_id": "ab",
+      "repeat": 3,
+      "order": 1
+    },
+    {
+      "session_key": "I2-r3-standard",
+      "block_id": "I2-r3",
+      "task_id": "I2",
+      "strategy_id": "standard",
+      "repeat": 3,
+      "order": 2
+    },
+    {
+      "session_key": "I2-r3-b",
+      "block_id": "I2-r3",
+      "task_id": "I2",
+      "strategy_id": "b",
+      "repeat": 3,
+      "order": 3
+    },
+    {
+      "session_key": "I2-r3-a",
+      "block_id": "I2-r3",
+      "task_id": "I2",
+      "strategy_id": "a",
+      "repeat": 3,
+      "order": 4
+    },
+    {
+      "session_key": "I3-r1-a",
+      "block_id": "I3-r1",
+      "task_id": "I3",
+      "strategy_id": "a",
+      "repeat": 1,
+      "order": 1
+    },
+    {
+      "session_key": "I3-r1-b",
+      "block_id": "I3-r1",
+      "task_id": "I3",
+      "strategy_id": "b",
+      "repeat": 1,
+      "order": 2
+    },
+    {
+      "session_key": "I3-r1-standard",
+      "block_id": "I3-r1",
+      "task_id": "I3",
+      "strategy_id": "standard",
+      "repeat": 1,
+      "order": 3
+    },
+    {
+      "session_key": "I3-r1-ab",
+      "block_id": "I3-r1",
+      "task_id": "I3",
+      "strategy_id": "ab",
+      "repeat": 1,
+      "order": 4
+    },
+    {
+      "session_key": "I3-r2-ab",
+      "block_id": "I3-r2",
+      "task_id": "I3",
+      "strategy_id": "ab",
+      "repeat": 2,
+      "order": 1
+    },
+    {
+      "session_key": "I3-r2-standard",
+      "block_id": "I3-r2",
+      "task_id": "I3",
+      "strategy_id": "standard",
+      "repeat": 2,
+      "order": 2
+    },
+    {
+      "session_key": "I3-r2-a",
+      "block_id": "I3-r2",
+      "task_id": "I3",
+      "strategy_id": "a",
+      "repeat": 2,
+      "order": 3
+    },
+    {
+      "session_key": "I3-r2-b",
+      "block_id": "I3-r2",
+      "task_id": "I3",
+      "strategy_id": "b",
+      "repeat": 2,
+      "order": 4
+    },
+    {
+      "session_key": "I3-r3-b",
+      "block_id": "I3-r3",
+      "task_id": "I3",
+      "strategy_id": "b",
+      "repeat": 3,
+      "order": 1
+    },
+    {
+      "session_key": "I3-r3-ab",
+      "block_id": "I3-r3",
+      "task_id": "I3",
+      "strategy_id": "ab",
+      "repeat": 3,
+      "order": 2
+    },
+    {
+      "session_key": "I3-r3-standard",
+      "block_id": "I3-r3",
+      "task_id": "I3",
+      "strategy_id": "standard",
+      "repeat": 3,
+      "order": 3
+    },
+    {
+      "session_key": "I3-r3-a",
+      "block_id": "I3-r3",
+      "task_id": "I3",
+      "strategy_id": "a",
+      "repeat": 3,
+      "order": 4
+    }
+  ],
+  "design": "known tasks repeated; not a strict 2x2 factorial; B and A+B have different question boundaries",
+  "branch_policy": "I2/I3 branch is pending human semantic review; branch is not preassigned in this real plan",
+  "session_count": 96,
+  "fixed_calls": 192,
+  "interactive_min_calls": 48,
+  "interactive_max_calls": 72,
+  "total_min_calls": 240,
+  "total_max_calls": 264,
+  "pre_pilot": {
+    "sessions": 32,
+    "calls_min": 80,
+    "calls_max": 88
+  }
+}

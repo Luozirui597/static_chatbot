@@ -10,6 +10,7 @@
     passed: 0,
     failed: 0,
     failures: [],
+    executedNames: [],
     viewport: {
       width: window.innerWidth,
       height: window.innerHeight
@@ -38,6 +39,7 @@
   function test(name, body) {
     report.total += 1;
     report.executed += 1;
+    report.executedNames.push(name);
     try {
       body();
       report.passed += 1;
@@ -140,6 +142,27 @@
     "[" + linkToken + "](https://example.com/" +
     "long/path/segment?token=" + "q".repeat(120) + ")";
 
+  // .message is fit-content up to 80% of the chat width. Keep this display
+  // row well beyond that cap so 1280px and 375px viewports both exercise
+  // the math container's own horizontal scroll instead of widening the
+  // message to fit the whole formula.
+  var longMathTerms = [
+    "\\frac{a_i+b_i+c_i+d_i+e_i}{c_i+d_i+e_i+f_i}",
+    "\\frac{a_i+b_i+c_i+d_i+e_i+f_i}{c_i+d_i+e_i}",
+    "\\frac{a_i+b_i+c_i}{c_i+d_i+e_i+f_i+g_i}",
+    "\\frac{a_i+b_i+c_i+d_i}{c_i+d_i+e_i+f_i+g_i}"
+  ];
+  var mathTail = [];
+  for (var mathTermIndex = 0; mathTermIndex < 20; mathTermIndex += 1) {
+    mathTail.push(longMathTerms[mathTermIndex % longMathTerms.length]);
+  }
+  var mathMarkdown =
+    "## 数学公式\n\n" +
+    "行内公式 \\(y_i\\)、\\(\\frac{a}{b}\\) 与 \\(\\sqrt{x}\\)。\n\n" +
+    "\\[\\sum_{i=1}^{n} " +
+    "\\frac{a_i+b_i+c_i+d_i+e_i}{\\sqrt{c_i+d_i+e_i}} + " +
+    mathTail.join(" + ") + "\\]";
+
   window.__visualFixtures = {
     userSource: userSource,
     userLongToken: userLongToken,
@@ -149,6 +172,7 @@
     tableCellCount: tableCells.length,
     tableCellTokenLength: 42,
     linkToken: linkToken,
+    mathMarkdown: mathMarkdown,
     minimumScrollOverflow: 100
   };
 
@@ -178,6 +202,7 @@
   }
 
   addAssistantMessage("visual-link-message", linkMarkdown);
+  addAssistantMessage("visual-math-message", mathMarkdown);
 
   for (var fillerIndex = 1; fillerIndex <= 12; fillerIndex += 1) {
     addAssistantMessage(
@@ -195,6 +220,7 @@
     report.passed = 0;
     report.failed = 0;
     report.failures = [];
+    report.executedNames = [];
     report.viewport = {
       width: window.innerWidth,
       height: window.innerHeight
@@ -364,6 +390,29 @@
       assert(lastRect.bottom <= chatRect.bottom + 1,
         "last message cannot be reached by scrolling");
       chat.scrollTop = 0;
+    });
+
+    test("long math display scrolls inside its own container", function () {
+      var display = find("#visual-math-message .math-display");
+      assert(display, "math display container missing");
+      assert(getComputedStyle(display).overflowX === "auto",
+        "math display does not own horizontal scrolling");
+      assert(display.scrollWidth > display.clientWidth,
+        "long math did not overflow its container");
+      display.scrollLeft = 24;
+      assert(display.scrollLeft > 0, "math display did not scroll");
+      display.scrollLeft = 0;
+
+      var math = display.querySelector("math");
+      assert(math, "math element missing inside display");
+      assert(math.getBoundingClientRect().width > 0,
+        "math element has no visible width");
+      var page = document.documentElement;
+      var chat = find("#visual-messages");
+      assert(page.scrollWidth <= page.clientWidth + 1,
+        "math caused page horizontal overflow");
+      assert(chat.scrollWidth <= chat.clientWidth + 1,
+        "math caused chat horizontal overflow");
     });
 
     test("synthetic stress data is long enough to exercise layout", function () {

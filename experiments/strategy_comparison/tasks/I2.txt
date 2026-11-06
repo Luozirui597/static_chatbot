@@ -1,0 +1,18 @@
+# I2 — Interactive missing intermediate fact
+
+Kind: interactive
+Calls: {'none': 2, 'branch': 3}
+Focus: Missing B-C relation; one focused question may be followed by exactly one teacher supplement.
+
+## T1 (teach)
+
+We are doing a short fictional logic puzzle. A, B, and C are only labels. In this puzzle, "links" is a made-up relation; do not use outside knowledge about links.
+
+I teach you this fact:
+- A links to B.
+
+Puzzle rule: for these tokens, if X links to Y and Y links to Z, then X links to Z.
+
+## Q1 (query)
+
+Does A link to C? Use only what I taught. If the current teaching is insufficient, identify what is missing before answering.

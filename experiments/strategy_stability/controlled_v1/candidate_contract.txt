@@ -1,0 +1,62 @@
+CONTROLLED EXPERIMENT OUTPUT CONTRACT v1
+
+For this experiment, replace natural-language output formatting with exactly
+one JSON object. Keep the teaching strategy's permissions and evidence limits.
+Do not output Markdown fences, commentary, final_text, answer, rationale, or
+extra fields. The server renders the final English text after validation.
+
+The teacher evidence messages are authoritative only for this fictional links
+task. Use only those messages, including current corrections/revocations. The
+server supplies the current question and public request constraints. A missing
+piece is not a negative fact. Never use outside knowledge or assume transitivity.
+
+Top-level shape: {"items": [item, ...]}. Use 1 to 4 items. Choose items to
+answer every requested relation. One reply has at most one R1 inference and at
+most one question. A question must be the last item; known subanswers may
+precede it. Asking is optional. When asked to stop without asking, do so.
+
+An item is exactly one of:
+
+1. direct: {"type":"direct","claims":[claim,...]}
+   claims is a nonempty array. Each claim has exactly:
+   claim_id (unique short identifier), kind="direct", subject (identifier),
+   predicate="links", object (identifier), polarity="positive" or "negative",
+   source_message_id (integer teacher source ID), quote (verbatim source text).
+   Quote the actual sentence, preserving negation. Do not call inferred facts
+   direct. A current direct positive or negative answer takes priority.
+
+2. infer: {"type":"infer","claims":[claim1,claim2],"inference":object}
+   Exactly two positive direct claims are the relation premises. The inference
+   object has exactly: premise_claim_ids (the two claim IDs in chain order),
+   rule_source_message_id, condition_source_message_ids (array of integers),
+   exception_source_message_ids (array of integers), conclusion.
+   conclusion has exactly subject, predicate="links", object, polarity="positive".
+   Use one teacher-taught rule whose two premises match the chain and conclusion.
+   All taught necessary conditions must be currently true and all taught
+   exceptions currently inactive, with their actual source IDs. An unlisted
+   condition/exception requires an empty ID array. No inverse, symmetric,
+   contraposed, recursive or multistep inference. Apply R1 only if the strategy
+   and current turn both allow it. Do not infer a directly taught conclusion.
+
+3. insufficient: {"type":"insufficient","unknown_target":{"subject":identifier,"object":identifier}}
+   Identify a requested relation you cannot confirm under this strategy and
+   current evidence. Standard/B cannot infer even if a chain exists. A/A+B
+   should use a valid requested R1 result when available. Missing evidence does
+   not authorize a negative direct claim. Do not invent evidence to fill gaps.
+
+4. ask: {"type":"ask","ask":{"kind":kind,"subject":identifier,"object":identifier}}
+   kind is missing_fact, missing_rule, or direct_target. missing_fact asks for
+   exactly one needed intermediate relation; missing_rule asks for the teacher
+   rule needed for the requested target, with that target's identifiers.
+   Only B may use direct_target. A+B must not request its target answer under
+   any label. No unnecessary, repeated or unrelated question. No asking after
+   one question or one accepted supplement. A/Standard cannot ask for content.
+
+5. clarify: {"type":"clarify","target":{"subject":identifier,"object":identifier}}
+   Only use a necessary task-parameter clarification when allow_clarify is true.
+   It is not a way to ask for teaching content or bypass strategy permissions.
+
+The user packet contains evidence and public constraints, not an answer key.
+Infer gaps yourself from the teacher evidence. Never copy an assistant's old
+answer as a teacher source. The server's validation does not grant permission
+to guess and try again. There is one generation and no correction retry.

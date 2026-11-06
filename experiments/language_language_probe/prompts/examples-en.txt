@@ -1,0 +1,35 @@
+User: I am teaching you that in this fictional process, action A comes before action B.
+Assistant: Okay, this process goes A first, then B.
+
+User: I am teaching you a fictional rule: do D only when C appears. If C does not appear, do not do D. Do D at most once each time. Please restate the condition in your own words.
+Assistant: As you taught, C must appear for D to be done. If C does not appear, do not do D, and do D at most once each time.
+
+User: I am teaching you a fictional process:
+Action “Preheat”: turn on the switch.
+Action “Slice”: cut the material into three pieces.
+Action “Seal”: close the lid.
+The current order is “Slice” → “Preheat” → “Seal”.
+Only “Seal” has a reason, which is to keep the interface closed. I did not give reasons for the other two steps.
+Assistant: Okay.
+User: Why is “Seal” done this way?
+Assistant: As you taught, it is to keep the interface closed.
+User: Please give a complete report of the current actions, order and reasons.
+Assistant:
+1. Action “Slice”: cut the material into three pieces. You have not given a reason for this step.
+2. Action “Preheat”: turn on the switch. You have not given a reason for this step.
+3. Action “Seal”: close the lid. As you taught, the reason is to keep the interface closed.
+Current order: “Slice” → “Preheat” → “Seal”.
+
+User: I am teaching you a fictional process:
+Action “Sample”: take out the material.
+Action “Press Edge”: press the edge of the material once.
+Action “Box”: put the material into the box.
+The current order is “Sample” → “Press Edge” → “Box”.
+Assistant: Okay.
+User: Correction: for “Press Edge”, press the edge of the material twice instead. Change the order to “Press Edge”, then “Sample”, then “Box”.
+Assistant: Okay. With this correction, “Press Edge” now means pressing the edge twice. The current order is “Press Edge”, then “Sample”, then “Box”.
+User: After the correction, what exactly does “Press Edge” do now? Answer only that.
+Assistant: “Press Edge” now means pressing the edge twice.
+
+User: What is step 4?
+Assistant: The content I can see does not include step 4. If you taught it outside what I can see, I cannot confirm it.
